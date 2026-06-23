@@ -169,6 +169,7 @@ class SettingsScreen(ModalScreen):
 
         # Opciones estándar de respaldo
         defaults = [
+            ("Auto (primer dispositivo)", "auto"),
             ("SDRplay RSP", "sdrplay"),
             ("RTL-SDR Dongle", "rtlsdr"),
             ("HackRF One", "hackrf"),

@@ -27,7 +27,7 @@ def parse_args():
         prog="xyz-sdr",
         description="🛰️  xyz-sdr — Terminal SDR Controller con IA",
     )
-    parser.add_argument("--driver",   default=None, help="Driver SDR (sdrplay, rtlsdr, hackrf...)")
+    parser.add_argument("--driver",   default=None, help="Driver SDR (auto, sdrplay, rtlsdr, hackrf...)")
     parser.add_argument("--freq",     type=float, default=None, help="Frecuencia inicial en MHz")
     parser.add_argument("--gain",     type=float, default=None, help="Ganancia en dB")
     parser.add_argument("--mode",     default=None, choices=["wbfm","nbfm","am","usb","lsb"], help="Modo de demodulación")
@@ -74,14 +74,28 @@ def main():
 
     # ── Listar dispositivos ─────────────────────────────────────────────────
     if args.list_dev:
+        from core.soapy_runtime import bootstrap_soapy, format_hardware_help
+
+        status = bootstrap_soapy()
+        if not status.import_ok:
+            print("SoapySDR no disponible en Python.")
+            help_text = format_hardware_help(status)
+            if help_text:
+                print(help_text)
+            sys.exit(1)
+
         from core.device import SDRDevice
+
         devices = SDRDevice.list_devices()
-        if not devices:
-            print("No se encontraron dispositivos SDR.")
-        else:
-            print(f"Dispositivos encontrados: {len(devices)}")
-            for i, d in enumerate(devices):
-                print(f"  [{i}] {d}")
+        real = [d for d in devices if d.get("driver") != "simulated"]
+        if not real:
+            print("SoapySDR OK pero no hay dispositivos conectados.")
+            print("  Prueba: SoapySDRUtil --find=driver=sdrplay")
+            sys.exit(1)
+
+        print(f"Dispositivos encontrados: {len(real)}")
+        for i, d in enumerate(real):
+            print(f"  [{i}] {d}")
         sys.exit(0)
 
     # ── Configuración combinada (TOML + args CLI) ───────────────────────────
@@ -96,35 +110,44 @@ def main():
     if args.sim:
         driver = "simulated"
     else:
-        from core.device import SOAPYSDR_AVAILABLE
-        has_hardware = False
-        if SOAPYSDR_AVAILABLE:
-            try:
-                import SoapySDR
-                devices = SoapySDR.Device.enumerate()
-                if devices:
-                    has_hardware = True
-            except Exception:
-                pass
-        
+        from core.soapy_runtime import bootstrap_soapy, format_hardware_help
+        from core.device import resolve_device
+
+        status = bootstrap_soapy()
+        has_hardware = status.import_ok and status.has_devices
+
         if not has_hardware:
             if sys.stdin.isatty():
-                print("⚠️  No se detectó hardware SDR ni controladores de SoapySDR.")
+                help_text = format_hardware_help(status)
+                if not status.import_ok:
+                    print("⚠️  SoapySDR no carga en Python (bindings/DLL/PATH).")
+                else:
+                    print("⚠️  SoapySDR OK pero no se detectó ningún dispositivo SDR.")
+                if help_text:
+                    print(help_text)
                 try:
-                    response = input("¿Deseas iniciar en modo Simulado (Simulación sin Hardware)? [S/n]: ").strip().lower()
+                    response = input(
+                        "\n¿Deseas iniciar en modo Simulado (Simulación sin Hardware)? [S/n]: "
+                    ).strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     print("\nOperación cancelada.")
                     sys.exit(0)
-                
+
                 if response in ("", "s", "si", "y", "yes"):
                     print("🛰️  Iniciando en modo Simulado...")
                     driver = "simulated"
                 else:
-                    print("Cancelando ejecución. Conecte un dispositivo SDR e instale los drivers necesarios.")
+                    print("Cancelando ejecución. Ejecuta: python setup/check_env.py")
                     sys.exit(0)
             else:
-                print("⚠️  No se detectó hardware SDR ni controladores de SoapySDR. Fallback automático a modo Simulado (no interactivo).")
+                print("⚠️  Hardware no disponible. Fallback automático a modo Simulado.")
                 driver = "simulated"
+        elif driver in ("auto", ""):
+            try:
+                kwargs = resolve_device("auto", status.devices)
+                driver = str(kwargs.get("driver", driver))
+            except Exception:
+                pass
 
     logger.info(f"Iniciando xyz-sdr | driver={driver} freq={center_freq/1e6:.3f}MHz mode={demod_mode}")
 

@@ -79,6 +79,8 @@ xyz-sdr/
 
 ## 💾 Instalación y Ejecución rápida
 
+**Requisito hardware real:** Python **3.11 o 3.12** (64-bit). PothosSDR incluye bindings embebidos solo para Python 3.9; en 3.13+ no hay wheel `SoapySDR` en pip.
+
 1. **Instalar Drivers SDR (Solo Windows)**:
    ```powershell
    .\setup\install_drivers.ps1
@@ -91,14 +93,29 @@ xyz-sdr/
    ```bash
    python setup/check_env.py
    ```
-4. **Ejecutar en modo Simulado (Sin Hardware SDR conectado)**:
+   Debe mostrar `[OK] SoapySDR importado` y tu dispositivo (p. ej. `driver=sdrplay`).
+   Si acabas de instalar PothosSDR, **cierra y reabre la terminal** antes de continuar.
+
+4. **Listar hardware detectado**:
+   ```bash
+   python main.py --list-dev
+   ```
+
+5. **Verificación manual (Windows)**:
+   ```powershell
+   SoapySDRUtil --find=driver=sdrplay
+   ```
+
+6. **Ejecutar en modo Simulado (Sin Hardware SDR conectado)**:
    ```bash
    python main.py --sim
    ```
-5. **Ejecutar con Hardware SDR**:
+
+7. **Ejecutar con Hardware SDR**:
    ```bash
    python main.py --driver sdrplay --freq 100.6 --gain 40
    ```
+   O deja que elija el primer dispositivo: `python main.py --driver auto`
 
 ---
 

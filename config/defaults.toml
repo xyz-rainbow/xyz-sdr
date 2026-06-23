@@ -1,7 +1,7 @@
 # xyz-sdr | defaults.toml — Configuración por defecto
 
 [device]
-driver       = "sdrplay"      # "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
+driver       = "sdrplay"      # "auto" | "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
 sample_rate  = 500_000      # Muestras por segundo (2.048 MHz)
 center_freq  = 100_600_000      # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
 gain         = 40.0      # Ganancia en dB (0-60 típico)

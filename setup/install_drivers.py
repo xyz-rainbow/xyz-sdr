@@ -61,6 +61,8 @@ T = {
         "path_success": "Ruta añadida con éxito: {}",
         "path_already": "Las rutas ya se encuentran configuradas en el PATH del usuario.",
         "path_fail": "No se pudo configurar el PATH de manera automática: {}",
+        "path_pythonpath_success": "PYTHONPATH actualizado: {}",
+        "path_restart_hint": "Cierra y reabre la terminal para aplicar PATH/PYTHONPATH.",
         "py_checking_uv": "Detectando gestor de paquetes uv...",
         "py_installing_uv": "Instalando uv (gestor de paquetes rápido)...",
         "py_installing_deps": "Instalando paquetes con {}...",
@@ -105,6 +107,8 @@ T = {
         "path_success": "PATH successfully updated: {}",
         "path_already": "The paths are already configured in the user PATH.",
         "path_fail": "Could not configure PATH automatically: {}",
+        "path_pythonpath_success": "PYTHONPATH updated: {}",
+        "path_restart_hint": "Close and reopen your terminal to apply PATH/PYTHONPATH.",
         "py_checking_uv": "Checking for uv package manager...",
         "py_installing_uv": "Installing uv (fast package manager)...",
         "py_installing_deps": "Installing packages with {}...",
@@ -352,7 +356,8 @@ def configure_path():
     valid_paths = [p for p in soapy_paths if os.path.exists(p)]
     if not valid_paths:
         return False, "No physical installation directory found"
-    
+
+    added: list[str] = []
     key = None
     try:
         import winreg
@@ -361,21 +366,42 @@ def configure_path():
             current_path, _ = winreg.QueryValueEx(key, "Path")
         except FileNotFoundError:
             current_path = ""
-            
-        updated = False
+
         path_list = [p.strip() for p in current_path.split(";") if p.strip()]
-        
+        path_updated = False
+
         for p in valid_paths:
             if not any(x.lower() == p.lower() for x in path_list):
                 path_list.append(p)
-                updated = True
-                
-        if updated:
+                path_updated = True
+                added.append(p)
+
+        if path_updated:
             new_path = ";".join(path_list)
             winreg.SetValueEx(key, "Path", 0, winreg.REG_SZ, new_path)
             _notify_path_environment_changed(new_path)
-            return True, valid_paths
-        _notify_path_environment_changed(current_path)
+        else:
+            _notify_path_environment_changed(current_path)
+
+        try:
+            from core.soapy_runtime import get_pothos_site_packages_for_env
+
+            site_packages = get_pothos_site_packages_for_env()
+            if site_packages:
+                try:
+                    current_py, _ = winreg.QueryValueEx(key, "PYTHONPATH")
+                except FileNotFoundError:
+                    current_py = ""
+                py_list = [p.strip() for p in current_py.split(";") if p.strip()]
+                if not any(os.path.normcase(x) == os.path.normcase(site_packages) for x in py_list):
+                    py_list.append(site_packages)
+                    winreg.SetValueEx(key, "PYTHONPATH", 0, winreg.REG_SZ, ";".join(py_list))
+                    added.append(f"PYTHONPATH:{site_packages}")
+        except Exception:
+            pass
+
+        if added:
+            return True, added
         return True, None
     except Exception as e:
         return False, str(e)
@@ -393,9 +419,14 @@ def _report_path_configuration() -> None:
     success_path, info_path = configure_path()
     if success_path:
         if info_path:
-            print(f"  {C_LIME}[SUCCESS] {T[lang]['path_success'].format(', '.join(info_path))}{C_RESET}")
+            for entry in info_path:
+                if str(entry).startswith("PYTHONPATH:"):
+                    print(f"  {C_LIME}[SUCCESS] {T[lang]['path_pythonpath_success'].format(entry.split(':', 1)[1])}{C_RESET}")
+                else:
+                    print(f"  {C_LIME}[SUCCESS] {T[lang]['path_success'].format(entry)}{C_RESET}")
         else:
             print(f"  {C_LIME}[SUCCESS] {T[lang]['path_already']}{C_RESET}")
+        print(f"  {C_ORANGE}{T[lang]['path_restart_hint']}{C_RESET}")
     else:
         print(f"  {C_RED}[ERROR] {T[lang]['path_fail'].format(info_path)}{C_RESET}")
 
