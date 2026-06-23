@@ -66,20 +66,88 @@ def slice_band_to_viewport(
     band_hz_per_col = sample_rate / band_n
     hz_per_col = visible_span_hz / width
 
+    cols = np.arange(width, dtype=np.float64)
+    f_start = viewport_left + cols * hz_per_col
+    f_end = f_start + hz_per_col
+
+    overlap_start = np.maximum(f_start, capture_left)
+    overlap_end = np.minimum(f_end, capture_left + sample_rate)
+    valid = overlap_start < overlap_end
+
+    bin_start = np.floor((overlap_start - capture_left) / band_hz_per_col).astype(np.int32)
+    bin_end = np.ceil((overlap_end - capture_left) / band_hz_per_col).astype(np.int32)
+    bin_start = np.clip(bin_start, 0, band_n - 1)
+    bin_end = np.clip(bin_end, bin_start + 1, band_n)
+
     for col in range(width):
-        f_start = viewport_left + col * hz_per_col
-        f_end = f_start + hz_per_col
+        if valid[col]:
+            out[col] = float(np.max(band_cols[bin_start[col] : bin_end[col]]))
 
-        overlap_start = max(f_start, capture_left)
-        overlap_end = min(f_end, capture_left + sample_rate)
-        if overlap_start >= overlap_end:
-            continue
+    return out
 
-        bin_start = int((overlap_start - capture_left) / band_hz_per_col)
-        bin_end = int((overlap_end - capture_left) / band_hz_per_col)
-        bin_start = max(0, min(bin_start, band_n - 1))
-        bin_end = max(bin_start + 1, min(bin_end, band_n))
-        out[col] = float(np.max(band_cols[bin_start:bin_end]))
+
+def slice_band_history_to_viewport(
+    rows: list[tuple[float, float, np.ndarray]],
+    viewport_center_hz: float,
+    visible_span_hz: float,
+    terminal_width: int,
+) -> np.ndarray | None:
+    """
+    Slice en lote filas del waterfall (mismo mapeo de bins por columna).
+
+    Returns:
+        float array (n_rows, terminal_width) o None si no hay filas.
+    """
+    if not rows:
+        return None
+
+    width = max(terminal_width, 1)
+    center_hz = rows[0][0]
+    sample_rate = rows[0][1]
+    band_n = len(rows[0][2])
+    if band_n == 0 or sample_rate <= 0 or visible_span_hz <= 0:
+        return None
+
+    same_geometry = all(
+        row[0] == center_hz and row[1] == sample_rate and len(row[2]) == band_n
+        for row in rows
+    )
+
+    capture_left = center_hz - sample_rate / 2
+    viewport_left = viewport_center_hz - visible_span_hz / 2
+    band_hz_per_col = sample_rate / band_n
+    hz_per_col = visible_span_hz / width
+
+    cols = np.arange(width, dtype=np.float64)
+    f_start = viewport_left + cols * hz_per_col
+    f_end = f_start + hz_per_col
+    overlap_start = np.maximum(f_start, capture_left)
+    overlap_end = np.minimum(f_end, capture_left + sample_rate)
+    valid = overlap_start < overlap_end
+
+    bin_start = np.floor((overlap_start - capture_left) / band_hz_per_col).astype(np.int32)
+    bin_end = np.ceil((overlap_end - capture_left) / band_hz_per_col).astype(np.int32)
+    bin_start = np.clip(bin_start, 0, band_n - 1)
+    bin_end = np.clip(bin_end, bin_start + 1, band_n)
+
+    out = np.full((len(rows), width), np.nan, dtype=np.float64)
+
+    if same_geometry:
+        stack = np.stack([row[2] for row in rows])
+        for col in range(width):
+            if valid[col]:
+                out[:, col] = np.max(stack[:, bin_start[col] : bin_end[col]], axis=1)
+        return out
+
+    for row_idx, (row_center, row_rate, band_cols) in enumerate(rows):
+        out[row_idx] = slice_band_to_viewport(
+            band_cols,
+            row_center,
+            row_rate,
+            viewport_center_hz,
+            visible_span_hz,
+            width,
+        )
 
     return out
 

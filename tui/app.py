@@ -60,6 +60,7 @@ ZOOM_SPAN_STEPS = [
 # Velocidades de cascada (FPS)
 WATERFALL_SPEEDS = [1, 2, 3, 5, 10, 25, 50]
 WATERFALL_SPD_BTN_HEIGHT = 3
+VIEWPORT_DEBOUNCE_S = 0.05  # Coalesce zoom/scroll antes de re-slicear waterfall
 
 # Limites de frecuencia del hardware
 FREQ_MIN_HZ = 0.0
@@ -603,7 +604,7 @@ class XyzSDRApp(App):
         overflow-y: auto;
         overflow-x: hidden;
         scrollbar-size: 0 0;
-        padding: 0;
+        padding: 0 1;
         margin: 0;
     }
 
@@ -614,16 +615,18 @@ class XyzSDRApp(App):
         grid-gutter: 0 0;
         padding: 0;
         margin: 0;
+        align: center top;
     }
 
     #waterfall_speed_bar Button.spd-btn {
         width: 100%;
-        height: 2;
-        min-height: 2;
-        max-height: 2;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
         min-width: 0;
         margin: 0;
         padding: 0;
+        line-pad: 0;
         text-style: bold;
         text-align: center;
         content-align: center middle;
@@ -632,6 +635,8 @@ class XyzSDRApp(App):
         border: round #4338ca;
         border-top: round #4338ca;
         border-bottom: round #4338ca;
+        border-left: round #4338ca;
+        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-btn:hover,
@@ -643,6 +648,8 @@ class XyzSDRApp(App):
         border: round #4338ca;
         border-top: round #4338ca;
         border-bottom: round #4338ca;
+        border-left: round #4338ca;
+        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-a {
@@ -650,6 +657,8 @@ class XyzSDRApp(App):
         border: round #4338ca;
         border-top: round #4338ca;
         border-bottom: round #4338ca;
+        border-left: round #4338ca;
+        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-b {
@@ -657,6 +666,8 @@ class XyzSDRApp(App):
         border: round #6d28d9;
         border-top: round #6d28d9;
         border-bottom: round #6d28d9;
+        border-left: round #6d28d9;
+        border-right: round #6d28d9;
     }
 
     #waterfall_speed_bar Button.spd-a:hover,
@@ -665,6 +676,8 @@ class XyzSDRApp(App):
         border: round #4338ca;
         border-top: round #4338ca;
         border-bottom: round #4338ca;
+        border-left: round #4338ca;
+        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-b:hover,
@@ -673,6 +686,8 @@ class XyzSDRApp(App):
         border: round #6d28d9;
         border-top: round #6d28d9;
         border-bottom: round #6d28d9;
+        border-left: round #6d28d9;
+        border-right: round #6d28d9;
     }
 
     #waterfall_speed_bar Button.spd-btn.active-spd,
@@ -686,6 +701,8 @@ class XyzSDRApp(App):
         border: round #10b981;
         border-top: round #10b981;
         border-bottom: round #10b981;
+        border-left: round #10b981;
+        border-right: round #10b981;
     }
 
     WaterfallTimeline {
@@ -800,6 +817,7 @@ class XyzSDRApp(App):
         self._debug_frame_latency_ms: list[float] = []
         self._debug_last_viewport_ms: float = 0.0
         self._debug_report_window_start: float = time.time()
+        self._viewport_debounce_timer = None
 
         dsp_cfg = self.config.get("dsp", {})
         self.squelch_enabled = bool(dsp_cfg.get("squelch_enabled", False))
@@ -936,7 +954,7 @@ class XyzSDRApp(App):
         self.sub_title = f"{device_label} | {self.tuned_frequency / 1e6:.3f} MHz"
 
         # Inicializar viewport de widgets
-        self._sync_viewport()
+        self._sync_viewport(immediate=True)
         self._update_mode_ui()
         self._set_waterfall_speed(10)  # Establecer velocidad inicial de cascada (10 fps)
 
@@ -1103,10 +1121,8 @@ class XyzSDRApp(App):
 
     # ── Sincronizacion del Viewport ──────────────────────────────────────────
 
-    def _sync_viewport(self) -> None:
-        """Propaga el estado del viewport a los 3 widgets de visualizacion."""
-        vp_t0 = time.perf_counter() if self.debug_mode else 0.0
-
+    def _sync_viewport(self, *, immediate: bool = False) -> None:
+        """Propaga viewport: timeline al instante; espectro/waterfall con debounce."""
         try:
             timeline = self.query_one("#timeline", FrequencyTimeline)
             timeline.viewport_center_hz = self.viewport_center
@@ -1114,6 +1130,28 @@ class XyzSDRApp(App):
             timeline.tuned_freq_hz = self.tuned_frequency
         except Exception:
             pass
+
+        if immediate:
+            if self._viewport_debounce_timer is not None:
+                self._viewport_debounce_timer.stop()
+                self._viewport_debounce_timer = None
+            self._apply_display_viewport()
+            return
+
+        if self._viewport_debounce_timer is None:
+            self._viewport_debounce_timer = self.set_timer(
+                VIEWPORT_DEBOUNCE_S,
+                self._on_viewport_debounce,
+                one_shot=True,
+            )
+
+    def _on_viewport_debounce(self) -> None:
+        self._viewport_debounce_timer = None
+        self._apply_display_viewport()
+
+    def _apply_display_viewport(self) -> None:
+        """Actualiza espectro y waterfall (re-slice desde caché de banda)."""
+        vp_t0 = time.perf_counter() if self.debug_mode else 0.0
 
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
@@ -1207,7 +1245,7 @@ class XyzSDRApp(App):
     def action_center_view(self) -> None:
         """Centra el viewport en la frecuencia sintonizada actual."""
         self.viewport_center = self.tuned_frequency
-        self._sync_viewport()
+        self._sync_viewport(immediate=True)
         self._log("Vista centrada")
 
     # ── RX Start/Stop ────────────────────────────────────────────────────────
@@ -1401,7 +1439,7 @@ class XyzSDRApp(App):
             self._rebuild_zoom_levels()
             self._adapt_viewport_to_bandwidth()
 
-        self._sync_viewport()
+        self._sync_viewport(immediate=True)
         self._refresh_bandwidth_select()
 
         device_str = "SIMULACION" if self._device.is_simulated else self.driver.upper()
@@ -1447,7 +1485,7 @@ class XyzSDRApp(App):
 
             # Reafirmar sintonía por si el driver resetea parámetros
             self._device.set_frequency(self.tuned_frequency)
-            self._sync_viewport()
+            self._sync_viewport(immediate=True)
             self._update_status()
 
             self._log(f"[OK]   Bandwidth: {_format_bandwidth_hz(new_rate)}")

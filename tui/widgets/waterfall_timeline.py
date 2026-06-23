@@ -14,7 +14,7 @@ from textual.widget import Widget
 from textual.reactive import reactive
 from textual import events
 
-from core.band_buffer import BandFrame, slice_band_to_viewport
+from core.band_buffer import BandFrame, slice_band_history_to_viewport
 
 
 WATERFALL_GRADIENT = [
@@ -89,6 +89,9 @@ class WaterfallTimeline(Widget):
         self._last_row_time: float = 0.0
         self._norm_min: float = -80.0
         self._norm_max: float = -20.0
+        self._slice_cache: np.ndarray | None = None
+        self._slice_cache_rows: int = 0
+        self._slice_cache_width: int = 0
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         event.stop()
@@ -110,6 +113,11 @@ class WaterfallTimeline(Widget):
         event.stop()
         self.app.set_focus(None)
 
+    def _effective_max_history(self) -> int:
+        """Limita historial al alto visible + margen para reducir coste al zoom."""
+        visible = max(int(self.size.height), 1)
+        return min(self._max_history, visible + 40)
+
     def add_band_row(self, frame: BandFrame) -> None:
         """Agrega fila desde BandFrame pre-proyectado (throttle por waterfall_speed)."""
         now = time.time()
@@ -122,22 +130,55 @@ class WaterfallTimeline(Widget):
             0,
             _WaterfallRow(frame.center_hz, frame.sample_rate, frame.band_cols),
         )
-        if len(self._history) > self._max_history:
-            self._history.pop()
+        max_rows = self._effective_max_history()
+        if len(self._history) > max_rows:
+            self._history = self._history[:max_rows]
         self._update_normalization()
+        self._rebuild_slice_cache()
         self.refresh()
 
     def clear_history(self) -> None:
         """Invalida historial (p. ej. al cambiar bandwidth)."""
         self._history.clear()
         self._last_row_time = 0.0
+        self._slice_cache = None
         self.refresh()
 
     def set_viewport(self, center_hz: float, span_hz: float) -> None:
-        """Actualiza viewport; re-slicea desde band_cols en render."""
+        """Actualiza viewport y reconstruye caché slice (sin recalcular en render)."""
+        if (
+            abs(self._viewport_center_hz - center_hz) < 0.5
+            and abs(self._visible_span_hz - span_hz) < 0.5
+            and self._slice_cache is not None
+        ):
+            return
+
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
+        self._rebuild_slice_cache()
         self.refresh()
+
+    def _rebuild_slice_cache(self) -> None:
+        width = max(int(self.size.width), 1)
+        height = max(int(self.size.height), 1)
+        rows_to_show = min(len(self._history), height)
+
+        if rows_to_show <= 0 or width < 5:
+            self._slice_cache = None
+            self._slice_cache_rows = 0
+            self._slice_cache_width = 0
+            return
+
+        visible_rows = self._history[:rows_to_show]
+        row_tuples = [(r.center_hz, r.sample_rate, r.band_cols) for r in visible_rows]
+        self._slice_cache = slice_band_history_to_viewport(
+            row_tuples,
+            self._viewport_center_hz,
+            self._visible_span_hz,
+            width,
+        )
+        self._slice_cache_rows = rows_to_show
+        self._slice_cache_width = width
 
     def render(self) -> Text:
         width = self.size.width
@@ -145,15 +186,22 @@ class WaterfallTimeline(Widget):
         if width < 5 or height < 1:
             return Text("...")
 
-        rows_to_show = min(len(self._history), height)
+        if (
+            self._slice_cache is None
+            or self._slice_cache_width != width
+            or self._slice_cache_rows != min(len(self._history), height)
+        ):
+            self._rebuild_slice_cache()
+
+        rows_to_show = self._slice_cache_rows
         rng = self._norm_max - self._norm_min
         if rng <= 0:
             rng = 1.0
 
         result = Text()
         for row_idx in range(height):
-            if row_idx < rows_to_show:
-                line = self._render_row(self._history[row_idx], width, rng)
+            if row_idx < rows_to_show and self._slice_cache is not None:
+                line = self._render_row_from_cache(self._slice_cache[row_idx], width, rng)
             else:
                 line = Text("░" * width, f"#1e1b4b on {NO_DATA_COLOR}")
 
@@ -163,19 +211,10 @@ class WaterfallTimeline(Widget):
 
         return result
 
-    def _render_row(self, row: _WaterfallRow, width: int, rng: float) -> Text:
+    def _render_row_from_cache(self, col_values: np.ndarray, width: int, rng: float) -> Text:
         line = Text()
-        col_values = slice_band_to_viewport(
-            row.band_cols,
-            row.center_hz,
-            row.sample_rate,
-            self._viewport_center_hz,
-            self._visible_span_hz,
-            width,
-        )
-
         for col in range(width):
-            val = col_values[col]
+            val = col_values[col] if col < len(col_values) else np.nan
             if np.isnan(val):
                 line.append("░", f"#1e1b4b on {NO_DATA_COLOR}")
             else:
@@ -185,7 +224,6 @@ class WaterfallTimeline(Widget):
                     len(WATERFALL_GRADIENT) - 1,
                 )
                 line.append(" ", f"on {WATERFALL_GRADIENT[color_idx]}")
-
         return line
 
     def _update_normalization(self) -> None:
