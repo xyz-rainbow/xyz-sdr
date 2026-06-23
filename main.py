@@ -56,75 +56,6 @@ def load_config(path: str) -> dict:
         return {}
 
 
-def print_banner_and_loader():
-    """Muestra un banner ASCII en el centro y una barra de carga animada."""
-    import os
-    import time
-    try:
-        term_size = os.get_terminal_size()
-        width = term_size.columns
-        height = term_size.lines
-    except OSError:
-        width = 80
-        height = 24
-
-    # ANSI terminal colors
-    C_RED = "\033[91m"
-    C_ORANGE = "\033[38;5;208m"
-    C_LIME = "\033[92m"
-    C_CYAN = "\033[96m"
-    C_PURPLE = "\033[95m"
-    C_PINK = "\033[38;5;205m"
-    C_RESET = "\033[0m"
-
-    banner_lines = [
-        "██████╗  ██╗  ██╗ ██╗   ██╗ ███████╗            ███████╗ ██████╗  ██████╗  ██████╗",
-        "██╔═══╝  ╚██╗██╔╝ ╚██╗ ██╔╝ ╚══███╔╝ █████████╗ ██╔════╝ ██╔══██╗ ██╔══██╗ ╚═══██║",
-        "██║       ╚███╔╝   ╚████╔╝     ███╔╝ ╚════════╝ ███████╗ ██║  ██║ ██████╔╝     ██║",
-        "██║       ██╔██╗    ╚██╔╝     ███╔╝  █████████╗ ╚════██║ ██║  ██║ ██╔══██╗     ██║",
-        "██████╗  ██╔╝ ██╗    ██║     ███████╗            ███████║ ██████╔╝ ██║  ██║ ██████║",
-        "╚═════╝  ╚═╝  ╚═╝    ╚═╝     ╚══════╝            ╚══════╝ ╚═════╝  ╚═╝  ╚═╝ ╚═════╝",
-        "─────────────────────────────────────────────────────────────────────────────────────────"
-    ]
-
-    colors = [C_RED, C_ORANGE, C_LIME, C_CYAN, C_PURPLE, C_PINK, C_CYAN]
-
-    # Limpiar pantalla
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-    # Centrado vertical
-    v_padding = max(0, (height - len(banner_lines) - 4) // 2)
-    print("\n" * v_padding, end="")
-
-    # Imprimir banner centrado horizontalmente
-    for line, color in zip(banner_lines, colors):
-        pad = max(0, (width - len(line)) // 2)
-        print(" " * pad + color + line + C_RESET)
-
-    print()
-
-    # Barra de carga animada
-    bar_width = 40
-    # Centrado horizontal de la barra
-    bar_pad = max(0, (width - bar_width - 8) // 2)
-    
-    steps = 20
-    for i in range(steps + 1):
-        percent = int((i / steps) * 100)
-        filled = int((i / steps) * bar_width)
-        empty = bar_width - filled
-        
-        bar_color = "\033[96m" if percent < 50 else "\033[92m"
-        bar = "█" * filled + "░" * empty
-        
-        sys.stdout.write(f"\r" + " " * bar_pad + f"{C_RESET}[{bar_color}{bar}{C_RESET}] {percent:3d}%")
-        sys.stdout.flush()
-        time.sleep(0.06)  # ~1.2 segundos de carga total
-
-    print()
-    time.sleep(0.2)
-
-
 def main():
     args   = parse_args()
     config = load_config(args.config)
@@ -194,6 +125,7 @@ def main():
     # ── Lanzar TUI ─────────────────────────────────────────────────────────
     try:
         from tui.app import XyzSDRApp
+        from tui.splash import print_startup_splash, print_shutdown_splash
         from core.device import HardwareInitializationError
         app = XyzSDRApp(
             driver=driver,
@@ -203,8 +135,9 @@ def main():
             demod_mode=demod_mode,
             config=config,
         )
-        print_banner_and_loader()
+        print_startup_splash()
         app.run()
+        print_shutdown_splash()
     except HardwareInitializationError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -214,6 +147,11 @@ def main():
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Saliendo...")
+        try:
+            from tui.splash import print_shutdown_splash
+            print_shutdown_splash()
+        except Exception:
+            pass
     except Exception as e:
         logger.exception(f"Error fatal: {e}")
         sys.exit(1)

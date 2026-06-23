@@ -173,23 +173,55 @@ class XyzSDRApp(App):
     }
 
     #controls Input {
-        background: #1e1b4b;
+        background: #0b0f19;
         border: round #4338ca;
         color: #e0e7ff;
+        padding: 0 1;
     }
 
     #controls Input:focus {
         border: round #818cf8;
-        background: #2e1065;
+        background: #0b0f19;
     }
 
     #controls Select {
-        border: round #4338ca;
-        background: #1e1b4b;
+        background: #0b0f19;
+        border: none;
+        padding: 0;
+        margin: 0;
+        height: auto;
     }
 
-    #controls Select:focus {
+    #controls Select > SelectCurrent {
+        background: #0b0f19;
+        border: round #4338ca;
+        color: #e0e7ff;
+        padding: 0;
+        width: 100%;
+        height: 3;
+    }
+
+    #controls Select > SelectCurrent Static#label {
+        background: #1e1b4b;
+        height: 1fr;
+        padding: 0 1;
+        content-align: left middle;
+    }
+
+    #controls Select > SelectCurrent .arrow {
+        background: #1e1b4b;
+        height: 1fr;
+        padding: 0 1 0 0;
+        content-align: center middle;
+    }
+
+    #controls Select:focus > SelectCurrent {
         border: round #818cf8;
+    }
+
+    #controls Select:focus > SelectCurrent Static#label,
+    #controls Select:focus > SelectCurrent .arrow {
+        background: #2e1065;
     }
 
     .gain-volume-row {
@@ -199,12 +231,15 @@ class XyzSDRApp(App):
         align: left middle;
         grid-gutter: 1 0;
         margin-bottom: 0;
+        background: transparent;
+        border: none;
+        padding: 0;
     }
 
     .gain-volume-row Select {
         width: 1fr;
         min-width: 0;
-        padding: 0 1;
+        padding: 0;
         margin: 0;
     }
 
@@ -264,6 +299,9 @@ class XyzSDRApp(App):
         margin-top: 1;
         margin-bottom: 0;
         min-height: 9;
+        background: transparent;
+        border: none;
+        padding: 0;
     }
 
     .mode-grid Static {
@@ -271,7 +309,7 @@ class XyzSDRApp(App):
         height: 3;
         padding: 0;
         margin: 0;
-        background: #1e1b4b;
+        background: #0b0f19;
         color: #a5b4fc;
         border: round #4338ca;
         content-align: center middle;
@@ -279,7 +317,7 @@ class XyzSDRApp(App):
     }
 
     .mode-grid Static:hover {
-        background: #312e81;
+        background: #0b0f19;
         color: #e0e7ff;
         border: round #6366f1;
     }
@@ -287,13 +325,13 @@ class XyzSDRApp(App):
     .mode-grid Static.active-mode {
         background: #10b981;
         color: #ffffff;
-        border: round #34d399;
+        border: tall #34d399;
         text-style: bold;
     }
 
     .mode-grid Static.active-mode:hover {
         background: #059669;
-        border: round #6ee7b7;
+        border: tall #6ee7b7;
     }
 
     #display_area {
