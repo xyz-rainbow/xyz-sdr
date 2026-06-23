@@ -25,6 +25,9 @@ env.toml
 
 # Project specific
 scratch/
+recordings/
+*.sigmf-data
+*.sigmf-meta
 *.wav
 *.iq
 *.raw

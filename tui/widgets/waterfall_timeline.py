@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from contextlib import suppress
 from itertools import islice
 
 import numpy as np
@@ -111,8 +112,8 @@ class WaterfallTimeline(Widget):
         self._slice_cache: np.ndarray | None = None
         self._slice_cache_rows: int = 0
         self._slice_cache_width: int = 0
-        self._render_cache: Text | None = None
-        self._render_cache_key: tuple | None = None
+        self._rich_visual_cache: Text | None = None
+        self._rich_visual_cache_key: tuple | None = None
         self._row_text_cache: dict[tuple, Text] = {}
 
     @property
@@ -123,45 +124,64 @@ class WaterfallTimeline(Widget):
         height = max(self._layout_height, int(self.size.height), 1)
         return max(0, len(self._history) - height)
 
-    def scroll_history(self, direction: int) -> bool:
+    def scroll_history(self, direction: int, *, steps: int = 1) -> bool:
         """
         Desplaza la ventana vertical del historial.
 
         direction > 0 → filas más antiguas; direction < 0 → más recientes.
         """
-        prev = self._history_offset
-        self._history_offset = max(
-            0,
-            min(self._max_history_offset(), self._history_offset + direction),
-        )
-        if self._history_offset == prev:
+        if steps < 1:
+            steps = 1
+        moved = False
+        for _ in range(steps):
+            prev = self._history_offset
+            self._history_offset = max(
+                0,
+                min(self._max_history_offset(), self._history_offset + direction),
+            )
+            if self._history_offset != prev:
+                moved = True
+            else:
+                break
+
+        if not moved:
             return False
+
         self._rebuild_slice_cache()
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()
         self.refresh()
         return True
 
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+    @staticmethod
+    def _wheel_steps(event: events.MouseEvent) -> int:
+        delta_y = getattr(event, "delta_y", 0)
+        if delta_y == 0:
+            return 1
+        return max(1, abs(int(delta_y)))
+
+    def _handle_wheel(self, event: events.MouseEvent, *, scroll_up: bool) -> None:
+        """Rueda en cascada: Shift+scroll = historial vertical; Ctrl+scroll = zoom horizontal."""
         event.stop()
-        if event.shift:
-            self.scroll_history(-1)
-            return
-        from tui.widgets.frequency_timeline import FrequencyTimeline
+        with suppress(Exception):
+            event.prevent_default()
+
         if event.ctrl:
-            self.post_message(FrequencyTimeline.ZoomRequest(direction=-1))
-        else:
-            self.post_message(FrequencyTimeline.ScrollRequest(direction=1))
+            from tui.widgets.frequency_timeline import FrequencyTimeline
+            zoom_dir = -1 if scroll_up else 1
+            self.post_message(FrequencyTimeline.ZoomRequest(direction=zoom_dir))
+            return
+
+        # Historial vertical: Shift+rueda, o rueda sin Ctrl (fallback si el terminal no reporta Shift).
+        history_dir = -1 if scroll_up else 1
+        steps = self._wheel_steps(event)
+        if self.scroll_history(history_dir, steps=steps):
+            self.post_message(self.HistoryScrollRequest(history_dir))
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._handle_wheel(event, scroll_up=True)
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        event.stop()
-        if event.shift:
-            self.scroll_history(1)
-            return
-        from tui.widgets.frequency_timeline import FrequencyTimeline
-        if event.ctrl:
-            self.post_message(FrequencyTimeline.ZoomRequest(direction=1))
-        else:
-            self.post_message(FrequencyTimeline.ScrollRequest(direction=-1))
+        self._handle_wheel(event, scroll_up=False)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         event.stop()
@@ -171,11 +191,11 @@ class WaterfallTimeline(Widget):
         self._layout_height = max(int(self.size.height), 1)
         self._ensure_history_maxlen()
         self._history_offset = min(self._history_offset, self._max_history_offset())
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()
 
-    def _invalidate_render_cache(self) -> None:
-        self._render_cache = None
-        self._render_cache_key = None
+    def _invalidate_rich_cache(self) -> None:
+        self._rich_visual_cache = None
+        self._rich_visual_cache_key = None
         self._row_text_cache.clear()
 
     def _effective_max_history(self) -> int:
@@ -211,7 +231,7 @@ class WaterfallTimeline(Widget):
         else:
             self._rebuild_slice_cache()
 
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()
         self.refresh()
 
     def _prepend_slice_row(self, frame: BandFrame) -> None:
@@ -250,11 +270,11 @@ class WaterfallTimeline(Widget):
         self._history_offset = 0
         self._last_row_time = 0.0
         self._slice_cache = None
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()
         self.refresh()
 
     def set_viewport(self, center_hz: float, span_hz: float) -> None:
-        """Actualiza viewport y reconstruye caché slice (sin recalcular en render)."""
+        """Actualiza viewport horizontal (zoom freq). No altera el offset vertical del historial."""
         if (
             abs(self._viewport_center_hz - center_hz) < 0.5
             and abs(self._visible_span_hz - span_hz) < 0.5
@@ -265,7 +285,7 @@ class WaterfallTimeline(Widget):
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
         self._rebuild_slice_cache()
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()
         self.refresh()
 
     def _history_rows_for_viewport(self, rows_to_show: int) -> list[_WaterfallRow]:
@@ -319,8 +339,8 @@ class WaterfallTimeline(Widget):
             self._slice_cache_rows,
             self._history_offset,
         )
-        if self._render_cache is not None and cache_key == self._render_cache_key:
-            return self._render_cache
+        if self._rich_visual_cache is not None and cache_key == self._rich_visual_cache_key:
+            return self._rich_visual_cache
 
         rows_to_show = self._slice_cache_rows
         rng = self._norm_max - self._norm_min
@@ -339,8 +359,8 @@ class WaterfallTimeline(Widget):
             if row_idx < height - 1:
                 result.append("\n")
 
-        self._render_cache = result
-        self._render_cache_key = cache_key
+        self._rich_visual_cache = result
+        self._rich_visual_cache_key = cache_key
         return result
 
     def _row_cache_key(self, col_values: np.ndarray, width: int, rng: float) -> tuple:
@@ -388,4 +408,4 @@ class WaterfallTimeline(Widget):
         self._norm_min = float(np.percentile(all_vals, 5))
         self._norm_max = float(np.percentile(all_vals, 99))
         self._norm_last_update = now
-        self._invalidate_render_cache()
+        self._invalidate_rich_cache()

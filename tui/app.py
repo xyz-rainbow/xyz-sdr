@@ -6,6 +6,7 @@ v2: Timeline + Espectro + Waterfall con navegacion por teclado.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -153,6 +154,8 @@ class StatusBar(Static):
         text.append(" Rec ", dim)
         text.append("Shift+Wheel", key)
         text.append(" WF hist ", dim)
+        text.append("Ctrl+Wheel", key)
+        text.append(" WF zoom ", dim)
         text.append("Q", key)
         text.append(" Salir", dim)
 
@@ -753,6 +756,7 @@ class XyzSDRApp(App):
         width: 1fr;
         height: 100%;
         min-height: 0;
+        overflow: hidden;
         background: #090d16;
         border: round #6366f1;
         border-right: none;
@@ -1055,6 +1059,7 @@ class XyzSDRApp(App):
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
         self._update_status()
         self.call_after_refresh(self._update_display_width)
+        self.call_after_refresh(self._debug_speed_layout)
 
         display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
         self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
@@ -1158,6 +1163,67 @@ class XyzSDRApp(App):
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_display_width()
+        self.call_after_refresh(self._debug_speed_layout)
+
+    def _debug_speed_layout(self, run_id: str = "pre-fix") -> None:
+        """#region agent log — speed column layout metrics for debug session d7a07f."""
+        log_path = Path(__file__).resolve().parents[1] / "debug-d7a07f.log"
+
+        def _region(r) -> dict:
+            return {"x": r.x, "y": r.y, "w": r.width, "h": r.height}
+
+        try:
+            bar = self.query_one("#waterfall_speed_bar")
+            btn = self.query_one("#btn_spd_1", Button)
+            area = self.query_one("#waterfall_area")
+            wf = self.query_one("#waterfall")
+            stack = bar.query_one(".speed-btn-stack")
+            bar_r = bar.region
+            btn_r = btn.region
+            bar_right = bar_r.x + bar_r.width
+            btn_right = btn_r.x + btn_r.width
+            overflow_px = btn_right - bar_right
+            entry = {
+                "sessionId": "d7a07f",
+                "runId": run_id,
+                "hypothesisId": "A-E",
+                "location": "tui/app.py:_debug_speed_layout",
+                "message": "speed column layout metrics",
+                "timestamp": int(time.time() * 1000),
+                "data": {
+                    "H_A_offset_x": bar.styles.offset[0] if bar.styles.offset else 0,
+                    "H_B_overflow_x_hidden": True,
+                    "H_C_bar_width_cells": bar.size.width,
+                    "H_D_bar_padding": [bar.styles.padding_top, bar.styles.padding_right, bar.styles.padding_bottom, bar.styles.padding_left],
+                    "H_E_btn_box_sizing": "content-box",
+                    "bar_size": {"w": bar.size.width, "h": bar.size.height},
+                    "bar_region": _region(bar_r),
+                    "bar_content_region": _region(bar.content_region),
+                    "btn_size": {"w": btn.size.width, "h": btn.size.height},
+                    "btn_region": _region(btn_r),
+                    "btn_outer_size": {"w": btn.outer_size.width, "h": btn.outer_size.height},
+                    "stack_size": {"w": stack.size.width, "h": stack.size.height},
+                    "area_size": {"w": area.size.width, "h": area.size.height},
+                    "wf_size": {"w": wf.size.width, "h": wf.size.height},
+                    "btn_overflow_right_cells": overflow_px,
+                    "btn_left_gap_in_bar": btn_r.x - bar_r.x,
+                },
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as exc:
+            err = {
+                "sessionId": "d7a07f",
+                "runId": run_id,
+                "hypothesisId": "A-E",
+                "location": "tui/app.py:_debug_speed_layout",
+                "message": "speed layout probe failed",
+                "timestamp": int(time.time() * 1000),
+                "data": {"error": str(exc)},
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(err) + "\n")
+        # #endregion
 
     def _update_display_width(self) -> None:
         """Ancho de referencia; re-slicea espectro al redimensionar terminal."""
@@ -1845,6 +1911,15 @@ class XyzSDRApp(App):
         self.viewport_center = self.tuned_frequency
         self._apply_tuning()
         self._log(f"Sintonizado: {self.tuned_frequency / 1e6:.4f} MHz")
+
+    def on_waterfall_timeline_history_scroll_request(
+        self, message: WaterfallTimeline.HistoryScrollRequest
+    ) -> None:
+        try:
+            wf = self.query_one("#waterfall", WaterfallTimeline)
+            self._log(f"Waterfall hist: offset {wf.history_offset}")
+        except Exception:
+            pass
 
     def on_frequency_timeline_zoom_request(self, message: FrequencyTimeline.ZoomRequest) -> None:
         if message.direction > 0:

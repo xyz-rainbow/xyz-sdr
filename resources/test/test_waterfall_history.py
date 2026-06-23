@@ -119,11 +119,23 @@ def test_history_scroll_offset_shows_older_rows(mock_size, flat_band_cols):
         cols = flat_band_cols + float(idx)
         widget._history.appendleft(_WaterfallRow(100e6, 500e3, cols))
 
-    assert widget.scroll_history(1)
-    assert widget.history_offset == 1
+    assert widget.scroll_history(1, steps=2)
+    assert widget.history_offset == 2
     widget._rebuild_slice_cache()
     assert widget._slice_cache is not None
     assert widget._slice_cache_rows == 5
+
+
+def test_scroll_history_multi_step_stops_at_end(flat_band_cols):
+    from tui.widgets.waterfall_timeline import _WaterfallRow
+
+    widget = WaterfallTimeline(max_history=50, history_buffer_ratio=0.0)
+    widget._layout_height = 5
+    for _ in range(7):
+        widget._history.appendleft(_WaterfallRow(100e6, 500e3, flat_band_cols))
+
+    assert widget.scroll_history(1, steps=10)
+    assert widget.history_offset == widget._max_history_offset()
 
 
 def test_batch_slice_not_slower_than_linear_threshold(flat_band_cols):
