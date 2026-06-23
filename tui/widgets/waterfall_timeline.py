@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from itertools import islice
 
 import numpy as np
 from rich.text import Text
@@ -226,7 +227,7 @@ class WaterfallTimeline(Widget):
             self._slice_cache_width = 0
             return
 
-        visible_rows = self._history[:rows_to_show]
+        visible_rows = list(islice(self._history, rows_to_show))
         row_tuples = [(r.center_hz, r.sample_rate, r.band_cols) for r in visible_rows]
         self._slice_cache = slice_band_history_to_viewport(
             row_tuples,

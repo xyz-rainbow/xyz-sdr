@@ -19,6 +19,9 @@ rich>=13               # Estilos y colores en terminal
 tomli>=2.0; python_version < "3.11"   # TOML parser (Python < 3.11)
 # tomllib es built-in desde Python 3.11
 
+# ─── Tests (dev) ─────────────────────────────────────────────────────────────
+pytest>=7.0
+
 # ─── IA — Transcripción (opcional) ──────────────────────────────────────────
 faster-whisper>=1.0    # Whisper optimizado para CPU/GPU
 
