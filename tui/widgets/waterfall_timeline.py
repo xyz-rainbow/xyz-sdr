@@ -80,10 +80,16 @@ class WaterfallTimeline(Widget):
     visible_span_hz: reactive[float] = reactive(2_048_000.0)
     waterfall_speed: reactive[int] = reactive(10)
 
-    def __init__(self, max_history: int = 200, **kwargs):
+    def __init__(
+        self,
+        max_history: int = 100,
+        history_buffer_ratio: float = 2 / 3,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._history: list[_WaterfallRow] = []
-        self._max_history = max_history
+        self._max_history = max(1, int(max_history))
+        self._history_buffer_ratio = max(0.0, float(history_buffer_ratio))
         self._viewport_center_hz: float = 100_600_000.0
         self._visible_span_hz: float = 2_048_000.0
         self._last_row_time: float = 0.0
@@ -114,9 +120,11 @@ class WaterfallTimeline(Widget):
         self.app.set_focus(None)
 
     def _effective_max_history(self) -> int:
-        """Limita historial al alto visible + margen para reducir coste al zoom."""
+        """Tope dinámico: visible + buffer (p. ej. 2/3), acotado por max_history del config."""
         visible = max(int(self.size.height), 1)
-        return min(self._max_history, visible + 40)
+        buffer_rows = max(1, int(visible * self._history_buffer_ratio))
+        dynamic_cap = visible + buffer_rows
+        return min(self._max_history, dynamic_cap)
 
     def add_band_row(self, frame: BandFrame) -> None:
         """Agrega fila desde BandFrame pre-proyectado (throttle por waterfall_speed)."""

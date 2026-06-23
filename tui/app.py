@@ -595,7 +595,7 @@ class XyzSDRApp(App):
     }
 
     #waterfall_speed_bar {
-        width: 7;
+        width: 6;
         height: 100%;
         min-height: 0;
         background: transparent;
@@ -604,8 +604,9 @@ class XyzSDRApp(App):
         overflow-y: auto;
         overflow-x: hidden;
         scrollbar-size: 0 0;
-        padding: 0 1;
+        padding: 0;
         margin: 0;
+        offset-x: -1;
     }
 
     #waterfall_speed_bar .speed-btn-stack {
@@ -615,7 +616,7 @@ class XyzSDRApp(App):
         grid-gutter: 0 0;
         padding: 0;
         margin: 0;
-        align: center top;
+        align: left top;
     }
 
     #waterfall_speed_bar Button.spd-btn {
@@ -707,16 +708,19 @@ class XyzSDRApp(App):
     WaterfallTimeline {
         width: 1fr;
         height: 100%;
+        min-height: 0;
         background: #090d16;
         border: round #6366f1;
         border-right: none;
     }
 
     #log_panel {
+        width: 100%;
         border: round #38bdf8;
         background: #0f172a;
         height: 5;
         padding: 0 1;
+        margin-bottom: 0;
     }
 
     StatusBar {
@@ -860,6 +864,10 @@ class XyzSDRApp(App):
     # ── Layout ───────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
+        display_cfg = self.config.get("display", {})
+        waterfall_max_history = int(display_cfg.get("waterfall_history", 100))
+        waterfall_buffer_ratio = float(display_cfg.get("waterfall_history_buffer_ratio", 2 / 3))
+
         yield Header()
 
         with Horizontal(id="main_area"):
@@ -913,7 +921,11 @@ class XyzSDRApp(App):
                 yield FrequencyTimeline(id="timeline")
                 yield SpectrumGraph(id="spectrum")
                 with Horizontal(id="waterfall_area"):
-                    yield WaterfallTimeline(id="waterfall")
+                    yield WaterfallTimeline(
+                        id="waterfall",
+                        max_history=waterfall_max_history,
+                        history_buffer_ratio=waterfall_buffer_ratio,
+                    )
                     with VerticalScroll(id="waterfall_speed_bar", can_focus=True):
                         with VerticalGroup(classes="speed-btn-stack"):
                             for i, spd in enumerate(WATERFALL_SPEEDS):
