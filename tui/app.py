@@ -642,7 +642,7 @@ class XyzSDRApp(App):
     }
 
     #waterfall_speed_bar {
-        width: 6;
+        width: 7;
         height: 100%;
         min-height: 0;
         background: transparent;
@@ -653,7 +653,6 @@ class XyzSDRApp(App):
         scrollbar-size: 0 0;
         padding: 0;
         margin: 0;
-        offset-x: -1;
     }
 
     #waterfall_speed_bar .speed-btn-stack {
@@ -668,22 +667,18 @@ class XyzSDRApp(App):
 
     #waterfall_speed_bar Button.spd-btn {
         width: 100%;
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
         min-width: 0;
         margin: 0;
         padding: 0;
-        text-style: bold;
+        text-style: none;
         text-align: center;
         content-align: center middle;
-        box-sizing: content-box;
+        box-sizing: border-box;
         background: #090d16;
         border: round #4338ca;
-        border-top: round #4338ca;
-        border-bottom: round #4338ca;
-        border-left: round #4338ca;
-        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-btn:hover,
@@ -693,48 +688,28 @@ class XyzSDRApp(App):
         background: #090d16;
         background-tint: transparent;
         border: round #4338ca;
-        border-top: round #4338ca;
-        border-bottom: round #4338ca;
-        border-left: round #4338ca;
-        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-a {
         color: #818cf8;
         border: round #4338ca;
-        border-top: round #4338ca;
-        border-bottom: round #4338ca;
-        border-left: round #4338ca;
-        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-b {
         color: #c084fc;
         border: round #6d28d9;
-        border-top: round #6d28d9;
-        border-bottom: round #6d28d9;
-        border-left: round #6d28d9;
-        border-right: round #6d28d9;
     }
 
     #waterfall_speed_bar Button.spd-a:hover,
     #waterfall_speed_bar Button.spd-a:focus {
         color: #818cf8;
         border: round #4338ca;
-        border-top: round #4338ca;
-        border-bottom: round #4338ca;
-        border-left: round #4338ca;
-        border-right: round #4338ca;
     }
 
     #waterfall_speed_bar Button.spd-b:hover,
     #waterfall_speed_bar Button.spd-b:focus {
         color: #c084fc;
         border: round #6d28d9;
-        border-top: round #6d28d9;
-        border-bottom: round #6d28d9;
-        border-left: round #6d28d9;
-        border-right: round #6d28d9;
     }
 
     #waterfall_speed_bar Button.spd-btn.active-spd,
@@ -746,10 +721,6 @@ class XyzSDRApp(App):
         background-tint: transparent;
         color: #a3e635;
         border: round #10b981;
-        border-top: round #10b981;
-        border-bottom: round #10b981;
-        border-left: round #10b981;
-        border-right: round #10b981;
     }
 
     WaterfallTimeline {
@@ -1175,6 +1146,7 @@ class XyzSDRApp(App):
         try:
             bar = self.query_one("#waterfall_speed_bar")
             btn = self.query_one("#btn_spd_1", Button)
+            btn50 = self.query_one("#btn_spd_50", Button)
             area = self.query_one("#waterfall_area")
             wf = self.query_one("#waterfall")
             stack = bar.query_one(".speed-btn-stack")
@@ -1194,8 +1166,13 @@ class XyzSDRApp(App):
                     "H_A_offset_x": bar.styles.offset[0] if bar.styles.offset else 0,
                     "H_B_overflow_x_hidden": True,
                     "H_C_bar_width_cells": bar.size.width,
-                    "H_D_bar_padding": [bar.styles.padding_top, bar.styles.padding_right, bar.styles.padding_bottom, bar.styles.padding_left],
-                    "H_E_btn_box_sizing": "content-box",
+                    "H_D_bar_padding": {
+                        "top": bar.styles.padding.top,
+                        "right": bar.styles.padding.right,
+                        "bottom": bar.styles.padding.bottom,
+                        "left": bar.styles.padding.left,
+                    },
+                    "H_E_btn_box_sizing": "border-box",
                     "bar_size": {"w": bar.size.width, "h": bar.size.height},
                     "bar_region": _region(bar_r),
                     "bar_content_region": _region(bar.content_region),
@@ -1205,8 +1182,13 @@ class XyzSDRApp(App):
                     "stack_size": {"w": stack.size.width, "h": stack.size.height},
                     "area_size": {"w": area.size.width, "h": area.size.height},
                     "wf_size": {"w": wf.size.width, "h": wf.size.height},
+                    "btn50_size": {"w": btn50.size.width, "h": btn50.size.height},
+                    "btn50_region": _region(btn50.region),
+                    "btn50_outer_size": {"w": btn50.outer_size.width, "h": btn50.outer_size.height},
                     "btn_overflow_right_cells": overflow_px,
                     "btn_left_gap_in_bar": btn_r.x - bar_r.x,
+                    "H_F_border_sides": "round",
+                    "btn50_fits_2digit": btn50.size.width >= 2,
                 },
             }
             with open(log_path, "a", encoding="utf-8") as f:

@@ -19,6 +19,7 @@ from textual.message import Message
 from textual import events
 
 from core.band_buffer import BandFrame, slice_band_history_to_viewport, slice_band_to_viewport
+from core.input_modifiers import is_shift_pressed
 
 
 WATERFALL_GRADIENT = [
@@ -117,11 +118,38 @@ class WaterfallTimeline(Widget):
         self._row_text_cache: dict[tuple, Text] = {}
 
     @property
+    def allow_vertical_scroll(self) -> bool:
+        """Evita que Textual consuma Shift+rueda como scroll nativo del widget."""
+        return False
+
+    @property
+    def allow_horizontal_scroll(self) -> bool:
+        return False
+
+    def _view_width(self) -> int:
+        try:
+            width = int(self.content_region.width)
+            if width > 0:
+                return width
+        except Exception:
+            pass
+        return max(int(self.size.width) - 2, 1)
+
+    def _view_height(self) -> int:
+        try:
+            height = int(self.content_region.height)
+            if height > 0:
+                return height
+        except Exception:
+            pass
+        return max(int(self.size.height) - 2, 1)
+
+    @property
     def history_offset(self) -> int:
         return self._history_offset
 
     def _max_history_offset(self) -> int:
-        height = max(self._layout_height, int(self.size.height), 1)
+        height = max(self._layout_height, self._view_height(), 1)
         return max(0, len(self._history) - height)
 
     def scroll_history(self, direction: int, *, steps: int = 1) -> bool:
@@ -171,16 +199,21 @@ class WaterfallTimeline(Widget):
             self.post_message(FrequencyTimeline.ZoomRequest(direction=zoom_dir))
             return
 
-        # Historial vertical: Shift+rueda, o rueda sin Ctrl (fallback si el terminal no reporta Shift).
-        history_dir = -1 if scroll_up else 1
-        steps = self._wheel_steps(event)
-        if self.scroll_history(history_dir, steps=steps):
-            self.post_message(self.HistoryScrollRequest(history_dir))
+        if is_shift_pressed(event_shift=event.shift):
+            history_dir = -1 if scroll_up else 1
+            steps = self._wheel_steps(event)
+            if self.scroll_history(history_dir, steps=steps):
+                self.post_message(self.HistoryScrollRequest(history_dir))
+            return
 
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        from tui.widgets.frequency_timeline import FrequencyTimeline
+        freq_dir = 1 if scroll_up else -1
+        self.post_message(FrequencyTimeline.ScrollRequest(direction=freq_dir))
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         self._handle_wheel(event, scroll_up=True)
 
-    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         self._handle_wheel(event, scroll_up=False)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -188,7 +221,7 @@ class WaterfallTimeline(Widget):
         self.app.set_focus(None)
 
     def on_resize(self, event: events.Resize) -> None:
-        self._layout_height = max(int(self.size.height), 1)
+        self._layout_height = max(self._view_height(), 1)
         self._ensure_history_maxlen()
         self._history_offset = min(self._history_offset, self._max_history_offset())
         self._invalidate_rich_cache()
@@ -199,11 +232,8 @@ class WaterfallTimeline(Widget):
         self._row_text_cache.clear()
 
     def _effective_max_history(self) -> int:
-        """Tope dinámico: visible + buffer (p. ej. 2/3), acotado por max_history del config."""
-        visible = max(self._layout_height, int(self.size.height), 1)
-        buffer_rows = max(1, int(visible * self._history_buffer_ratio))
-        dynamic_cap = visible + buffer_rows
-        return min(self._max_history, dynamic_cap)
+        """Tope de filas en memoria — usa waterfall_history del config para scroll."""
+        return self._max_history
 
     def _ensure_history_maxlen(self) -> None:
         maxlen = self._effective_max_history()
@@ -236,8 +266,8 @@ class WaterfallTimeline(Widget):
 
     def _prepend_slice_row(self, frame: BandFrame) -> None:
         """Actualiza caché slice en O(ancho) en lugar de re-slicear todo el historial."""
-        width = max(int(self.size.width), 1)
-        height = max(int(self.size.height), 1)
+        width = self._view_width()
+        height = self._view_height()
         if width < 5 or height < 1:
             return
 
@@ -294,8 +324,8 @@ class WaterfallTimeline(Widget):
         )
 
     def _rebuild_slice_cache(self) -> None:
-        width = max(int(self.size.width), 1)
-        height = max(int(self.size.height), 1)
+        width = self._view_width()
+        height = self._view_height()
         available = max(0, len(self._history) - self._history_offset)
         rows_to_show = min(available, height)
 
@@ -317,8 +347,8 @@ class WaterfallTimeline(Widget):
         self._slice_cache_width = width
 
     def render(self) -> Text:
-        width = self.size.width
-        height = self.size.height
+        width = self._view_width()
+        height = self._view_height()
         if width < 5 or height < 1:
             return Text("...")
 
@@ -399,7 +429,7 @@ class WaterfallTimeline(Widget):
         if now - self._norm_last_update < 0.5:
             return
 
-        height = max(self._layout_height, int(self.size.height), 1)
+        height = max(self._layout_height, self._view_height(), 1)
         visible = self._history_rows_for_viewport(min(len(self._history), height))
         if not visible:
             return

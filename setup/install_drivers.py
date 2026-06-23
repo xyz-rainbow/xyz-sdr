@@ -56,6 +56,8 @@ T = {
         "running_installer": "Ejecutando instalador (acepta los permisos de administrador)...",
         "install_success": "Instalación completada con éxito.",
         "install_fail": "Error durante el proceso de instalación/descarga.",
+        "install_elevation_cancelled": "Instalación cancelada: se rechazaron los permisos de administrador (UAC).",
+        "install_elevation_hint": "Consejo: acepta el aviso UAC cuando aparezca, o ejecuta install_drivers.bat como administrador.",
         "path_success": "Ruta añadida con éxito: {}",
         "path_already": "Las rutas ya se encuentran configuradas en el PATH del usuario.",
         "path_fail": "No se pudo configurar el PATH de manera automática: {}",
@@ -92,6 +94,8 @@ T = {
         "running_installer": "Running installer (please grant administrator privileges)...",
         "install_success": "Installation completed successfully.",
         "install_fail": "Error during the installation/download process.",
+        "install_elevation_cancelled": "Installation cancelled: administrator privileges (UAC) were denied.",
+        "install_elevation_hint": "Tip: accept the UAC prompt when it appears, or run install_drivers.bat as Administrator.",
         "path_success": "PATH successfully updated: {}",
         "path_already": "The paths are already configured in the user PATH.",
         "path_fail": "Could not configure PATH automatically: {}",
@@ -221,6 +225,110 @@ def download_file(url, filepath, label):
         print(f"  [XX] Error: {e}\n")
         return False
 
+def _is_windows_admin() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def run_exe_installer(installer_path: str) -> None:
+    """
+    Ejecuta un instalador .exe en Windows.
+
+    PothosSDR y SDRplay requieren elevación; si el proceso actual no es admin,
+    se lanza ShellExecuteEx con verbo runas (UAC) y se espera a que termine.
+    """
+    installer_path = os.path.abspath(installer_path)
+    if not os.path.isfile(installer_path):
+        raise FileNotFoundError(installer_path)
+
+    if os.name != "nt":
+        subprocess.run([installer_path], check=True)
+        return
+
+    if _is_windows_admin():
+        subprocess.run([installer_path], check=True)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SW_SHOWNORMAL = 1
+    INFINITE = 0xFFFFFFFF
+    ERROR_CANCELLED = 1223
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    sei = SHELLEXECUTEINFOW()
+    sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFOW)
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS
+    sei.lpVerb = "runas"
+    sei.lpFile = installer_path
+    sei.nShow = SW_SHOWNORMAL
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+        err = ctypes.windll.kernel32.GetLastError()
+        if err == ERROR_CANCELLED:
+            raise PermissionError("UAC cancelled")
+        raise OSError(err, ctypes.FormatError(err))
+
+    if not sei.hProcess:
+        return
+
+    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, INFINITE)
+    exit_code = wintypes.DWORD()
+    ctypes.windll.kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code))
+    ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+
+    if exit_code.value != 0:
+        raise subprocess.CalledProcessError(exit_code.value, installer_path)
+
+
+def _report_install_error(exc: Exception) -> None:
+    lang = CURRENT_LANG
+    if isinstance(exc, PermissionError):
+        print(f"\n{C_ORANGE}[CANCELLED] {T[lang]['install_elevation_cancelled']}{C_RESET}")
+        print(f"  {T[lang]['install_elevation_hint']}")
+        return
+    print(f"\n{C_RED}[ERROR] {T[lang]['install_fail']}: {exc}{C_RESET}")
+    if os.name == "nt" and getattr(exc, "winerror", None) == 740:
+        print(f"  {T[lang]['install_elevation_hint']}")
+
+def _notify_path_environment_changed(user_path: str) -> None:
+    """Aplica PATH en este proceso y avisa al shell sin bloquear."""
+    os.environ["PATH"] = user_path
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        # SendMessageW(BROADCAST) puede colgar si alguna ventana no responde; PostMessage no espera.
+        ctypes.windll.user32.PostMessageW(0xFFFF, 0x001A, 0, "Environment")
+    except Exception:
+        pass
+
+
 def configure_path():
     if os.name != 'nt':
         return False, "OS incompatible"
@@ -233,6 +341,7 @@ def configure_path():
     if not valid_paths:
         return False, "No physical installation directory found"
     
+    key = None
     try:
         import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS)
@@ -252,18 +361,19 @@ def configure_path():
         if updated:
             new_path = ";".join(path_list)
             winreg.SetValueEx(key, "Path", 0, winreg.REG_SZ, new_path)
-            try:
-                import ctypes
-                HWND_BROADCAST = 0xFFFF
-                WM_SETTINGCHANGE = 0x001A
-                ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment")
-            except Exception:
-                pass
+            _notify_path_environment_changed(new_path)
             return True, valid_paths
-        else:
-            return True, None
+        _notify_path_environment_changed(current_path)
+        return True, None
     except Exception as e:
         return False, str(e)
+    finally:
+        if key is not None:
+            try:
+                import winreg
+                winreg.CloseKey(key)
+            except Exception:
+                pass
 
 # --- Impresión del Banner y Menú ---
 def print_banner():
@@ -344,10 +454,10 @@ def main():
             if download_file(sdrplay_url, sdrplay_file, "SDRplay API"):
                 print(f"  {T[CURRENT_LANG]['running_installer']}")
                 try:
-                    subprocess.run([sdrplay_file], check=True)
+                    run_exe_installer(sdrplay_file)
                     print(f"\n{C_LIME}[SUCCESS] {T[CURRENT_LANG]['install_success']}{C_RESET}")
                 except Exception as e:
-                    print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}: {e}{C_RESET}")
+                    _report_install_error(e)
             else:
                 print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}{C_RESET}")
             input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
@@ -360,7 +470,7 @@ def main():
             if download_file(pothos_url, pothos_file, "PothosSDR"):
                 print(f"  {T[CURRENT_LANG]['running_installer']}")
                 try:
-                    subprocess.run([pothos_file], check=True)
+                    run_exe_installer(pothos_file)
                     print(f"\n{C_LIME}[SUCCESS] {T[CURRENT_LANG]['install_success']}{C_RESET}")
                     
                     # Configurar PATH automáticamente
@@ -374,7 +484,7 @@ def main():
                     else:
                         print(f"  {C_RED}[ERROR] {T[CURRENT_LANG]['path_fail'].format(info_path)}{C_RESET}")
                 except Exception as e:
-                    print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}: {e}{C_RESET}")
+                    _report_install_error(e)
             else:
                 print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}{C_RESET}")
                 print(f"\n{C_ORANGE}  Consejo / Tip: Si no se pudo descargar, bájalo manualmente de:")

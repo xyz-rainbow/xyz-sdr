@@ -12,10 +12,10 @@ from core.band_buffer import BandFrame, slice_band_to_viewport
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 
 
-def test_effective_max_history_formula():
+def test_effective_max_history_uses_config_cap():
     widget = WaterfallTimeline(max_history=100, history_buffer_ratio=2 / 3)
     widget._layout_height = 30
-    assert widget._effective_max_history() == min(100, 30 + 20)
+    assert widget._effective_max_history() == 100
 
 
 def test_effective_max_history_respects_toml_cap():
@@ -46,12 +46,19 @@ def _widget_with_size(max_history=50, buffer_ratio=0.5, width=120, height=10):
     return widget, SimpleNamespace(width=width, height=height)
 
 
+def _patch_geometry(mock_size, mock_region, fake_size):
+    """Simula content_region (área útil) y size del widget."""
+    mock_region.return_value = fake_size
+    mock_size.return_value = fake_size
+
+
+@patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_prepend_slice_row_updates_cache_shape(mock_size, flat_band_cols):
+def test_prepend_slice_row_updates_cache_shape(mock_size, mock_region, flat_band_cols):
     from tui.widgets.waterfall_timeline import _WaterfallRow
 
     widget, fake_size = _widget_with_size()
-    mock_size.return_value = fake_size
+    _patch_geometry(mock_size, mock_region, fake_size)
     widget._viewport_center_hz = 100e6
     widget._visible_span_hz = 200e3
 
@@ -67,10 +74,11 @@ def test_prepend_slice_row_updates_cache_shape(mock_size, flat_band_cols):
     assert widget._slice_cache_rows >= 1
 
 
+@patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_prepend_slice_row_shift_preserves_width(mock_size, flat_band_cols):
+def test_prepend_slice_row_shift_preserves_width(mock_size, mock_region, flat_band_cols):
     widget, fake_size = _widget_with_size(height=8)
-    mock_size.return_value = fake_size
+    _patch_geometry(mock_size, mock_region, fake_size)
     widget._viewport_center_hz = 100e6
     widget._visible_span_hz = 500e3
 
@@ -106,12 +114,13 @@ def test_history_memory_bounded(flat_band_cols):
     assert len(widget._history) <= cap
 
 
+@patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_history_scroll_offset_shows_older_rows(mock_size, flat_band_cols):
+def test_history_scroll_offset_shows_older_rows(mock_size, mock_region, flat_band_cols):
     from tui.widgets.waterfall_timeline import _WaterfallRow
 
     widget, fake_size = _widget_with_size(height=5, max_history=50)
-    mock_size.return_value = fake_size
+    _patch_geometry(mock_size, mock_region, fake_size)
     widget._viewport_center_hz = 100e6
     widget._visible_span_hz = 500e3
 
@@ -136,6 +145,23 @@ def test_scroll_history_multi_step_stops_at_end(flat_band_cols):
 
     assert widget.scroll_history(1, steps=10)
     assert widget.history_offset == widget._max_history_offset()
+
+
+@patch("tui.widgets.waterfall_timeline.is_shift_pressed", return_value=True)
+def test_handle_wheel_shift_scrolls_history(mock_shift, flat_band_cols):
+    from textual.events import MouseScrollDown
+    from tui.widgets.waterfall_timeline import _WaterfallRow
+
+    widget = WaterfallTimeline(max_history=50)
+    widget._layout_height = 5
+    for _ in range(12):
+        widget._history.appendleft(_WaterfallRow(100e6, 500e3, flat_band_cols))
+
+    event = MouseScrollDown(None, 0, 0, 0, -1, 0, False, False, False)
+    widget._handle_wheel(event, scroll_up=False)
+
+    assert widget.history_offset > 0
+    mock_shift.assert_called_once()
 
 
 def test_batch_slice_not_slower_than_linear_threshold(flat_band_cols):
