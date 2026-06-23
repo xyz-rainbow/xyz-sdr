@@ -1,0 +1,27 @@
+# xyz-sdr — Dependencias Python
+# Instala con: pip install -r requirements.txt
+# O con uv:   uv pip install -r requirements.txt --system
+
+# ─── Core SDR ────────────────────────────────────────────────────────────────
+SoapySDR               # Abstracción hardware SDR (requiere PothosSDR instalado)
+numpy>=1.24            # Operaciones numéricas / IQ data
+scipy>=1.10            # Filtros, FFT, procesado de señal
+
+# ─── Audio ───────────────────────────────────────────────────────────────────
+sounddevice>=0.4.6     # Reproducción de audio demodulado
+soundfile>=0.12        # Lectura/escritura de archivos de audio
+
+# ─── TUI (Terminal UI) ───────────────────────────────────────────────────────
+textual>=0.60          # Framework TUI moderno (Textual)
+rich>=13               # Estilos y colores en terminal
+
+# ─── Configuración ───────────────────────────────────────────────────────────
+tomli>=2.0; python_version < "3.11"   # TOML parser (Python < 3.11)
+# tomllib es built-in desde Python 3.11
+
+# ─── IA — Transcripción (opcional) ──────────────────────────────────────────
+faster-whisper>=1.0    # Whisper optimizado para CPU/GPU
+
+# ─── IA — Clasificación de señales (opcional) ────────────────────────────────
+scikit-learn>=1.3      # ML para clasificación de modulaciones
+joblib>=1.3            # Serialización de modelos ML

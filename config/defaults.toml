@@ -1,0 +1,43 @@
+# xyz-sdr | defaults.toml — Configuración por defecto
+
+[device]
+driver       = "sdrplay"      # "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
+sample_rate  = 2_048_000      # Muestras por segundo (2.048 MHz)
+center_freq  = 100_600_000    # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
+gain         = 40.0           # Ganancia en dB (0-60 típico)
+auto_gain    = false
+ppm_correction = 0            # Corrección PPM del oscilador
+
+[dsp]
+fft_size     = 4096           # Tamaño FFT para espectro
+fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
+demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
+audio_rate   = 48_000         # Hz — tasa de audio de salida
+squelch_db   = -70.0          # Umbral de squelch en dBFS
+
+[display]
+waterfall_history = 100       # Líneas de historia en waterfall
+freq_span_mhz     = 2.048     # Span de frecuencias mostrado (= sample_rate)
+color_theme       = "cyberpunk"
+
+[recorder]
+output_dir        = "./recordings"
+iq_format         = "sigmf"   # "sigmf" | "raw" | "wav"
+audio_format      = "wav"
+auto_record       = false
+trigger_db        = -50.0     # Grabar si señal supera este nivel
+
+[ai]
+whisper_enabled   = false
+whisper_model     = "base"    # "tiny" | "base" | "small" | "medium" | "large"
+whisper_language  = "es"
+classifier_enabled = false
+classifier_model  = "./ai/models/modulation_classifier.pkl"
+
+[scanner]
+enabled     = false
+freq_start  = 88_000_000     # 88 MHz
+freq_end    = 108_000_000    # 108 MHz
+freq_step   = 200_000        # 200 kHz
+dwell_ms    = 500            # Tiempo en cada frecuencia (ms)
+min_snr_db  = 10.0

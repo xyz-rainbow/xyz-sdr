@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="100%" height="100%">
+  <defs>
+    <linearGradient id="cyber-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffb1de" />
+      <stop offset="50%" stop-color="#a6e7ff" />
+      <stop offset="100%" stop-color="#bfffa6" />
+    </linearGradient>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0a0b10" />
+      <stop offset="100%" stop-color="#141622" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="url(#bg-grad)" rx="15" />
+  
+  <!-- Cyberpunk grid/lines -->
+  <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="1">
+    <!-- Horizontal lines -->
+    <line x1="0" y1="50" x2="1200" y2="50" />
+    <line x1="0" y1="100" x2="1200" y2="100" />
+    <line x1="0" y1="150" x2="1200" y2="150" />
+    <line x1="0" y1="200" x2="1200" y2="200" />
+    <line x1="0" y1="250" x2="1200" y2="250" />
+    <!-- Vertical lines -->
+    <line x1="100" y1="0" x2="100" y2="300" />
+    <line x1="200" y1="0" x2="200" y2="300" />
+    <line x1="300" y1="0" x2="300" y2="300" />
+    <line x1="400" y1="0" x2="400" y2="300" />
+    <line x1="500" y1="0" x2="500" y2="300" />
+    <line x1="600" y1="0" x2="600" y2="300" />
+    <line x1="700" y1="0" x2="700" y2="300" />
+    <line x1="800" y1="0" x2="800" y2="300" />
+    <line x1="900" y1="0" x2="900" y2="300" />
+    <line x1="1000" y1="0" x2="1000" y2="300" />
+    <line x1="1100" y1="0" x2="1100" y2="300" />
+  </g>
+
+  <!-- Radio wave frequency lines / FFT spectrum simulation on the sides -->
+  <!-- Left Side: AM/FM wave -->
+  <path d="M 50,150 Q 80,110 110,150 T 170,150 T 230,150 T 290,150 T 350,150" fill="none" stroke="#ffb1de" stroke-width="2" opacity="0.3" filter="url(#glow)" />
+  <path d="M 50,150 Q 80,90 110,150 T 170,150 T 230,150 T 290,150 T 350,150" fill="none" stroke="#ffb1de" stroke-width="1" opacity="0.15" />
+  
+  <!-- Right Side: Decaying pulse wave -->
+  <path d="M 1150,150 Q 1120,100 1090,150 T 1030,150 T 970,150 T 910,150 T 850,150" fill="none" stroke="#bfffa6" stroke-width="2" opacity="0.3" filter="url(#glow)" />
+  <path d="M 1150,150 Q 1120,80 1090,150 T 1030,150 T 970,150 T 910,150 T 850,150" fill="none" stroke="#bfffa6" stroke-width="1" opacity="0.15" />
+
+  <!-- Radio signals/dish circles in bg -->
+  <circle cx="150" cy="150" r="70" fill="none" stroke="#a6e7ff" stroke-width="1" stroke-dasharray="12 10" opacity="0.2" />
+  <circle cx="1050" cy="150" r="70" fill="none" stroke="#bfffa6" stroke-width="1" stroke-dasharray="6 6" opacity="0.2" />
+
+  <!-- Central Text Banner -->
+  <g transform="translate(600, 140)" text-anchor="middle">
+    <!-- Glowing background text -->
+    <text x="0" y="0" font-family="'Segoe UI', Roboto, sans-serif" font-size="82" font-weight="900" fill="url(#cyber-grad)" filter="url(#glow)" letter-spacing="10">XYZ-SDR</text>
+    <!-- Foreground sharp text -->
+    <text x="0" y="0" font-family="'Segoe UI', Roboto, sans-serif" font-size="82" font-weight="900" fill="#ffffff" letter-spacing="10">XYZ-SDR</text>
+    
+    <!-- Subtitle -->
+    <text x="0" y="50" font-family="'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="600" fill="#a6e7ff" letter-spacing="3" opacity="0.8">INTERACTIVE SDR TERMINAL CONTROLLER</text>
+    <text x="0" y="80" font-family="'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="400" fill="#ffffff" letter-spacing="2" opacity="0.5">SOAPYSDR INTEGRATION • REALTIME FFT SPECTRUM &amp; WATERFALL • AUDIO DEMODULATION</text>
+  </g>
+</svg>

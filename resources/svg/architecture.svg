@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0e1017" />
+      <stop offset="100%" stop-color="#181b28" />
+    </linearGradient>
+    <linearGradient id="card-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2a3045" />
+      <stop offset="100%" stop-color="#1d2230" />
+    </linearGradient>
+    <linearGradient id="orange-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff9040" />
+      <stop offset="100%" stop-color="#ff5000" />
+    </linearGradient>
+    <linearGradient id="pink-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffb1de" />
+      <stop offset="100%" stop-color="#ff7ec3" />
+    </linearGradient>
+    <linearGradient id="lime-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#bfffa6" />
+      <stop offset="100%" stop-color="#73e648" />
+    </linearGradient>
+    <linearGradient id="cyan-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a6e7ff" />
+      <stop offset="100%" stop-color="#38bcf2" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="url(#bg-grad)" rx="15" />
+
+  <!-- Connecting Flows -->
+  <!-- Flow 1: Hardware -> DSP -->
+  <path d="M 330,210 L 370,210" fill="none" stroke="#ffb1de" stroke-width="3" filter="url(#glow)" />
+  <path d="M 330,210 L 370,210" fill="none" stroke="#ffb1de" stroke-width="2" stroke-dasharray="5 5" />
+  
+  <!-- Flow 2: DSP -> TUI Widgets -->
+  <path d="M 670,210 L 710,210" fill="none" stroke="#a6e7ff" stroke-width="3" filter="url(#glow)" />
+  <path d="M 670,210 L 710,210" fill="none" stroke="#a6e7ff" stroke-width="2" stroke-dasharray="5 5" />
+  
+  <!-- Flow 3: Feedback Loops / Audio out -->
+  <path d="M 520,380 L 520,400 L 200,400 L 200,345" fill="none" stroke="#bfffa6" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5" />
+  <text x="360" y="392" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" fill="#bfffa6" opacity="0.7">Sintonía Directa y Clic (Interacción del Usuario)</text>
+
+  <!-- Title of Architecture -->
+  <text x="500" y="45" font-family="'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="bold" fill="url(#cyan-glow)" text-anchor="middle" letter-spacing="2" filter="url(#glow)">SYSTEM ARCHITECTURE &amp; SIGNAL PIPELINE</text>
+  <text x="500" y="45" font-family="'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle" letter-spacing="2">SYSTEM ARCHITECTURE &amp; SIGNAL PIPELINE</text>
+
+  <!-- LEFT CARD: SDR HARDWARE LAYER -->
+  <g transform="translate(30, 85)">
+    <!-- Base Card -->
+    <rect width="300" height="260" rx="10" fill="url(#card-grad)" stroke="#ffb1de" stroke-width="2" />
+    <!-- Header -->
+    <rect width="300" height="50" rx="10" fill="#202538" />
+    <text x="20" y="32" font-family="'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="bold" fill="#ffb1de">🛰️ HARDWARE &amp; DRIVER</text>
+    
+    <!-- Software Layers -->
+    <rect x="20" y="70" width="260" height="35" rx="5" fill="#151924" stroke="#ffb1de" stroke-width="0.5" />
+    <text x="35" y="92" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">SoapySDR Wrapper Interface</text>
+
+    <rect x="20" y="115" width="260" height="35" rx="5" fill="#151924" stroke="#a6e7ff" stroke-width="0.5" />
+    <text x="35" y="137" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">SDR Hardware (SDRPlay, RTL-SDR...)</text>
+
+    <rect x="20" y="160" width="260" height="35" rx="5" fill="#151924" stroke="#bfffa6" stroke-width="0.5" />
+    <text x="35" y="182" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">Simulation Mode (Gaussian Noise)</text>
+
+    <rect x="20" y="205" width="260" height="35" rx="5" fill="#282d3f" />
+    <text x="150" y="227" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle" opacity="0.6">MODULE: core/device.py</text>
+  </g>
+
+  <!-- MIDDLE CARD: DSP ENGINE -->
+  <g transform="translate(370, 85)">
+    <!-- Base Card -->
+    <rect width="300" height="280" rx="10" fill="url(#card-grad)" stroke="#a6e7ff" stroke-width="2" filter="url(#glow)" />
+    <rect width="300" height="280" rx="10" fill="url(#card-grad)" stroke="#a6e7ff" stroke-width="2" />
+    <!-- Header -->
+    <rect width="300" height="50" rx="10" fill="#202538" />
+    <text x="20" y="32" font-family="'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="bold" fill="#a6e7ff">⚡ DSP PROCESSING ENGINE</text>
+    
+    <!-- Software Layers -->
+    <rect x="20" y="70" width="260" height="35" rx="5" fill="#151924" stroke="#ffffff" stroke-width="0.5" />
+    <text x="35" y="92" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">FFT &amp; Decimation Filters</text>
+
+    <rect x="20" y="115" width="260" height="35" rx="5" fill="#151924" stroke="#ffffff" stroke-width="0.5" />
+    <text x="35" y="137" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">Demodulation (FM, AM, SSB)</text>
+
+    <rect x="20" y="160" width="260" height="35" rx="5" fill="#151924" stroke="#ffffff" stroke-width="0.5" />
+    <text x="35" y="182" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">Audio Playback &amp; sounddevice Queue</text>
+
+    <rect x="20" y="205" width="260" height="35" rx="5" fill="#151924" stroke="#ffffff" stroke-width="0.5" />
+    <text x="35" y="227" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">IQ / WAV Recorder &amp; Scanner</text>
+
+    <rect x="20" y="250" width="260" height="20" rx="3" fill="#282d3f" />
+    <text x="150" y="264" font-family="'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle" opacity="0.6">MODULE: core/dsp.py &amp; core/recorder.py</text>
+  </g>
+
+  <!-- RIGHT CARD: TUI LAYER -->
+  <g transform="translate(710, 85)">
+    <!-- Base Card -->
+    <rect width="260" height="260" rx="10" fill="url(#card-grad)" stroke="#bfffa6" stroke-width="2" />
+    <!-- Header -->
+    <rect width="260" height="50" rx="10" fill="#202538" />
+    <text x="20" y="32" font-family="'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="bold" fill="#bfffa6">🖥️ TEXTUAL TUI LAYOUT</text>
+    
+    <!-- Software Layers -->
+    <rect x="20" y="70" width="220" height="35" rx="5" fill="#151924" stroke="#ffb1de" stroke-width="0.5" />
+    <text x="35" y="92" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">FrequencyTimeline</text>
+
+    <rect x="20" y="115" width="220" height="35" rx="5" fill="#151924" stroke="#a6e7ff" stroke-width="0.5" />
+    <text x="35" y="137" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">SpectrumGraph (FFT)</text>
+
+    <rect x="20" y="160" width="220" height="35" rx="5" fill="#151924" stroke="#bfffa6" stroke-width="0.5" />
+    <text x="35" y="182" font-family="'Segoe UI', Roboto, sans-serif" font-size="13" fill="#ffffff" opacity="0.9">WaterfallTimeline (Spectrogram)</text>
+
+    <rect x="20" y="205" width="220" height="35" rx="5" fill="#282d3f" />
+    <text x="110" y="227" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle" opacity="0.6">MODULE: tui/app.py &amp; widgets/</text>
+  </g>
+
+  <!-- FOOTER DETAILS -->
+  <g transform="translate(500, 440)" text-anchor="middle">
+    <rect x="-300" y="-15" width="600" height="30" rx="15" fill="#121520" stroke="#bfffa6" stroke-width="1" stroke-dasharray="5 5" opacity="0.7" />
+    <text x="0" y="5" font-family="'Segoe UI', Roboto, sans-serif" font-size="12" fill="#ffffff" opacity="0.8">Continuous data streaming powered by asynchronous threading and sounddevice queues</text>
+  </g>
+</svg>
