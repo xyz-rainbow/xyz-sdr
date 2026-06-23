@@ -626,7 +626,6 @@ class XyzSDRApp(App):
         min-width: 0;
         margin: 0;
         padding: 0;
-        line-pad: 0;
         text-style: bold;
         text-align: center;
         content-align: center middle;
@@ -1142,7 +1141,6 @@ class XyzSDRApp(App):
             self._viewport_debounce_timer = self.set_timer(
                 VIEWPORT_DEBOUNCE_S,
                 self._on_viewport_debounce,
-                one_shot=True,
             )
 
     def _on_viewport_debounce(self) -> None:
