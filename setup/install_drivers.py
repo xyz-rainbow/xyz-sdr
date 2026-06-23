@@ -67,6 +67,12 @@ T = {
         "py_success": "Dependencias de Python instaladas correctamente.",
         "py_fail": "Hubo un error al instalar los paquetes de Python.",
         "diag_running": "Iniciando análisis del entorno con check_env.py...",
+        "already_installed_title": "{} ya está instalado.",
+        "already_installed_skip": "No es necesario volver a instalar.",
+        "already_installed_submenu_title": "Opciones:",
+        "already_installed_back": "Volver al menú principal",
+        "already_installed_exit": "Salir del instalador",
+        "already_installed_path_only": "Se configurará el PATH de SoapySDR sin reinstalar.",
     },
     "en": {
         "title": "XYZ-SDR COMPONENT & DRIVER INSTALLER",
@@ -105,6 +111,12 @@ T = {
         "py_success": "Python dependencies successfully installed.",
         "py_fail": "There was an error installing the Python packages.",
         "diag_running": "Starting environment diagnostics with check_env.py...",
+        "already_installed_title": "{} is already installed.",
+        "already_installed_skip": "Reinstallation is not required.",
+        "already_installed_submenu_title": "Options:",
+        "already_installed_back": "Back to main menu",
+        "already_installed_exit": "Exit installer",
+        "already_installed_path_only": "SoapySDR PATH will be configured without reinstalling.",
     }
 }
 
@@ -375,6 +387,106 @@ def configure_path():
             except Exception:
                 pass
 
+def _report_path_configuration() -> None:
+    lang = CURRENT_LANG
+    print(f"\n{C_CYAN}  → {T[lang]['path_label']}...{C_RESET}")
+    success_path, info_path = configure_path()
+    if success_path:
+        if info_path:
+            print(f"  {C_LIME}[SUCCESS] {T[lang]['path_success'].format(', '.join(info_path))}{C_RESET}")
+        else:
+            print(f"  {C_LIME}[SUCCESS] {T[lang]['path_already']}{C_RESET}")
+    else:
+        print(f"  {C_RED}[ERROR] {T[lang]['path_fail'].format(info_path)}{C_RESET}")
+
+
+def _already_installed_submenu() -> None:
+    """Submenú: 1/2/3 vuelven al menú principal; 4 sale del instalador."""
+    lang = CURRENT_LANG
+    while True:
+        print(f"\n {C_BOLD}{T[lang]['already_installed_submenu_title']}{C_RESET}")
+        print(f"  {C_PINK}[1]{C_RESET} {T[lang]['already_installed_back']}")
+        print(f"  {C_PINK}[2]{C_RESET} {T[lang]['already_installed_back']}")
+        print(f"  {C_PINK}[3]{C_RESET} {T[lang]['already_installed_back']}")
+        print(f"  {C_PINK}[4]{C_RESET} {T[lang]['already_installed_exit']}")
+        sub = input(f" {C_BOLD}{T[lang]['select_option']}{C_RESET}").strip().upper()
+        if sub in ("1", "2", "3"):
+            return
+        if sub == "4":
+            print(
+                f"\n{C_PINK}Saliendo de la instalación. ¡Buen código! / "
+                f"Exiting installer. Happy coding!{C_RESET}\n"
+            )
+            sys.exit(0)
+        print(f"\n{C_RED}[ERROR] Opción no válida / Invalid option{C_RESET}")
+
+
+def _handle_already_installed(component_label: str, *, configure_path_only: bool = False) -> None:
+    lang = CURRENT_LANG
+    print(f"\n{C_LIME}[INFO] {T[lang]['already_installed_title'].format(component_label)}{C_RESET}")
+    print(f"  {T[lang]['already_installed_skip']}")
+    if configure_path_only:
+        print(f"  {T[lang]['already_installed_path_only']}")
+        _report_path_configuration()
+    _already_installed_submenu()
+
+
+def _install_sdrplay(temp_dir: str) -> None:
+    lang = CURRENT_LANG
+    sdrplay_url = "https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.1.exe"
+    sdrplay_file = os.path.join(temp_dir, "SDRplay_API_installer.exe")
+
+    if download_file(sdrplay_url, sdrplay_file, "SDRplay API"):
+        print(f"  {T[lang]['running_installer']}")
+        try:
+            run_exe_installer(sdrplay_file)
+            print(f"\n{C_LIME}[SUCCESS] {T[lang]['install_success']}{C_RESET}")
+        except Exception as e:
+            _report_install_error(e)
+    else:
+        print(f"\n{C_RED}[ERROR] {T[lang]['install_fail']}{C_RESET}")
+
+
+def _install_pothos(temp_dir: str) -> None:
+    lang = CURRENT_LANG
+    pothos_url = "https://downloads.myriadrf.org/builds/PothosSDR/PothosSDR-2021.07.25-vc16-x64.exe"
+    pothos_file = os.path.join(temp_dir, "PothosSDR_installer.exe")
+
+    if download_file(pothos_url, pothos_file, "PothosSDR"):
+        print(f"  {T[lang]['running_installer']}")
+        try:
+            run_exe_installer(pothos_file)
+            print(f"\n{C_LIME}[SUCCESS] {T[lang]['install_success']}{C_RESET}")
+            _report_path_configuration()
+        except Exception as e:
+            _report_install_error(e)
+    else:
+        print(f"\n{C_RED}[ERROR] {T[lang]['install_fail']}{C_RESET}")
+        print(f"\n{C_ORANGE}  Consejo / Tip: Si no se pudo descargar, bájalo manualmente de:")
+        print(f"  {pothos_url}{C_RESET}")
+
+
+def _install_python_deps() -> None:
+    lang = CURRENT_LANG
+    has_uv = False
+    try:
+        res = subprocess.run(["uv", "--version"], capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            has_uv = True
+    except Exception:
+        pass
+
+    try:
+        if has_uv:
+            print(f"  {T[lang]['py_installing_deps'].format('uv')}")
+            subprocess.run(["uv", "pip", "install", "-r", "requirements.txt", "--system"], check=True)
+        else:
+            print(f"  {T[lang]['py_installing_deps'].format('pip')}")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+        print(f"\n{C_LIME}[SUCCESS] {T[lang]['py_success']}{C_RESET}")
+    except Exception as e:
+        print(f"\n{C_RED}[ERROR] {T[lang]['py_fail']}: {e}{C_RESET}")
+
 # --- Impresión del Banner y Menú ---
 def print_banner():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -418,7 +530,7 @@ def print_interface():
     
     # Resaltar si ya está instalado
     lbl_sdrplay = f"{C_GRAY}(Ya instalado / Already Installed){C_RESET}" if sdrplay_inst else ""
-    lbl_pothos = f"{C_GRAY}(Ya instalado / Already Installed){C_RESET}" if (pothos_inst and path_conf) else ""
+    lbl_pothos = f"{C_GRAY}(Ya instalado / Already Installed){C_RESET}" if pothos_inst else ""
     lbl_py = f"{C_GRAY}(Ya instalado / Already Installed){C_RESET}" if not py_missing else ""
     
     print(f"  {C_PINK}[1]{C_RESET} {T[lang]['menu_opt_sdrplay']} {lbl_sdrplay}")
@@ -448,76 +560,31 @@ def main():
             
         elif opc == "1":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_sdrplay'].upper()} ───{C_RESET}")
-            sdrplay_url = "https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.1.exe"
-            sdrplay_file = os.path.join(temp_dir, "SDRplay_API_installer.exe")
-            
-            if download_file(sdrplay_url, sdrplay_file, "SDRplay API"):
-                print(f"  {T[CURRENT_LANG]['running_installer']}")
-                try:
-                    run_exe_installer(sdrplay_file)
-                    print(f"\n{C_LIME}[SUCCESS] {T[CURRENT_LANG]['install_success']}{C_RESET}")
-                except Exception as e:
-                    _report_install_error(e)
+            if check_sdrplay_installed():
+                _handle_already_installed(T[CURRENT_LANG]["sdrplay_label"])
             else:
-                print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}{C_RESET}")
-            input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
+                _install_sdrplay(temp_dir)
+                input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
             
         elif opc == "2":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_pothos'].upper()} ───{C_RESET}")
-            pothos_url = "https://downloads.myriadrf.org/builds/PothosSDR/PothosSDR-2021.07.25-vc16-x64.exe"
-            pothos_file = os.path.join(temp_dir, "PothosSDR_installer.exe")
-            
-            if download_file(pothos_url, pothos_file, "PothosSDR"):
-                print(f"  {T[CURRENT_LANG]['running_installer']}")
-                try:
-                    run_exe_installer(pothos_file)
-                    print(f"\n{C_LIME}[SUCCESS] {T[CURRENT_LANG]['install_success']}{C_RESET}")
-                    
-                    # Configurar PATH automáticamente
-                    print(f"\n{C_CYAN}  → {T[CURRENT_LANG]['path_label']}...{C_RESET}")
-                    success_path, info_path = configure_path()
-                    if success_path:
-                        if info_path:
-                            print(f"  {C_LIME}[SUCCESS] {T[CURRENT_LANG]['path_success'].format(', '.join(info_path))}{C_RESET}")
-                        else:
-                            print(f"  {C_LIME}[SUCCESS] {T[CURRENT_LANG]['path_already']}{C_RESET}")
-                    else:
-                        print(f"  {C_RED}[ERROR] {T[CURRENT_LANG]['path_fail'].format(info_path)}{C_RESET}")
-                except Exception as e:
-                    _report_install_error(e)
+            if check_pothos_installed():
+                _handle_already_installed(
+                    T[CURRENT_LANG]["pothos_label"],
+                    configure_path_only=True,
+                )
             else:
-                print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['install_fail']}{C_RESET}")
-                print(f"\n{C_ORANGE}  Consejo / Tip: Si no se pudo descargar, bájalo manualmente de:")
-                print(f"  {pothos_url}{C_RESET}")
-            input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
+                _install_pothos(temp_dir)
+                input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
             
         elif opc == "3":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_py'].upper()} ───{C_RESET}")
-            
-            # Detectar si uv está disponible
-            has_uv = False
-            try:
-                res = subprocess.run(["uv", "--version"], capture_output=True, text=True, check=False)
-                if res.returncode == 0:
-                    has_uv = True
-            except Exception:
-                pass
-            
-            try:
-                if has_uv:
-                    cmd_label = "uv"
-                    print(f"  {T[CURRENT_LANG]['py_installing_deps'].format('uv')}")
-                    # Ejecutar con uv
-                    subprocess.run(["uv", "pip", "install", "-r", "requirements.txt", "--system"], check=True)
-                else:
-                    cmd_label = "pip"
-                    print(f"  {T[CURRENT_LANG]['py_installing_deps'].format('pip')}")
-                    # Ejecutar con pip estándar
-                    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
-                print(f"\n{C_LIME}[SUCCESS] {T[CURRENT_LANG]['py_success']}{C_RESET}")
-            except Exception as e:
-                print(f"\n{C_RED}[ERROR] {T[CURRENT_LANG]['py_fail']}: {e}{C_RESET}")
-            input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
+            _, py_missing = check_python_libs()
+            if not py_missing:
+                _handle_already_installed(T[CURRENT_LANG]["py_libs_label"])
+            else:
+                _install_python_deps()
+                input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
             
         elif opc == "4":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_diag'].upper()} ───{C_RESET}")
