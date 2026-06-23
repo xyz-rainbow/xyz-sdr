@@ -356,3 +356,117 @@ def compute_snr(psd_db: np.ndarray, signal_idx: int, noise_window: int = 50) -> 
     mask[left:right] = False
     noise_power = np.mean(psd_db[mask]) if mask.any() else -100.0
     return float(signal_power - noise_power)
+
+
+def estimate_snr_db(psd_db: np.ndarray) -> float:
+    """SNR estimada para squelch: pico vs percentil 10 del ruido de fondo."""
+    if psd_db is None or len(psd_db) == 0:
+        return 0.0
+    return float(np.max(psd_db) - np.percentile(psd_db, 10))
+
+
+def estimate_snr_at_freq(
+    psd_db: np.ndarray,
+    center_hz: float,
+    sample_rate: float,
+    tuned_hz: float,
+    *,
+    noise_percentile: float = 10.0,
+    guard_bins: int | None = None,
+) -> float:
+    """SNR en la frecuencia sintonizada (bin local vs ruido de fondo excluido)."""
+    if psd_db is None or len(psd_db) == 0 or sample_rate <= 0:
+        return 0.0
+
+    psd_len = len(psd_db)
+    hz_per_bin = sample_rate / psd_len
+    capture_left = center_hz - sample_rate / 2
+    bin_idx = int(round((tuned_hz - capture_left) / hz_per_bin))
+    bin_idx = max(0, min(psd_len - 1, bin_idx))
+
+    guard = guard_bins if guard_bins is not None else max(3, psd_len // 64)
+    mask = np.ones(psd_len, dtype=bool)
+    left = max(0, bin_idx - guard)
+    right = min(psd_len, bin_idx + guard + 1)
+    mask[left:right] = False
+
+    signal_power = float(psd_db[bin_idx])
+    if not mask.any():
+        noise_power = float(np.percentile(psd_db, noise_percentile))
+    else:
+        noise_power = float(np.percentile(psd_db[mask], noise_percentile))
+    return signal_power - noise_power
+
+
+class SquelchGate:
+    """Squelch con apertura inmediata y cierre retardado (hang time)."""
+
+    def __init__(self, threshold_db: float = 15.0, hang_ms: float = 500.0):
+        self.threshold_db = threshold_db
+        self.hang_s = max(0.0, hang_ms) / 1000.0
+        self._open = True
+        self._hang_until = 0.0
+
+    def configure(self, *, threshold_db: float | None = None, hang_ms: float | None = None) -> None:
+        if threshold_db is not None:
+            self.threshold_db = threshold_db
+        if hang_ms is not None:
+            self.hang_s = max(0.0, hang_ms) / 1000.0
+
+    def is_open(self, snr_db: float, *, now: float | None = None) -> bool:
+        import time
+
+        ts = time.time() if now is None else now
+        if snr_db >= self.threshold_db:
+            self._open = True
+            self._hang_until = ts + self.hang_s
+            return True
+        if self._open and ts < self._hang_until:
+            return True
+        self._open = False
+        return False
+
+    def reset(self) -> None:
+        self._open = True
+        self._hang_until = 0.0
+
+
+def apply_squelch(
+    audio: np.ndarray,
+    snr_db: float,
+    *,
+    enabled: bool,
+    threshold_db: float,
+    gate: SquelchGate | None = None,
+    hang_ms: float = 500.0,
+) -> np.ndarray:
+    """Silencia el audio si la SNR cae por debajo del umbral (con hang time opcional)."""
+    if not enabled or audio is None or len(audio) == 0:
+        return audio
+
+    squelch_gate = gate
+    if squelch_gate is None:
+        squelch_gate = SquelchGate(threshold_db=threshold_db, hang_ms=hang_ms)
+    else:
+        squelch_gate.configure(threshold_db=threshold_db, hang_ms=hang_ms)
+
+    if squelch_gate.is_open(snr_db):
+        return audio
+    return np.zeros_like(audio)
+
+
+def apply_squelch_with_state(
+    audio: np.ndarray,
+    snr_db: float,
+    gate: SquelchGate,
+    *,
+    enabled: bool,
+    now: float | None = None,
+) -> tuple[np.ndarray, bool]:
+    """Aplica squelch reutilizando estado del gate. Devuelve (audio, is_open)."""
+    if not enabled or audio is None or len(audio) == 0:
+        return audio, True
+    is_open = gate.is_open(snr_db, now=now)
+    if is_open:
+        return audio, True
+    return np.zeros_like(audio), False

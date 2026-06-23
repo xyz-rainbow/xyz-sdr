@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 import numpy as np
 from typing import Optional
 
@@ -22,17 +23,40 @@ from textual.reactive import reactive
 from textual import work, events
 
 from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
-from core.config_store import patch_device_section
+from core.config_store import patch_device_section, patch_dsp_section
 from core.band_buffer import BandFrameMailbox, make_band_frame
-from core.dsp import average_psd, compute_rx_chunk_samples
+from core.dsp import (
+    average_psd,
+    compute_rx_chunk_samples,
+    apply_squelch_with_state,
+    estimate_snr_at_freq,
+    SquelchGate,
+)
 from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
+from core.recorder import SDRRecorder, resolve_recordings_dir, recording_targets
 
 from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_select(value) -> bool:
+    """Ignora valores vacíos o eventos espurios (Select.BLANK / Select.NULL)."""
+    if value is None:
+        return False
+    blank = getattr(Select, "BLANK", object())
+    if value is blank:
+        return False
+    null = getattr(Select, "NULL", None)
+    if null is not None and value is null:
+        return False
+    type_name = type(value).__name__
+    if type_name == "NoSelection" or str(value).startswith("Select."):
+        return False
+    return True
 
 
 # ─── Constantes ──────────────────────────────────────────────────────────────
@@ -125,6 +149,10 @@ class StatusBar(Static):
         text.append(" Gain ", dim)
         text.append("V", key)
         text.append(" Vol ", dim)
+        text.append("R", key)
+        text.append(" Rec ", dim)
+        text.append("Shift+Wheel", key)
+        text.append(" WF hist ", dim)
         text.append("Q", key)
         text.append(" Salir", dim)
 
@@ -139,6 +167,10 @@ class StatusBar(Static):
         span: float,
         bandwidth: float,
         device: str,
+        *,
+        squelch_enabled: bool = False,
+        squelch_open: bool = True,
+        recording: bool = False,
     ) -> None:
         step_str = _format_hz(step)
         span_str = _format_hz(span)
@@ -178,6 +210,18 @@ class StatusBar(Static):
         text.append("SNR ", "bold #34d399")
         text.append(f"{snr:.1f} dB", "bold #ffffff")
         text.append(" ┃ ", "#475569")
+
+        if squelch_enabled:
+            text.append("SQ ", "bold #a78bfa")
+            sq_label = "OPEN" if squelch_open else "MUTE"
+            sq_color = "#34d399" if squelch_open else "#f87171"
+            text.append(sq_label, f"bold {sq_color}")
+            text.append(" ┃ ", "#475569")
+
+        if recording:
+            text.append("REC ", "bold #ef4444")
+            text.append("●", "bold #ef4444")
+            text.append(" ┃ ", "#475569")
         
         text.append("DEV ", "bold #38bdf8")
         text.append(f"{device.upper()}", "bold #ffffff")
@@ -762,6 +806,8 @@ class XyzSDRApp(App):
         ("b",           "focus_bandwidth", "BW"),
         ("g",           "focus_gain",    "Gain"),
         ("v",           "focus_volume",  "Volumen"),
+        ("shift+up",    "scroll_history_newer", "WF ↑"),
+        ("shift+down",  "scroll_history_older", "WF ↓"),
         ("r",           "record",        "Grabar"),
         ("escape",      "show_settings", "Ajustes"),
         ("q",           "quit",          "Salir"),
@@ -798,6 +844,8 @@ class XyzSDRApp(App):
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
+        self._recorder: Optional[SDRRecorder] = None
+        self._squelch_open = True
         self._audio_output: Optional[AudioOutputQueue] = None
         self.audio_effects = AudioEffects()
 
@@ -841,6 +889,19 @@ class XyzSDRApp(App):
         if squelch_int not in self.SQUELCH_THRESHOLD_OPTIONS or squelch_int < 0:
             squelch_int = 15
         self.squelch_threshold = float(squelch_int)
+        self.squelch_hang_ms = float(dsp_cfg.get("squelch_hang_ms", 500))
+        self._squelch_gate = SquelchGate(
+            threshold_db=self.squelch_threshold,
+            hang_ms=self.squelch_hang_ms,
+        )
+
+        rec_cfg = self.config.get("recorder", {})
+        self._project_root = Path(self.config_path).resolve().parent.parent
+        self._recordings_dir = resolve_recordings_dir(
+            rec_cfg.get("output_dir"),
+            project_root=self._project_root,
+        )
+        self._recorder = SDRRecorder(self._recordings_dir)
 
     def _closest_preset_rate(self, rate_hz: float, rates: list[float] | None = None) -> float:
         """Elige el preset de bandwidth más cercano a rate_hz."""
@@ -1338,6 +1399,26 @@ class XyzSDRApp(App):
         except Exception:
             pass
         self._log("RX detenido")
+        if self._recording:
+            self._stop_recording(log_stopped=False)
+
+    def action_scroll_history_newer(self) -> None:
+        """Desplaza el waterfall hacia filas más recientes."""
+        try:
+            wf = self.query_one("#waterfall", WaterfallTimeline)
+            if wf.scroll_history(-1):
+                self._log(f"Waterfall hist: offset {wf.history_offset}")
+        except Exception:
+            pass
+
+    def action_scroll_history_older(self) -> None:
+        """Desplaza el waterfall hacia filas más antiguas."""
+        try:
+            wf = self.query_one("#waterfall", WaterfallTimeline)
+            if wf.scroll_history(1):
+                self._log(f"Waterfall hist: offset {wf.history_offset}")
+        except Exception:
+            pass
 
     # ── Otras acciones ───────────────────────────────────────────────────────
 
@@ -1361,9 +1442,73 @@ class XyzSDRApp(App):
         self._update_status()
 
     def action_record(self) -> None:
-        self._recording = not self._recording
-        state = "INICIADA" if self._recording else "DETENIDA"
-        self._log(f"Grabacion IQ {state}")
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self) -> None:
+        if not self._rx_active:
+            self.audio_effects.play_error()
+            self._log("[ERROR] Inicia RX antes de grabar")
+            return
+
+        rec_cfg = self.config.get("recorder", {})
+        self._recordings_dir = resolve_recordings_dir(
+            rec_cfg.get("output_dir"),
+            project_root=self._project_root,
+        )
+        self._recorder = SDRRecorder(self._recordings_dir)
+
+        dsp_cfg = self.config.get("dsp", {})
+        audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
+        do_iq, do_audio = recording_targets(
+            self.demod_mode,
+            record_iq=bool(rec_cfg.get("record_iq", True)),
+            record_audio=bool(rec_cfg.get("record_audio", True)),
+        )
+
+        try:
+            iq_path, wav_path = self._recorder.start(
+                center_freq_hz=self.tuned_frequency,
+                sample_rate_hz=self.sample_rate,
+                demod_mode=self.demod_mode,
+                audio_rate=audio_rate,
+                record_iq=do_iq,
+                record_audio=do_audio,
+            )
+        except Exception as exc:
+            self.audio_effects.play_error()
+            self._log(f"[ERROR] No se pudo iniciar grabacion: {exc}")
+            return
+
+        self._recording = True
+        self.audio_effects.play_blip()
+        if iq_path:
+            self._log(f"[OK] Grabacion IQ: {iq_path}")
+        if wav_path:
+            self._log(f"[OK] Grabacion audio: {wav_path}")
+        if not iq_path and not wav_path:
+            self._recording = False
+            self._log("[ERROR] Nada que grabar con la config actual")
+        self._update_status()
+
+    def _stop_recording(self, *, log_stopped: bool = True) -> None:
+        if not self._recording:
+            return
+
+        iq_path, wav_path = None, None
+        if self._recorder:
+            iq_path, wav_path = self._recorder.stop()
+
+        self._recording = False
+        if log_stopped:
+            self.audio_effects.play_blip()
+            if iq_path:
+                self._log(f"[OK] Grabacion IQ detenida: {iq_path}")
+            if wav_path:
+                self._log(f"[OK] Grabacion audio detenida: {wav_path}")
+        self._update_status()
 
     def action_show_settings(self) -> None:
         """Abre el panel modal de Ajustes de Hardware SDR."""
@@ -1372,6 +1517,8 @@ class XyzSDRApp(App):
 
     def action_quit(self) -> None:
         """Salida limpia con pantalla de cierre."""
+        if self._recording:
+            self._stop_recording(log_stopped=False)
         self._graceful_shutdown = True
         self.exit()
 
@@ -1399,6 +1546,35 @@ class XyzSDRApp(App):
             device_cfg["gain"] = float(self.gain_value)
         except Exception as exc:
             self._log(f"[WARN] No se pudo guardar config: {exc}")
+
+    def _persist_dsp_config(
+        self,
+        *,
+        squelch_enabled: bool | None = None,
+        squelch_threshold: float | None = None,
+        squelch_hang_ms: float | None = None,
+        volume: float | None = None,
+    ) -> None:
+        """Guarda ajustes DSP (squelch, volumen) en el TOML."""
+        try:
+            patch_dsp_section(
+                self.config_path,
+                squelch_enabled=squelch_enabled,
+                squelch_threshold=squelch_threshold,
+                squelch_hang_ms=squelch_hang_ms,
+                volume=volume,
+            )
+            dsp_cfg = self.config.setdefault("dsp", {})
+            if squelch_enabled is not None:
+                dsp_cfg["squelch_enabled"] = squelch_enabled
+            if squelch_threshold is not None:
+                dsp_cfg["squelch_threshold"] = int(squelch_threshold)
+            if squelch_hang_ms is not None:
+                dsp_cfg["squelch_hang_ms"] = int(squelch_hang_ms)
+            if volume is not None:
+                dsp_cfg["volume"] = float(volume)
+        except Exception as exc:
+            self._log(f"[WARN] No se pudo guardar config DSP: {exc}")
 
     def change_device_driver(self, new_driver: str) -> bool:
         """Cambia dinámicamente el driver del dispositivo SDR en tiempo real."""
@@ -1599,7 +1775,10 @@ class XyzSDRApp(App):
                 self._log(f"[ERROR] Frecuencia invalida: {event.value}")
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "sel_gain" and event.value != Select.BLANK:
+        if not _is_valid_select(event.value):
+            return
+
+        if event.select.id == "sel_gain":
             try:
                 self.gain_value = float(event.value)
                 if self._device:
@@ -1611,7 +1790,7 @@ class XyzSDRApp(App):
                 self.audio_effects.play_error()
                 self._log(f"[ERROR] Ganancia invalida: {event.value}")
 
-        elif event.select.id == "sel_volume" and event.value != Select.BLANK:
+        elif event.select.id == "sel_volume":
             try:
                 self.volume_value = float(event.value)
                 if self._audio_output:
@@ -1623,7 +1802,7 @@ class XyzSDRApp(App):
                 self.audio_effects.play_error()
                 self._log(f"[ERROR] Volumen invalido: {event.value}")
 
-        elif event.select.id == "sel_bandwidth" and event.value != Select.BLANK:
+        elif event.select.id == "sel_bandwidth":
             if self._bandwidth_changing:
                 self._sync_bandwidth_select_value()
                 return
@@ -1641,7 +1820,7 @@ class XyzSDRApp(App):
                 self._sync_bandwidth_select_value()
                 self._log(f"[ERROR] Bandwidth invalido: {event.value}")
 
-        elif event.select.id == "sel_preset" and event.value != Select.BLANK:
+        elif event.select.id == "sel_preset":
             parts = str(event.value).split(":")
             if len(parts) == 2:
                 self.tuned_frequency = float(parts[0])
@@ -1695,6 +1874,9 @@ class XyzSDRApp(App):
                 capture_rate = float(self.sample_rate)
                 capture_freq = float(self.tuned_frequency)
                 capture_mode = self.demod_mode
+                capture_squelch_enabled = self.squelch_enabled
+                capture_squelch_threshold = float(self.squelch_threshold)
+                capture_tuned_freq = float(self.tuned_frequency)
 
                 num_samples = compute_rx_chunk_samples(
                     fft_size=fft_size,
@@ -1716,7 +1898,13 @@ class XyzSDRApp(App):
                         overlap=fft_overlap,
                     )
 
-                    snr = float(np.max(psd) - np.percentile(psd, 10))
+                    snr = estimate_snr_at_freq(
+                        psd,
+                        capture_freq,
+                        capture_rate,
+                        capture_tuned_freq,
+                    )
+                    self._squelch_gate.configure(threshold_db=capture_squelch_threshold)
                     frame = make_band_frame(
                         psd,
                         capture_freq,
@@ -1733,6 +1921,9 @@ class XyzSDRApp(App):
                             if len(self._debug_rx_proc_ms) > 120:
                                 self._debug_rx_proc_ms.pop(0)
 
+                    if self._recorder and self._recorder.active and self._recorder.records_iq:
+                        self._recorder.write_iq(samples)
+
                     if self._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
                         from core.dsp import demodulate
                         try:
@@ -1742,9 +1933,24 @@ class XyzSDRApp(App):
                                 sample_rate=capture_rate,
                                 audio_rate=48000,
                             )
+                            audio, squelch_open = apply_squelch_with_state(
+                                audio,
+                                snr,
+                                self._squelch_gate,
+                                enabled=capture_squelch_enabled,
+                            )
+                            self._squelch_open = (
+                                not capture_squelch_enabled or squelch_open
+                            )
+                            if self._recorder and self._recorder.active and self._recorder.records_audio:
+                                self._recorder.write_audio(audio)
                             self._audio_output.enqueue(audio)
                         except Exception as ae:
                             logger.error(f"Error en reproducción de audio: {ae}")
+                    elif capture_squelch_enabled:
+                        self._squelch_open = self._squelch_gate.is_open(snr)
+                    else:
+                        self._squelch_open = True
 
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:
@@ -1806,6 +2012,9 @@ class XyzSDRApp(App):
                 span=self.visible_span,
                 bandwidth=self.sample_rate,
                 device=device_str,
+                squelch_enabled=self.squelch_enabled,
+                squelch_open=self._squelch_open,
+                recording=self._recording,
             )
         except Exception:
             pass

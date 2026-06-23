@@ -106,6 +106,26 @@ def test_history_memory_bounded(flat_band_cols):
     assert len(widget._history) <= cap
 
 
+@patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
+def test_history_scroll_offset_shows_older_rows(mock_size, flat_band_cols):
+    from tui.widgets.waterfall_timeline import _WaterfallRow
+
+    widget, fake_size = _widget_with_size(height=5, max_history=50)
+    mock_size.return_value = fake_size
+    widget._viewport_center_hz = 100e6
+    widget._visible_span_hz = 500e3
+
+    for idx in range(10):
+        cols = flat_band_cols + float(idx)
+        widget._history.appendleft(_WaterfallRow(100e6, 500e3, cols))
+
+    assert widget.scroll_history(1)
+    assert widget.history_offset == 1
+    widget._rebuild_slice_cache()
+    assert widget._slice_cache is not None
+    assert widget._slice_cache_rows == 5
+
+
 def test_batch_slice_not_slower_than_linear_threshold(flat_band_cols):
     """Regresión: slice en lote debe ser razonable vs fila a fila (sanity perf)."""
     from core.band_buffer import slice_band_history_to_viewport

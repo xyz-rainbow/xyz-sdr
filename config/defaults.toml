@@ -20,6 +20,7 @@ volume       = 75.0           # Volumen de salida 0–100 %
 squelch_db       = -70.0          # Umbral de squelch en dBFS (legacy)
 squelch_enabled  = false
 squelch_threshold = 15            # Umbral UI en dB (5–40)
+squelch_hang_ms  = 500             # Retardo antes de mutear tras perder señal (ms)
 
 [display]
 waterfall_history = 100              # Tope de filas guardadas en memoria
@@ -28,7 +29,9 @@ freq_span_mhz     = 2.048     # Span de frecuencias mostrado (= sample_rate)
 color_theme       = "cyberpunk"
 
 [recorder]
-output_dir        = "./recordings"
+output_dir        = ""              # Vacío → ~/Music/xyz-sdr; relativa → respecto al proyecto
+record_iq         = true              # SigMF IQ (todos los modos)
+record_audio      = true              # WAV demodulado (solo wbfm/nbfm/am/usb/lsb)
 iq_format         = "sigmf"   # "sigmf" | "raw" | "wav"
 audio_format      = "wav"
 auto_record       = false

@@ -13,6 +13,18 @@ from textual.widgets import Label, Select, Button, Switch
 from textual.reactive import reactive
 
 
+def _valid_select_value(value) -> bool:
+    if value is None:
+        return False
+    blank = getattr(Select, "BLANK", object())
+    if value is blank:
+        return False
+    null = getattr(Select, "NULL", None)
+    if null is not None and value is null:
+        return False
+    return not str(value).startswith("Select.")
+
+
 class SettingsScreen(ModalScreen):
     """Pantalla modal de ajustes general con navegación interna por páginas."""
 
@@ -275,10 +287,22 @@ class SettingsScreen(ModalScreen):
             threshold_val = self.query_one("#set_squelch_threshold", Select).value
 
             self.app.squelch_enabled = squelch_val
-            if threshold_val is not None:
+            if threshold_val is not None and _valid_select_value(threshold_val):
                 self.app.squelch_threshold = float(threshold_val)
 
-            self.app._log(f"[OK]   Squelch {'ACTIVADO' if squelch_val else 'DESACTIVADO'} | Umbral: {self.app.squelch_threshold:.0f} dB")
+            self.app._persist_dsp_config(
+                squelch_enabled=squelch_val,
+                squelch_threshold=self.app.squelch_threshold,
+            )
+            self.app._squelch_gate.configure(
+                threshold_db=self.app.squelch_threshold,
+                hang_ms=self.app.squelch_hang_ms,
+            )
+            self.app.audio_effects.play_chime()
+            self.app._log(
+                f"[OK]   Squelch {'ACTIVADO' if squelch_val else 'DESACTIVADO'}"
+                f" | Umbral: {self.app.squelch_threshold:.0f} dB"
+            )
             self.app._update_status()
 
             self.current_page = "main"

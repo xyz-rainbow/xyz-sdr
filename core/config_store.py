@@ -75,3 +75,33 @@ def patch_device_section(
 
     config_path.write_text(text, encoding="utf-8")
     logger.info("Config actualizada: %s", path)
+
+
+def patch_dsp_section(
+    path: str,
+    *,
+    squelch_enabled: bool | None = None,
+    squelch_threshold: float | None = None,
+    squelch_hang_ms: float | None = None,
+    volume: float | None = None,
+) -> None:
+    """Actualiza valores en la sección [dsp] del archivo TOML."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    text = config_path.read_text(encoding="utf-8")
+    updates = {
+        "squelch_enabled": squelch_enabled,
+        "squelch_threshold": int(squelch_threshold) if squelch_threshold is not None else None,
+        "squelch_hang_ms": int(squelch_hang_ms) if squelch_hang_ms is not None else None,
+        "volume": volume,
+    }
+
+    for key, value in updates.items():
+        if value is not None:
+            text = _patch_key(text, key, value)
+
+    config_path.write_text(text, encoding="utf-8")
+    logger.info("Config DSP actualizada: %s", path)
