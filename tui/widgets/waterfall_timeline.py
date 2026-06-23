@@ -7,6 +7,7 @@ Cada fila almacena band_cols pre-proyectados sobre el BW de captura.
 from __future__ import annotations
 
 import time
+from collections import deque
 
 import numpy as np
 from rich.text import Text
@@ -14,7 +15,7 @@ from textual.widget import Widget
 from textual.reactive import reactive
 from textual import events
 
-from core.band_buffer import BandFrame, slice_band_history_to_viewport
+from core.band_buffer import BandFrame, slice_band_history_to_viewport, slice_band_to_viewport
 
 
 WATERFALL_GRADIENT = [
@@ -87,17 +88,21 @@ class WaterfallTimeline(Widget):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._history: list[_WaterfallRow] = []
+        self._history: deque[_WaterfallRow] = deque(maxlen=max(1, int(max_history)))
         self._max_history = max(1, int(max_history))
         self._history_buffer_ratio = max(0.0, float(history_buffer_ratio))
+        self._layout_height: int = 1
         self._viewport_center_hz: float = 100_600_000.0
         self._visible_span_hz: float = 2_048_000.0
         self._last_row_time: float = 0.0
         self._norm_min: float = -80.0
         self._norm_max: float = -20.0
+        self._norm_last_update: float = 0.0
         self._slice_cache: np.ndarray | None = None
         self._slice_cache_rows: int = 0
         self._slice_cache_width: int = 0
+        self._render_cache: Text | None = None
+        self._render_cache_key: tuple | None = None
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         event.stop()
@@ -119,12 +124,26 @@ class WaterfallTimeline(Widget):
         event.stop()
         self.app.set_focus(None)
 
+    def on_resize(self, event: events.Resize) -> None:
+        self._layout_height = max(int(self.size.height), 1)
+        self._ensure_history_maxlen()
+        self._invalidate_render_cache()
+
+    def _invalidate_render_cache(self) -> None:
+        self._render_cache = None
+        self._render_cache_key = None
+
     def _effective_max_history(self) -> int:
         """Tope dinámico: visible + buffer (p. ej. 2/3), acotado por max_history del config."""
-        visible = max(int(self.size.height), 1)
+        visible = max(self._layout_height, int(self.size.height), 1)
         buffer_rows = max(1, int(visible * self._history_buffer_ratio))
         dynamic_cap = visible + buffer_rows
         return min(self._max_history, dynamic_cap)
+
+    def _ensure_history_maxlen(self) -> None:
+        maxlen = self._effective_max_history()
+        if self._history.maxlen != maxlen:
+            self._history = deque(self._history, maxlen=maxlen)
 
     def add_band_row(self, frame: BandFrame) -> None:
         """Agrega fila desde BandFrame pre-proyectado (throttle por waterfall_speed)."""
@@ -134,22 +153,51 @@ class WaterfallTimeline(Widget):
             return
 
         self._last_row_time = now
-        self._history.insert(
-            0,
+        self._ensure_history_maxlen()
+        self._history.appendleft(
             _WaterfallRow(frame.center_hz, frame.sample_rate, frame.band_cols),
         )
-        max_rows = self._effective_max_history()
-        if len(self._history) > max_rows:
-            self._history = self._history[:max_rows]
         self._update_normalization()
-        self._rebuild_slice_cache()
+        self._prepend_slice_row(frame)
+        self._invalidate_render_cache()
         self.refresh()
+
+    def _prepend_slice_row(self, frame: BandFrame) -> None:
+        """Actualiza caché slice en O(ancho) en lugar de re-slicear todo el historial."""
+        width = max(int(self.size.width), 1)
+        height = max(int(self.size.height), 1)
+        if width < 5 or height < 1:
+            return
+
+        new_row = slice_band_to_viewport(
+            frame.band_cols,
+            frame.center_hz,
+            frame.sample_rate,
+            self._viewport_center_hz,
+            self._visible_span_hz,
+            width,
+        ).reshape(1, -1)
+
+        if (
+            self._slice_cache is not None
+            and self._slice_cache_width == width
+            and self._slice_cache.shape[1] == width
+        ):
+            combined = np.vstack([new_row, self._slice_cache])
+            self._slice_cache = combined[:height]
+        else:
+            self._rebuild_slice_cache()
+            return
+
+        self._slice_cache_rows = self._slice_cache.shape[0]
+        self._slice_cache_width = width
 
     def clear_history(self) -> None:
         """Invalida historial (p. ej. al cambiar bandwidth)."""
         self._history.clear()
         self._last_row_time = 0.0
         self._slice_cache = None
+        self._invalidate_render_cache()
         self.refresh()
 
     def set_viewport(self, center_hz: float, span_hz: float) -> None:
@@ -164,6 +212,7 @@ class WaterfallTimeline(Widget):
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
         self._rebuild_slice_cache()
+        self._invalidate_render_cache()
         self.refresh()
 
     def _rebuild_slice_cache(self) -> None:
@@ -201,6 +250,17 @@ class WaterfallTimeline(Widget):
         ):
             self._rebuild_slice_cache()
 
+        cache_key = (
+            id(self._slice_cache),
+            self._norm_min,
+            self._norm_max,
+            width,
+            height,
+            self._slice_cache_rows,
+        )
+        if self._render_cache is not None and cache_key == self._render_cache_key:
+            return self._render_cache
+
         rows_to_show = self._slice_cache_rows
         rng = self._norm_max - self._norm_min
         if rng <= 0:
@@ -217,6 +277,8 @@ class WaterfallTimeline(Widget):
             if row_idx < height - 1:
                 result.append("\n")
 
+        self._render_cache = result
+        self._render_cache_key = cache_key
         return result
 
     def _render_row_from_cache(self, col_values: np.ndarray, width: int, rng: float) -> Text:
@@ -235,11 +297,17 @@ class WaterfallTimeline(Widget):
         return line
 
     def _update_normalization(self) -> None:
-        height = max(self.size.height, 20)
-        visible = self._history[:height]
+        now = time.time()
+        if now - self._norm_last_update < 0.5:
+            return
+
+        height = max(self._layout_height, int(self.size.height), 1)
+        visible = list(self._history)[:height]
         if not visible:
             return
 
         all_vals = np.concatenate([r.band_cols for r in visible])
         self._norm_min = float(np.percentile(all_vals, 5))
         self._norm_max = float(np.percentile(all_vals, 99))
+        self._norm_last_update = now
+        self._invalidate_render_cache()

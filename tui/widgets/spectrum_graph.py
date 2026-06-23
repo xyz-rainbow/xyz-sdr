@@ -5,6 +5,8 @@ Grafico de espectro FFT en ASCII art, alineado al viewport de frecuencias.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from rich.text import Text
 from textual.widget import Widget
@@ -32,6 +34,8 @@ class SpectrumGraph(Widget):
         self._viewport_cols: np.ndarray | None = None
         self._viewport_center_hz: float = 100_600_000.0
         self._visible_span_hz: float = 2_048_000.0
+        self._last_refresh_at: float = 0.0
+        self._refresh_min_interval: float = 0.05
 
     # ── Eventos de Raton ─────────────────────────────────────────────────────
 
@@ -75,9 +79,9 @@ class SpectrumGraph(Widget):
         """Actualiza viewport y re-slicea desde la caché (sin esperar RX)."""
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
-        self._reslice_viewport()
+        self._reslice_viewport(force=True)
 
-    def _reslice_viewport(self) -> None:
+    def _reslice_viewport(self, *, force: bool = False) -> None:
         width = max(self.size.width, 1)
         if self._band_frame is None:
             self._viewport_cols = None
@@ -92,6 +96,12 @@ class SpectrumGraph(Widget):
             self._visible_span_hz,
             width,
         )
+
+        now = time.perf_counter()
+        if not force and now - self._last_refresh_at < self._refresh_min_interval:
+            return
+
+        self._last_refresh_at = now
         self.refresh()
 
     # ── Rendering ────────────────────────────────────────────────────────────

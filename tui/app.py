@@ -718,9 +718,20 @@ class XyzSDRApp(App):
         width: 100%;
         border: round #38bdf8;
         background: #0f172a;
-        height: 5;
+        height: auto;
+        max-height: 5;
+        min-height: 1;
         padding: 0 1;
         margin-bottom: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-size: 0 0;
+        background-tint: transparent;
+    }
+
+    #log_panel:focus {
+        background: #0f172a;
+        background-tint: transparent;
     }
 
     StatusBar {
@@ -821,6 +832,7 @@ class XyzSDRApp(App):
         self._debug_last_viewport_ms: float = 0.0
         self._debug_report_window_start: float = time.time()
         self._viewport_debounce_timer = None
+        self._status_last_update: float = 0.0
 
         dsp_cfg = self.config.get("dsp", {})
         self.squelch_enabled = bool(dsp_cfg.get("squelch_enabled", False))
@@ -1024,7 +1036,10 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
-        self._update_status()
+        now = time.time()
+        if now - self._status_last_update >= 0.2:
+            self._update_status()
+            self._status_last_update = now
 
         if self.debug_mode:
             ui_ms = (time.perf_counter() - ui_t0) * 1000.0
