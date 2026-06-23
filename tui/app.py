@@ -376,6 +376,16 @@ class XyzSDRApp(App):
         text-align: center;
     }
 
+    .gain-volume-row Select > SelectCurrent:focus,
+    .gain-volume-row Select:focus > SelectCurrent,
+    .gain-volume-row Select.-expanded > SelectCurrent {
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
+        background: #0b0f19;
+        background-tint: transparent;
+    }
+
     .gain-volume-row Select > SelectCurrent .arrow {
         display: none;
         width: 0;
@@ -481,10 +491,7 @@ class XyzSDRApp(App):
         border-bottom: round #dc2626;
     }
 
-    #controls #btn_rx {
-        margin-bottom: 0;
-    }
-
+    #controls #btn_rx,
     #controls #btn_rec {
         margin-top: 0;
         margin-bottom: 0;
@@ -840,15 +847,16 @@ class XyzSDRApp(App):
                     for m in self.DEMOD_MODES:
                         yield Static(m.upper(), id=f"btn_mode_{m}")
 
+                with VerticalGroup(classes="action-btns"):
+                    yield Button(">> INICIAR RX", id="btn_rx", variant="success", classes="-textual-compact")
+                    yield Button("(o) GRABAR IQ", id="btn_rec", variant="warning", classes="-textual-compact")
+
                 yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
                     [(name, f"{freq}:{mode}") for name, freq, mode in PRESETS],
                     prompt="Seleccionar...",
                     id="sel_preset",
                 )
-
-                yield Button(">> INICIAR RX", id="btn_rx", variant="success", classes="-textual-compact")
-                yield Button("(o) GRABAR IQ", id="btn_rec", variant="warning", classes="-textual-compact")
 
             # Panel derecho — visualizacion
             with Vertical(id="display_area"):
