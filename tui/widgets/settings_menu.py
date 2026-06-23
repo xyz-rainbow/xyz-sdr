@@ -219,9 +219,9 @@ class SettingsScreen(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         # Efectos de sonido al pulsar botones
-        if event.button.id in ("btn_apply_hardware", "btn_apply_noise"):
+        if event.button.id == "btn_apply_noise":
             self.app.audio_effects.play_chime()
-        else:
+        elif event.button.id != "btn_apply_hardware":
             self.app.audio_effects.play_blip()
 
         # Navegación
@@ -239,13 +239,33 @@ class SettingsScreen(ModalScreen):
             driver_val = self.query_one("#set_driver", Select).value
             rx_val = self.query_one("#set_rx_active", Switch).value
 
-            self.app.change_device_driver(driver_val)
+            if driver_val in (None, Select.BLANK):
+                self.app.audio_effects.play_error()
+                self.app._log("[ERR]  Selecciona un driver SDR válido")
+                return
 
-            if rx_val != self.app._rx_active:
+            driver_ok = self.app.change_device_driver(str(driver_val))
+
+            if not driver_ok:
+                try:
+                    current = "simulated" if self.app.driver in ("sim", "simulated") else self.app.driver
+                    self.query_one("#set_driver", Select).value = current
+                except Exception:
+                    pass
+
+            if driver_ok and rx_val != self.app._rx_active:
                 if rx_val:
                     self.app._start_rx()
                 else:
                     self.app._stop_rx()
+            else:
+                try:
+                    self.query_one("#set_rx_active", Switch).value = self.app._rx_active
+                except Exception:
+                    pass
+
+            if driver_ok:
+                self.app.audio_effects.play_chime()
 
             self.current_page = "main"
 

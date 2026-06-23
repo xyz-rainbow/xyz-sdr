@@ -14,6 +14,10 @@ DemodMode = Literal["wbfm", "nbfm", "am", "usb", "lsb"]
 # Headroom fijo tras normalización; el volumen de usuario se aplica en audio_output.
 NORMALIZE_LEVEL = 0.35
 
+# Referencia para escalar lecturas IQ del worker RX (~16 ventanas FFT a 2.048 MHz)
+RX_REFERENCE_SAMPLE_RATE = 2_048_000.0
+RX_REFERENCE_FFT_WINDOWS = 16
+
 
 # ─── FFT / Espectro ─────────────────────────────────────────────────────────
 
@@ -68,6 +72,23 @@ def average_psd(
     psd   = 10 * np.log10(accum / count / fft_size + 1e-12)
     freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, d=1.0/sample_rate))
     return freqs / 1e6, psd
+
+
+def compute_rx_chunk_samples(
+    fft_size: int,
+    sample_rate: float,
+    num_avg: int = 8,
+    reference_rate: float = RX_REFERENCE_SAMPLE_RATE,
+    reference_windows: int = RX_REFERENCE_FFT_WINDOWS,
+    max_samples: int = 256 * 1024 * 4,
+) -> int:
+    """Calcula cuántas muestras IQ leer por iteración del worker RX."""
+    min_samples = fft_size * max(num_avg + 2, 8)
+    reference_chunk = fft_size * reference_windows
+    scaled = int(reference_chunk * (sample_rate / reference_rate))
+    chunk = max(min_samples, scaled)
+    chunk = max(fft_size, (chunk // fft_size) * fft_size)
+    return min(chunk, max_samples)
 
 
 # ─── Filtros ────────────────────────────────────────────────────────────────

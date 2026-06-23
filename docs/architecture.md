@@ -53,7 +53,8 @@ La aplicación mantiene un **estado centralizado** en la clase principal `XyzSDR
 | :--- | :--- | :--- |
 | `tuned_frequency` | `float` | Frecuencia absoluta demodulada por el dispositivo en Hz. |
 | `viewport_center` | `float` | Frecuencia absoluta en Hz correspondiente al centro de la pantalla. |
-| `visible_span` | `float` | Ancho de banda total visible en pantalla (Zoom). Rango: 100 kHz a 2.048 MHz. |
+| `visible_span` | `float` | Ancho de banda visible en pantalla (zoom). Máximo = `sample_rate` actual. |
+| `sample_rate` | `float` | Bandwidth IQ de captura del SDR (Hz). Configurable desde el selector **BANDWIDTH**. |
 | `scroll_step` | `float` | Cantidad de Hz que varía la frecuencia con cada pulsación de `←` o `→`. |
 
 ### Flujo de Sincronización (`_sync_viewport`)
@@ -75,3 +76,21 @@ def _sync_viewport(self) -> None:
     waterfall.set_viewport(self.viewport_center, self.visible_span)
 ```
 Esto asegura que las tres representaciones visuales estén alineadas píxel a píxel a lo largo del mismo eje de frecuencia horizontal de forma instantánea.
+
+---
+
+## 📡 Cambio de Bandwidth IQ
+
+Ver documentación detallada: [bandwidth.md](bandwidth.md).
+
+Resumen del flujo en `change_bandwidth()`:
+
+1. Validar rate soportado (`SDRDevice.is_sample_rate_supported`).
+2. Detener RX y esperar al worker (`_rx_stop_event`).
+3. Aplicar `set_sample_rate()` en hardware.
+4. Regenerar niveles de zoom (`build_visible_spans`) y adaptar viewport sin mover la sintonía.
+5. Persistir en TOML vía `config_store.patch_device_section`.
+6. Reanudar RX si estaba activo.
+
+Los niveles de zoom ya no son fijos: dependen del `sample_rate` activo (100 kHz … sample_rate).
+

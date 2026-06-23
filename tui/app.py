@@ -7,21 +7,23 @@ v2: Timeline + Espectro + Waterfall con navegacion por teclado.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import numpy as np
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, Container
+from textual.containers import Horizontal, Vertical, Container, VerticalScroll, VerticalGroup
 from textual.widgets import (
-    Header, Footer, Static, Label, Button,
+    Header, Static, Label, Button,
     Select, Input, Log,
 )
 from textual.reactive import reactive
 from textual import work, events
 
-from core.device import SDRDevice
-from core.dsp import average_psd
+from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
+from core.config_store import patch_device_section
+from core.dsp import average_psd, compute_rx_chunk_samples
 from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
 
@@ -41,11 +43,19 @@ SCROLL_STEPS = [
 ]
 DEFAULT_STEP_INDEX = 5  # 100 kHz
 
-# Anchos de banda visibles / zoom (Hz) — limitados a sample_rate para v1
-VISIBLE_SPANS = [
-    100_000, 200_000, 500_000, 1_000_000, 2_048_000,
+# Pasos de zoom base (Hz) — se filtran y completan hasta sample_rate
+ZOOM_SPAN_STEPS = [
+    100_000,
+    200_000,
+    500_000,
+    1_000_000,
+    2_000_000,
+    4_000_000,
 ]
-DEFAULT_ZOOM_INDEX = 4  # 2.048 MHz (= sample_rate completo)
+
+# Velocidades de cascada (FPS)
+WATERFALL_SPEEDS = [1, 2, 3, 5, 10, 25, 50]
+WATERFALL_SPD_BTN_HEIGHT = 3
 
 # Limites de frecuencia del hardware
 FREQ_MIN_HZ = 0.0
@@ -66,17 +76,52 @@ PRESETS = [
 # ─── StatusBar ───────────────────────────────────────────────────────────────
 
 class StatusBar(Static):
-    """Barra de estado inferior con metricas en tiempo real."""
+    """Barra inferior unificada: metricas en tiempo real + atajos de teclado."""
 
     DEFAULT_CSS = """
     StatusBar {
         height: 1;
+        max-height: 1;
         background: #0f172a;
         color: #e2e8f0;
         text-style: bold;
         padding: 0 1;
+        overflow: hidden;
+        text-wrap: nowrap;
     }
     """
+
+    @staticmethod
+    def _append_key_hints(text) -> None:
+        """Atajos compactos en la misma linea que las metricas."""
+        dim = "#64748b"
+        key = "bold #38bdf8"
+
+        text.append(" ┃ ", "#475569")
+        text.append("←→", key)
+        text.append("Freq ", dim)
+        text.append("↑↓", key)
+        text.append("Step ", dim)
+        text.append("^←→", key)
+        text.append("Zoom ", dim)
+        text.append("-/+", key)
+        text.append("Zoom ", dim)
+        text.append("Esc", key)
+        text.append(" Ajustes ", dim)
+        text.append("S", key)
+        text.append(" RX ", dim)
+        text.append("M", key)
+        text.append(" Mod ", dim)
+        text.append("F", key)
+        text.append(" Freq ", dim)
+        text.append("B", key)
+        text.append(" BW ", dim)
+        text.append("G", key)
+        text.append(" Gain ", dim)
+        text.append("V", key)
+        text.append(" Vol ", dim)
+        text.append("Q", key)
+        text.append(" Salir", dim)
 
     def update_status(
         self,
@@ -87,10 +132,12 @@ class StatusBar(Static):
         snr: float,
         step: float,
         span: float,
+        bandwidth: float,
         device: str,
     ) -> None:
         step_str = _format_hz(step)
         span_str = _format_hz(span)
+        bw_str = _format_hz(bandwidth)
         
         # Uso de colores ricos y estructura limpia
         from rich.text import Text
@@ -105,6 +152,10 @@ class StatusBar(Static):
         
         text.append("ZOOM ", "bold #818cf8")
         text.append(f"{span_str}", "bold #ffffff")
+        text.append(" ┃ ", "#475569")
+
+        text.append("BW ", "bold #22d3ee")
+        text.append(f"{bw_str}", "bold #ffffff")
         text.append(" ┃ ", "#475569")
         
         text.append("GAIN ", "bold #fbbf24")
@@ -125,7 +176,9 @@ class StatusBar(Static):
         
         text.append("DEV ", "bold #38bdf8")
         text.append(f"{device.upper()}", "bold #ffffff")
-        
+
+        self._append_key_hints(text)
+
         self.update(text)
 
 
@@ -135,6 +188,17 @@ class XyzSDRApp(App):
     """xyz-sdr Terminal SDR Controller v2."""
 
     CSS = """
+    /* ── Tokens UI (Fase 0 — Outline, sin tint) ────────────────────────
+     * PANEL_BG:      #0b0f19  sidebar (#controls)
+     * DISPLAY_BG:    #090d16  espectro / cascada / barra velocidad
+     * ACCENT_INDIGO: #4338ca  borde default
+     * ACCENT_VIOLET: #6d28d9  borde alterno
+     * ACCENT_GREEN:  #10b981  activo / éxito
+     * ACCENT_FOCUS:  #818cf8  foco
+     * Regla round: background = fondo del padre; sin tint ni fill sólido.
+     * Ver docs/customization.md
+     * ─────────────────────────────────────────────────────────────────── */
+
     Screen {
         background: #090d16;
     }
@@ -144,11 +208,6 @@ class XyzSDRApp(App):
         color: #c084fc;
         text-style: bold;
         border-bottom: solid #6366f1;
-    }
-
-    Footer {
-        background: #0f172a;
-        color: #38bdf8;
     }
 
     /* ── Layout principal ── */
@@ -179,6 +238,12 @@ class XyzSDRApp(App):
         padding: 0 1;
     }
 
+    #controls Input:hover {
+        background: #0b0f19;
+        border: round #4338ca;
+        color: #e0e7ff;
+    }
+
     #controls Input:focus {
         border: round #818cf8;
         background: #0b0f19;
@@ -194,34 +259,87 @@ class XyzSDRApp(App):
 
     #controls Select > SelectCurrent {
         background: #0b0f19;
+        background-tint: transparent;
         border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
         color: #e0e7ff;
         padding: 0;
         width: 100%;
         height: 3;
     }
 
+    #controls Select:hover > SelectCurrent {
+        background: #0b0f19;
+        background-tint: transparent;
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
+        color: #e0e7ff;
+    }
+
     #controls Select > SelectCurrent Static#label {
-        background: #1e1b4b;
+        background: transparent;
         height: 1fr;
         padding: 0 1;
         content-align: left middle;
     }
 
     #controls Select > SelectCurrent .arrow {
-        background: #1e1b4b;
+        background: transparent;
         height: 1fr;
         padding: 0 1 0 0;
         content-align: center middle;
     }
 
-    #controls Select:focus > SelectCurrent {
-        border: round #818cf8;
+    #controls Select:focus > SelectCurrent,
+    #controls Select.-expanded > SelectCurrent,
+    #controls Select > SelectCurrent:focus {
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
+        background: #0b0f19;
+        background-tint: transparent;
     }
 
     #controls Select:focus > SelectCurrent Static#label,
-    #controls Select:focus > SelectCurrent .arrow {
-        background: #2e1065;
+    #controls Select:focus > SelectCurrent .arrow,
+    #controls Select.-expanded > SelectCurrent Static#label,
+    #controls Select.-expanded > SelectCurrent .arrow,
+    #controls Select > SelectCurrent:focus Static#label,
+    #controls Select > SelectCurrent:focus .arrow {
+        background: transparent;
+    }
+
+    #controls Select:focus,
+    #controls Select.-expanded,
+    #controls Select:focus-within {
+        background: #0b0f19;
+        background-tint: transparent;
+    }
+
+    #controls Select > SelectOverlay {
+        background: #0b0f19;
+        background-tint: transparent;
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
+    }
+
+    #controls Select > SelectOverlay:focus {
+        background: #0b0f19;
+        background-tint: transparent;
+    }
+
+    #controls Select > SelectOverlay .option-list--option {
+        background: #0b0f19;
+        background-tint: transparent;
+    }
+
+    #controls Select > SelectOverlay .option-list--option-highlighted {
+        background: #1e293b;
+        background-tint: transparent;
+        color: #e0e7ff;
     }
 
     .gain-volume-row {
@@ -241,6 +359,28 @@ class XyzSDRApp(App):
         min-width: 0;
         padding: 0;
         margin: 0;
+        background: transparent;
+        background-tint: transparent;
+    }
+
+    .gain-volume-row Select:focus,
+    .gain-volume-row Select.-expanded,
+    .gain-volume-row Select:focus-within {
+        background: transparent;
+        background-tint: transparent;
+    }
+
+    .gain-volume-row Select > SelectCurrent Static#label {
+        padding: 0;
+        content-align: center middle;
+        text-align: center;
+    }
+
+    .gain-volume-row Select > SelectCurrent .arrow {
+        display: none;
+        width: 0;
+        min-width: 0;
+        padding: 0;
     }
 
     #sel_preset {
@@ -250,42 +390,125 @@ class XyzSDRApp(App):
     #controls Button {
         width: 100%;
         margin-top: 1;
-        background: #3b0764;
-        color: #f5f3ff;
+        background: #0b0f19;
+        color: #e9d5ff;
         border: round #7c3aed;
+        border-top: round #7c3aed;
+        border-bottom: round #7c3aed;
         height: 3;
     }
 
+    #controls Button:hover,
+    #controls Button:focus,
+    #controls Button.-active,
+    #controls Button.-highlight {
+        background: #0b0f19;
+        background-tint: transparent;
+    }
+
     #controls Button:hover {
-        background: #6b21a8;
-        border: round #a855f7;
+        color: #e9d5ff;
+        border: round #7c3aed;
+        border-top: round #7c3aed;
+        border-bottom: round #7c3aed;
     }
 
     #controls Button.-primary {
-        background: #064e3b;
-        color: #ecfdf5;
+        background: #0b0f19;
+        color: #a3e635;
         border: round #10b981;
+        border-top: round #10b981;
+        border-bottom: round #10b981;
     }
 
-    #controls Button.-primary:hover {
-        background: #047857;
-        border: round #34d399;
+    #controls Button.-primary:hover,
+    #controls Button.-primary:focus {
+        background: #0b0f19;
+        color: #a3e635;
+        border: round #10b981;
+        border-top: round #10b981;
+        border-bottom: round #10b981;
+    }
+
+    #controls Button.-success {
+        background: #0b0f19;
+        color: #a3e635;
+        border: round #10b981;
+        border-top: round #10b981;
+        border-bottom: round #10b981;
+    }
+
+    #controls Button.-success:hover,
+    #controls Button.-success:focus {
+        background: #0b0f19;
+        color: #a3e635;
+        border: round #10b981;
+        border-top: round #10b981;
+        border-bottom: round #10b981;
+    }
+
+    #controls Button.-warning {
+        background: #0b0f19;
+        color: #fbbf24;
+        border: round #f59e0b;
+        border-top: round #f59e0b;
+        border-bottom: round #f59e0b;
+    }
+
+    #controls Button.-warning:hover,
+    #controls Button.-warning:focus {
+        background: #0b0f19;
+        color: #fbbf24;
+        border: round #f59e0b;
+        border-top: round #f59e0b;
+        border-bottom: round #f59e0b;
     }
 
     #controls Button.-error {
-        background: #7f1d1d;
-        color: #fef2f2;
+        background: #0b0f19;
+        color: #fecaca;
         border: round #dc2626;
+        border-top: round #dc2626;
+        border-bottom: round #dc2626;
     }
 
-    #controls Button.-error:hover {
-        background: #b91c1c;
-        border: round #f87171;
+    #controls Button.-error:hover,
+    #controls Button.-error:focus {
+        background: #0b0f19;
+        color: #fecaca;
+        border: round #dc2626;
+        border-top: round #dc2626;
+        border-bottom: round #dc2626;
     }
 
-    #lbl_demod,
-    #lbl_presets {
+    #controls #btn_rx {
+        margin-bottom: 0;
+    }
+
+    #controls #btn_rec {
         margin-top: 0;
+        margin-bottom: 0;
+    }
+
+    #controls .action-btns {
+        layout: vertical;
+        height: auto;
+        grid-gutter: 0 0;
+        margin: 1 0 0 0;
+        padding: 0;
+    }
+
+    #controls .action-btns Button {
+        margin-top: 0;
+        margin-bottom: 0;
+    }
+
+    #lbl_demod {
+        margin-top: 0;
+    }
+
+    #lbl_presets {
+        margin-top: 1;
     }
 
     /* ── Matriz 3x3 de modos demod ── */
@@ -323,15 +546,16 @@ class XyzSDRApp(App):
     }
 
     .mode-grid Static.active-mode {
-        background: #10b981;
-        color: #ffffff;
-        border: tall #34d399;
+        background: #0b0f19;
+        color: #a3e635;
+        border: round #10b981;
         text-style: bold;
     }
 
     .mode-grid Static.active-mode:hover {
-        background: #059669;
-        border: tall #6ee7b7;
+        background: #0b0f19;
+        color: #a3e635;
+        border: round #10b981;
     }
 
     #display_area {
@@ -355,47 +579,88 @@ class XyzSDRApp(App):
     #waterfall_area {
         height: 1fr;
         layout: horizontal;
+        align: left top;
     }
 
     #waterfall_speed_bar {
         width: 7;
-        background: #0b0f19;
+        height: 100%;
+        min-height: 0;
+        background: transparent;
+        border: none;
         border-left: solid #1e293b;
-        align: center top;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-size: 0 0;
         padding: 0;
+        margin: 0;
     }
 
-    #waterfall_speed_bar Label {
-        color: #818cf8;
-        text-style: bold;
-        text-align: center;
-        margin-top: 1;
+    #waterfall_speed_bar .speed-btn-stack {
+        layout: vertical;
+        height: auto;
         width: 100%;
+        grid-gutter: 0 0;
+        padding: 0;
+        margin: 0;
     }
 
-    .spd-btn {
-        width: 5;
-        min-width: 5;
+    #waterfall_speed_bar .spd-btn {
+        width: 100%;
         height: 1;
         min-height: 1;
-        margin-top: 1;
+        min-width: 0;
+        margin: 0;
         padding: 0;
-        background: #1e1b4b;
-        color: #a5b4fc;
-        border: none;
+        text-style: bold;
         text-align: center;
         content-align: center middle;
+        box-sizing: border-box;
+        background: #090d16;
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
     }
 
-    .spd-btn:hover {
-        background: #312e81;
-        color: #ffffff;
+    #waterfall_speed_bar .spd-btn:hover,
+    #waterfall_speed_bar .spd-btn:focus,
+    #waterfall_speed_bar .spd-btn.-active,
+    #waterfall_speed_bar .spd-btn.-highlight {
+        background: #090d16;
+        background-tint: transparent;
     }
 
-    .spd-btn.active-spd {
-        background: #10b981;
-        color: #ffffff;
-        text-style: bold;
+    #waterfall_speed_bar .spd-a {
+        color: #818cf8;
+        border: round #4338ca;
+    }
+
+    #waterfall_speed_bar .spd-b {
+        color: #c084fc;
+        border: round #6d28d9;
+    }
+
+    #waterfall_speed_bar .spd-a:hover {
+        color: #818cf8;
+        border: round #4338ca;
+    }
+
+    #waterfall_speed_bar .spd-b:hover {
+        color: #c084fc;
+        border: round #6d28d9;
+    }
+
+    #waterfall_speed_bar .spd-btn.active-spd,
+    #waterfall_speed_bar .spd-btn.active-spd:hover,
+    #waterfall_speed_bar .spd-btn.active-spd:focus,
+    #waterfall_speed_bar .spd-btn.active-spd.-active,
+    #waterfall_speed_bar .spd-btn.active-spd.-highlight {
+        background: #090d16;
+        background-tint: transparent;
+        color: #a3e635;
+        border: round #10b981;
+        border-top: round #10b981;
+        border-bottom: round #10b981;
     }
 
     WaterfallTimeline {
@@ -403,6 +668,7 @@ class XyzSDRApp(App):
         height: 100%;
         background: #090d16;
         border: round #6366f1;
+        border-right: none;
     }
 
     #log_panel {
@@ -414,8 +680,11 @@ class XyzSDRApp(App):
 
     StatusBar {
         height: 1;
+        max-height: 1;
         background: #0f172a;
         color: #e2e8f0;
+        overflow: hidden;
+        text-wrap: nowrap;
     }
 
     .sep { color: #374151; }
@@ -434,6 +703,7 @@ class XyzSDRApp(App):
         ("s",           "toggle_rx",     "Start/Stop"),
         ("m",           "cycle_mode",    "Modo"),
         ("f",           "focus_freq",    "Freq"),
+        ("b",           "focus_bandwidth", "BW"),
         ("g",           "focus_gain",    "Gain"),
         ("v",           "focus_volume",  "Volumen"),
         ("r",           "record",        "Grabar"),
@@ -459,12 +729,14 @@ class XyzSDRApp(App):
         volume: float = 75.0,
         demod_mode: str = "wbfm",
         config: dict = None,
+        config_path: str = "config/defaults.toml",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.driver = driver
         self.demod_mode = demod_mode
         self.config = config or {}
+        self.config_path = config_path
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
@@ -474,14 +746,20 @@ class XyzSDRApp(App):
         # ── Estado del viewport ──
         self.tuned_frequency: float = float(center_freq)
         self.viewport_center: float = float(center_freq)
-        self.visible_span: float = float(VISIBLE_SPANS[DEFAULT_ZOOM_INDEX])
+        initial_rate = float(self.config.get("device", {}).get("sample_rate", 2_048_000))
+        self.sample_rate: float = initial_rate
+        self.visible_spans: list[float] = build_visible_spans(initial_rate)
+        self.visible_span: float = float(self.visible_spans[-1])
         self.scroll_step: float = float(SCROLL_STEPS[DEFAULT_STEP_INDEX])
         self.step_index: int = DEFAULT_STEP_INDEX
-        self.zoom_index: int = DEFAULT_ZOOM_INDEX
+        self.zoom_index: int = len(self.visible_spans) - 1
         self.gain_value: float = float(gain)
         self.volume_value: float = float(volume)
-        self.sample_rate: float = 2_048_000.0
         self._last_snr: float = 0.0
+        self._graceful_shutdown = False
+        self._bandwidth_changing = False
+        self._rx_stop_event = threading.Event()
+        self._rx_stop_event.set()
 
         dsp_cfg = self.config.get("dsp", {})
         self.squelch_enabled = bool(dsp_cfg.get("squelch_enabled", False))
@@ -490,6 +768,37 @@ class XyzSDRApp(App):
         if squelch_int not in self.SQUELCH_THRESHOLD_OPTIONS or squelch_int < 0:
             squelch_int = 15
         self.squelch_threshold = float(squelch_int)
+
+    def _closest_preset_rate(self, rate_hz: float, rates: list[float] | None = None) -> float:
+        """Elige el preset de bandwidth más cercano a rate_hz."""
+        candidates = rates or list(BANDWIDTH_PRESETS)
+        if not candidates:
+            return rate_hz
+        return min(candidates, key=lambda candidate: abs(candidate - rate_hz))
+
+    def _refresh_bandwidth_select(self) -> None:
+        """Actualiza opciones y valor del selector según el dispositivo."""
+        if not self._device:
+            return
+        try:
+            rates = self._device.get_supported_sample_rates()
+            select = self.query_one("#sel_bandwidth", Select)
+            select.set_options(bandwidth_select_options(rates))
+            select.value = self._closest_preset_rate(self.sample_rate, rates)
+        except Exception:
+            pass
+
+    def _sync_bandwidth_select_value(self) -> None:
+        """Revierte el selector al bandwidth activo (p. ej. tras error)."""
+        if not self._device:
+            return
+        try:
+            rates = self._device.get_supported_sample_rates()
+            self.query_one("#sel_bandwidth", Select).value = self._closest_preset_rate(
+                self.sample_rate, rates
+            )
+        except Exception:
+            pass
 
     # ── Layout ───────────────────────────────────────────────────────────────
 
@@ -504,6 +813,13 @@ class XyzSDRApp(App):
                     value=f"{self.tuned_frequency / 1e6:.4f}",
                     placeholder="MHz",
                     id="inp_freq",
+                )
+
+                yield Label("-- BANDWIDTH --")
+                yield Select(
+                    bandwidth_select_options(list(BANDWIDTH_PRESETS)),
+                    value=self._closest_preset_rate(self.sample_rate),
+                    id="sel_bandwidth",
                 )
 
                 yield Label("[ Ganancia (dB) - Volumen ]")
@@ -531,8 +847,8 @@ class XyzSDRApp(App):
                     id="sel_preset",
                 )
 
-                yield Button(">> INICIAR RX", id="btn_rx", variant="success")
-                yield Button("(o) GRABAR IQ", id="btn_rec", variant="warning")
+                yield Button(">> INICIAR RX", id="btn_rx", variant="success", classes="-textual-compact")
+                yield Button("(o) GRABAR IQ", id="btn_rec", variant="warning", classes="-textual-compact")
 
             # Panel derecho — visualizacion
             with Vertical(id="display_area"):
@@ -540,21 +856,40 @@ class XyzSDRApp(App):
                 yield SpectrumGraph(id="spectrum")
                 with Horizontal(id="waterfall_area"):
                     yield WaterfallTimeline(id="waterfall")
-                    with Vertical(id="waterfall_speed_bar"):
-                        yield Label("SPD")
-                        for spd in [1, 2, 3, 5, 10, 25, 50]:
-                            yield Button(str(spd), id=f"btn_spd_{spd}", classes="spd-btn")
+                    with VerticalScroll(id="waterfall_speed_bar", can_focus=True):
+                        with VerticalGroup(classes="speed-btn-stack"):
+                            for i, spd in enumerate(WATERFALL_SPEEDS):
+                                yield Button(
+                                    str(spd),
+                                    id=f"btn_spd_{spd}",
+                                    classes=f"spd-btn -textual-compact spd-{'a' if i % 2 == 0 else 'b'}",
+                                )
                 yield Log(id="log_panel", max_lines=200)
 
         yield StatusBar(id="status")
-        yield Footer()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
         self._device = SDRDevice(driver=self.driver)
         self._device.open()
+        self._device.set_frequency(self.tuned_frequency)
+        self._device.set_gain(self.gain_value)
         self.sample_rate = self._device.sample_rate
+
+        cfg_rate = self.config.get("device", {}).get("sample_rate")
+        if cfg_rate is not None:
+            cfg_rate = float(cfg_rate)
+            if abs(cfg_rate - self.sample_rate) > 1.0 and self._device.is_sample_rate_supported(cfg_rate):
+                self.change_bandwidth(cfg_rate)
+            else:
+                self._rebuild_zoom_levels()
+                self._adapt_viewport_to_bandwidth()
+        else:
+            self._rebuild_zoom_levels()
+            self._adapt_viewport_to_bandwidth()
+
+        self._refresh_bandwidth_select()
 
         device_label = "SIMULACION" if self._device.is_simulated else self.driver.upper()
         self.sub_title = f"{device_label} | {self.tuned_frequency / 1e6:.3f} MHz"
@@ -572,7 +907,7 @@ class XyzSDRApp(App):
             log.write_line(f"[OK]   Dispositivo abierto: driver={self.driver}")
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
-        log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | espacio centrar")
+        log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | espacio centrar")
         self._update_status()
 
     def on_unmount(self) -> None:
@@ -583,6 +918,33 @@ class XyzSDRApp(App):
             self._audio_output = None
         if self._device:
             self._device.close()
+
+    # ── Zoom dinámico / bandwidth viewport ───────────────────────────────────
+
+    def _rebuild_zoom_levels(self) -> None:
+        """Regenera niveles de zoom según el sample_rate actual."""
+        self.visible_spans = build_visible_spans(self.sample_rate)
+
+    def _adapt_viewport_to_bandwidth(self) -> tuple[float, float]:
+        """Adapta zoom al bandwidth IQ sin mover frecuencia ni centro del viewport."""
+        previous_span = float(self.visible_span)
+
+        if not self.visible_spans:
+            self._rebuild_zoom_levels()
+
+        max_span = float(self.visible_spans[-1])
+
+        if self.visible_span > max_span:
+            self.visible_span = max_span
+            self.zoom_index = len(self.visible_spans) - 1
+        elif any(abs(span - self.visible_span) < 1.0 for span in self.visible_spans):
+            self.zoom_index = find_zoom_index(self.visible_span, self.visible_spans)
+        else:
+            narrower = [span for span in self.visible_spans if span <= self.visible_span + 1.0]
+            self.visible_span = float(narrower[-1] if narrower else self.visible_spans[0])
+            self.zoom_index = find_zoom_index(self.visible_span, self.visible_spans)
+
+        return previous_span, float(self.visible_span)
 
     # ── Sincronizacion del Viewport ──────────────────────────────────────────
 
@@ -666,16 +1028,16 @@ class XyzSDRApp(App):
         """Zoom in: muestra menos ancho de banda (mayor resolucion)."""
         if self.zoom_index > 0:
             self.zoom_index -= 1
-            self.visible_span = float(VISIBLE_SPANS[self.zoom_index])
+            self.visible_span = float(self.visible_spans[self.zoom_index])
             self._sync_viewport()
             self._log(f"Zoom: {_format_hz(self.visible_span)}")
             self._update_status()
 
     def action_zoom_out(self) -> None:
         """Zoom out: muestra mas ancho de banda (menor resolucion)."""
-        if self.zoom_index < len(VISIBLE_SPANS) - 1:
+        if self.zoom_index < len(self.visible_spans) - 1:
             self.zoom_index += 1
-            self.visible_span = float(VISIBLE_SPANS[self.zoom_index])
+            self.visible_span = float(self.visible_spans[self.zoom_index])
             self._sync_viewport()
             self._log(f"Zoom: {_format_hz(self.visible_span)}")
             self._update_status()
@@ -697,7 +1059,16 @@ class XyzSDRApp(App):
             self._start_rx()
 
     def _start_rx(self) -> None:
+        if self._rx_active:
+            return
+
+        if not self._rx_stop_event.is_set():
+            if not self._rx_stop_event.wait(timeout=3.0):
+                self._log("[WARN] Worker RX previo no finalizó; continuando")
+                self._rx_stop_event.set()
+
         self._rx_active = True
+        self._rx_stop_event.clear()
 
         try:
             self._audio_output = AudioOutputQueue(sample_rate=48_000)
@@ -708,13 +1079,19 @@ class XyzSDRApp(App):
             self._audio_output = None
             self._log(f"[WARN] Sin salida de audio: {e}")
 
-        btn = self.query_one("#btn_rx", Button)
-        btn.label = "|| DETENER RX"
-        btn.variant = "error"
+        try:
+            btn = self.query_one("#btn_rx", Button)
+            btn.label = "|| DETENER RX"
+            btn.variant = "error"
+        except Exception:
+            pass
         self._log("RX iniciado")
         self._rx_worker()
 
     def _stop_rx(self) -> None:
+        if not self._rx_active and self._rx_stop_event.is_set():
+            return
+
         self._rx_active = False
 
         # Detener salida de audio
@@ -726,15 +1103,25 @@ class XyzSDRApp(App):
             self._audio_output = None
             self._log("[INFO] Salida de audio detenida")
 
-        btn = self.query_one("#btn_rx", Button)
-        btn.label = ">> INICIAR RX"
-        btn.variant = "success"
+        if not self._rx_stop_event.wait(timeout=3.0):
+            self._log("[WARN] Timeout esperando fin del worker RX")
+            self._rx_stop_event.set()
+
+        try:
+            btn = self.query_one("#btn_rx", Button)
+            btn.label = ">> INICIAR RX"
+            btn.variant = "success"
+        except Exception:
+            pass
         self._log("RX detenido")
 
     # ── Otras acciones ───────────────────────────────────────────────────────
 
     def action_focus_freq(self) -> None:
         self.query_one("#inp_freq", Input).focus()
+
+    def action_focus_bandwidth(self) -> None:
+        self.query_one("#sel_bandwidth", Select).focus()
 
     def action_focus_gain(self) -> None:
         self.query_one("#sel_gain", Select).focus()
@@ -759,11 +1146,45 @@ class XyzSDRApp(App):
         from tui.widgets.settings_menu import SettingsScreen
         self.push_screen(SettingsScreen())
 
-    def change_device_driver(self, new_driver: str) -> None:
-        """Cambia dinámicamente el driver del dispositivo SDR en tiempo real."""
-        if new_driver == self.driver:
-            return
+    def action_quit(self) -> None:
+        """Salida limpia con pantalla de cierre."""
+        self._graceful_shutdown = True
+        self.exit()
 
+    def _persist_device_config(
+        self,
+        *,
+        driver: str | None = None,
+        sample_rate: float | None = None,
+    ) -> None:
+        """Guarda driver y/o sample_rate en el TOML de configuración."""
+        try:
+            patch_device_section(
+                self.config_path,
+                driver=driver,
+                sample_rate=sample_rate,
+                center_freq=self.tuned_frequency,
+                gain=self.gain_value,
+            )
+            device_cfg = self.config.setdefault("device", {})
+            if driver is not None:
+                device_cfg["driver"] = driver
+            if sample_rate is not None:
+                device_cfg["sample_rate"] = int(sample_rate)
+            device_cfg["center_freq"] = int(self.tuned_frequency)
+            device_cfg["gain"] = float(self.gain_value)
+        except Exception as exc:
+            self._log(f"[WARN] No se pudo guardar config: {exc}")
+
+    def change_device_driver(self, new_driver: str) -> bool:
+        """Cambia dinámicamente el driver del dispositivo SDR en tiempo real."""
+        if new_driver == "sim":
+            new_driver = "simulated"
+
+        if new_driver == self.driver:
+            return True
+
+        previous_driver = self.driver
         was_active = self._rx_active
         if was_active:
             self._stop_rx()
@@ -771,13 +1192,57 @@ class XyzSDRApp(App):
         if self._device:
             self._device.close()
 
-        self.driver = new_driver
-        self._device = SDRDevice(driver=self.driver)
-        self._device.open()
+        def _try_open(driver: str) -> None:
+            self.driver = driver
+            self._device = SDRDevice(driver=self.driver)
+            self._device.open()
+            self._device.set_frequency(self.tuned_frequency)
+            self._device.set_gain(self.gain_value)
+
+        try:
+            _try_open(new_driver)
+        except HardwareInitializationError as exc:
+            self._log(f"[ERR]  {exc}")
+            self.audio_effects.play_error()
+            fallback = previous_driver or "simulated"
+            try:
+                _try_open(fallback)
+                fb_label = "SIMULACION" if self._device.is_simulated else fallback.upper()
+                self._log(f"[INFO] Restaurado driver: {fb_label}")
+            except Exception as restore_exc:
+                self._device = None
+                self._log(f"[ERR]  No se pudo restaurar el driver: {restore_exc}")
+                return False
+
+            self._apply_driver_change(was_active)
+            return False
+
+        self._apply_driver_change(was_active)
+        self._persist_device_config(driver=self.driver, sample_rate=self.sample_rate)
+        return True
+
+    def _apply_driver_change(self, was_active: bool) -> None:
+        """Sincroniza UI y viewport tras abrir un driver."""
         self.sample_rate = self._device.sample_rate
 
+        cfg_rate = self.config.get("device", {}).get("sample_rate")
+        if cfg_rate is not None:
+            cfg_rate = float(cfg_rate)
+            if (
+                abs(cfg_rate - self.sample_rate) > 1.0
+                and self._device.is_sample_rate_supported(cfg_rate)
+            ):
+                self.change_bandwidth(cfg_rate)
+            else:
+                self._rebuild_zoom_levels()
+                self._adapt_viewport_to_bandwidth()
+        else:
+            self._rebuild_zoom_levels()
+            self._adapt_viewport_to_bandwidth()
+
         self._sync_viewport()
-        
+        self._refresh_bandwidth_select()
+
         device_str = "SIMULACION" if self._device.is_simulated else self.driver.upper()
         self.sub_title = f"{device_str} | {self.tuned_frequency / 1e6:.3f} MHz"
         self._log(f"[OK]   Cambiado a driver: {device_str}")
@@ -786,6 +1251,66 @@ class XyzSDRApp(App):
             self._start_rx()
         else:
             self._update_status()
+
+    def change_bandwidth(self, new_rate: float) -> bool:
+        """Cambia el bandwidth IQ (sample rate) preservando sintonía y viewport."""
+        if self._bandwidth_changing:
+            self._log("[WARN] Cambio de bandwidth ya en curso")
+            return False
+
+        if not self._device:
+            self._log("[ERR]  Dispositivo SDR no disponible")
+            return False
+
+        if abs(self.sample_rate - new_rate) < 1.0:
+            return True
+
+        if not self._device.is_sample_rate_supported(new_rate):
+            supported = ", ".join(
+                _format_bandwidth_hz(rate) for rate in self._device.get_supported_sample_rates()
+            )
+            self._log(f"[ERR]  Bandwidth no soportado. Opciones: {supported}")
+            return False
+
+        self._bandwidth_changing = True
+        was_rx = self._rx_active
+
+        try:
+            if was_rx:
+                self._stop_rx()
+
+            self._device.set_sample_rate(new_rate)
+            self.sample_rate = float(new_rate)
+            self._rebuild_zoom_levels()
+            previous_span, new_span = self._adapt_viewport_to_bandwidth()
+
+            # Reafirmar sintonía por si el driver resetea parámetros
+            self._device.set_frequency(self.tuned_frequency)
+            self._sync_viewport()
+            self._update_status()
+
+            self._log(f"[OK]   Bandwidth: {_format_bandwidth_hz(new_rate)}")
+            if new_span < previous_span - 1.0:
+                self._log(
+                    f"[INFO] Zoom adaptado: {_format_hz(previous_span)} -> {_format_hz(new_span)}"
+                )
+
+            if was_rx:
+                self._start_rx()
+
+            self._persist_device_config(sample_rate=self.sample_rate)
+            self._sync_bandwidth_select_value()
+            return True
+
+        except SampleRateError as exc:
+            self._log(f"[ERR]  {exc}")
+            return False
+        except Exception as exc:
+            logger.exception("Error cambiando bandwidth")
+            self._log(f"[ERR]  Error cambiando bandwidth: {exc}")
+            return False
+        finally:
+            self._bandwidth_changing = False
 
     # ── Eventos UI ───────────────────────────────────────────────────────────
 
@@ -810,7 +1335,7 @@ class XyzSDRApp(App):
             pass
 
         # Actualizar clases CSS activas de los botones de velocidad
-        for s in [1, 2, 3, 5, 10, 25, 50]:
+        for s in WATERFALL_SPEEDS:
             try:
                 btn = self.query_one(f"#btn_spd_{s}", Button)
                 if s == speed:
@@ -829,6 +1354,12 @@ class XyzSDRApp(App):
             self._update_mode_ui()
             self._log(f"Modo: {self.demod_mode.upper()}")
             self._update_status()
+            return
+
+        w = event.widget
+        if w and w.id in ("spectrum", "waterfall", "log_panel"):
+            self.set_focus(None)
+            event.stop()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "inp_freq":
@@ -867,6 +1398,24 @@ class XyzSDRApp(App):
             except ValueError:
                 self.audio_effects.play_error()
                 self._log(f"[ERROR] Volumen invalido: {event.value}")
+
+        elif event.select.id == "sel_bandwidth" and event.value != Select.BLANK:
+            if self._bandwidth_changing:
+                self._sync_bandwidth_select_value()
+                return
+            try:
+                new_rate = float(event.value)
+                if abs(new_rate - self.sample_rate) < 1.0:
+                    return
+                if self.change_bandwidth(new_rate):
+                    self.audio_effects.play_chime()
+                else:
+                    self.audio_effects.play_error()
+                    self._sync_bandwidth_select_value()
+            except (TypeError, ValueError):
+                self.audio_effects.play_error()
+                self._sync_bandwidth_select_value()
+                self._log(f"[ERROR] Bandwidth invalido: {event.value}")
 
         elif event.select.id == "sel_preset" and event.value != Select.BLANK:
             parts = str(event.value).split(":")
@@ -907,61 +1456,80 @@ class XyzSDRApp(App):
         """Loop de recepcion en hilo separado."""
         logger.info("RX worker iniciado")
 
-        fft_size = self.config.get("dsp", {}).get("fft_size", 4096)
-        num_samples = fft_size * 16
+        dsp_cfg = self.config.get("dsp", {})
+        fft_size = int(dsp_cfg.get("fft_size", 4096))
+        num_avg = int(dsp_cfg.get("fft_avg_windows", 8))
 
-        while self._rx_active:
-            try:
-                samples = self._device.read_samples(num_samples)
-                freqs_mhz, psd = average_psd(
-                    samples,
+        try:
+            while self._rx_active:
+                if self._bandwidth_changing:
+                    time.sleep(0.01)
+                    continue
+
+                capture_rate = float(self.sample_rate)
+                capture_freq = float(self.tuned_frequency)
+                capture_mode = self.demod_mode
+                num_samples = compute_rx_chunk_samples(
                     fft_size=fft_size,
-                    sample_rate=self.sample_rate,
+                    sample_rate=capture_rate,
+                    num_avg=num_avg,
                 )
 
-                capture_center = self.tuned_frequency
+                try:
+                    samples = self._device.read_samples(num_samples)
+                    if not self._rx_active or self._bandwidth_changing:
+                        continue
 
-                # Actualizar espectro
-                self.call_from_thread(
-                    self.query_one("#spectrum", SpectrumGraph).update_data,
-                    freqs_mhz,
-                    psd,
-                    capture_center,
-                )
+                    freqs_mhz, psd = average_psd(
+                        samples,
+                        fft_size=fft_size,
+                        sample_rate=capture_rate,
+                        num_avg=num_avg,
+                    )
 
-                # Actualizar waterfall
-                self.call_from_thread(
-                    self.query_one("#waterfall", WaterfallTimeline).add_row,
-                    capture_center,
-                    self.sample_rate,
-                    psd,
-                )
+                    # Actualizar espectro
+                    self.call_from_thread(
+                        self.query_one("#spectrum", SpectrumGraph).update_data,
+                        freqs_mhz,
+                        psd,
+                        capture_freq,
+                    )
 
-                # Demodulación y salida de audio en tiempo real
-                if self._audio_output and self.demod_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
-                    from core.dsp import demodulate
-                    try:
-                        audio = demodulate(
-                            samples,
-                            mode=self.demod_mode,
-                            sample_rate=self.sample_rate,
-                            audio_rate=48000,
-                        )
-                        self._audio_output.enqueue(audio)
-                    except Exception as ae:
-                        logger.error(f"Error en reproducción de audio: {ae}")
+                    # Actualizar waterfall (cada fila guarda su sample_rate)
+                    self.call_from_thread(
+                        self.query_one("#waterfall", WaterfallTimeline).add_row,
+                        capture_freq,
+                        capture_rate,
+                        psd,
+                    )
 
-                # Actualizar SNR y status
-                snr = float(np.max(psd) - np.percentile(psd, 10))
-                self._last_snr = snr
-                self.call_from_thread(self._update_status)
+                    # Demodulación y salida de audio en tiempo real
+                    if self._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
+                        from core.dsp import demodulate
+                        try:
+                            audio = demodulate(
+                                samples,
+                                mode=capture_mode,
+                                sample_rate=capture_rate,
+                                audio_rate=48000,
+                            )
+                            self._audio_output.enqueue(audio)
+                        except Exception as ae:
+                            logger.error(f"Error en reproducción de audio: {ae}")
 
-            except Exception as e:
-                logger.error(f"RX error: {e}")
-                self.call_from_thread(self._log, f"[ERROR] RX: {e}")
-                break
+                    snr = float(np.max(psd) - np.percentile(psd, 10))
+                    self._last_snr = snr
+                    self.call_from_thread(self._update_status)
 
-        logger.info("RX worker detenido")
+                except Exception as e:
+                    if self._bandwidth_changing or not self._rx_active:
+                        continue
+                    logger.error(f"RX error: {e}")
+                    self.call_from_thread(self._log, f"[ERROR] RX: {e}")
+                    break
+        finally:
+            self._rx_stop_event.set()
+            logger.info("RX worker detenido")
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1011,6 +1579,7 @@ class XyzSDRApp(App):
                 snr=self._last_snr,
                 step=self.scroll_step,
                 span=self.visible_span,
+                bandwidth=self.sample_rate,
                 device=device_str,
             )
         except Exception:
@@ -1027,6 +1596,43 @@ class XyzSDRApp(App):
 
 
 # ─── Utilidades ──────────────────────────────────────────────────────────────
+
+def bandwidth_select_options(rates: list[float]) -> list[tuple[str, float]]:
+    """Opciones (etiqueta, valor) para el Select de bandwidth."""
+    return [(_format_bandwidth_hz(rate), float(rate)) for rate in rates]
+
+
+def build_visible_spans(sample_rate: float) -> list[float]:
+    """Genera niveles de zoom válidos para un bandwidth IQ dado."""
+    if sample_rate <= 0:
+        return [100_000.0]
+
+    spans = [float(step) for step in ZOOM_SPAN_STEPS if step <= sample_rate + 1.0]
+    max_rate = float(sample_rate)
+
+    if not spans or abs(spans[-1] - max_rate) > 1.0:
+        spans.append(max_rate)
+
+    # Ordenar y deduplicar manteniendo el máximo real del hardware
+    unique = sorted(set(spans))
+    if unique[-1] > max_rate:
+        unique[-1] = max_rate
+    return unique
+
+
+def find_zoom_index(span: float, spans: list[float]) -> int:
+    """Encuentra el índice de zoom más cercano a un span visible."""
+    if not spans:
+        return 0
+    best_index = 0
+    best_diff = float("inf")
+    for index, candidate in enumerate(spans):
+        diff = abs(candidate - span)
+        if diff < best_diff:
+            best_diff = diff
+            best_index = index
+    return best_index
+
 
 def _format_hz(hz: float) -> str:
     """Formatea Hz a cadena legible (kHz, MHz)."""

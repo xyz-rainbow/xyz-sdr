@@ -134,10 +134,12 @@ def main():
             volume=volume,
             demod_mode=demod_mode,
             config=config,
+            config_path=args.config,
         )
         print_startup_splash()
         app.run()
-        print_shutdown_splash()
+        if app._graceful_shutdown:
+            print_shutdown_splash()
     except HardwareInitializationError as e:
         logger.error(str(e))
         sys.exit(1)

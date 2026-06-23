@@ -2,15 +2,16 @@
 
 [device]
 driver       = "sdrplay"      # "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
-sample_rate  = 2_048_000      # Muestras por segundo (2.048 MHz)
-center_freq  = 100_600_000    # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
-gain         = 40.0           # Ganancia en dB (0-60 típico)
+sample_rate  = 250_000      # Muestras por segundo (2.048 MHz)
+center_freq  = 100_600_000      # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
+gain         = 40.0      # Ganancia en dB (0-60 típico)
 auto_gain    = false
 ppm_correction = 0            # Corrección PPM del oscilador
 
 [dsp]
 fft_size     = 4096           # Tamaño FFT para espectro
 fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
+fft_avg_windows = 8           # Ventanas FFT promediadas por iteración RX
 demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
 audio_rate   = 48_000         # Hz — tasa de audio de salida
 volume       = 75.0           # Volumen de salida 0–100 %

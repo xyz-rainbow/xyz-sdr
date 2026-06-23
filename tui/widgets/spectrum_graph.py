@@ -52,15 +52,9 @@ class SpectrumGraph(Widget):
             self.post_message(FrequencyTimeline.ScrollRequest(direction=-1))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Sintonizar directamente al hacer clic en el gráfico."""
+        """Clic: desenfocar inputs sin cambiar la frecuencia."""
         event.stop()
-        width = self.size.width
-        if width <= 0:
-            return
-        left_hz = self._viewport_center_hz - self._visible_span_hz / 2
-        clicked_freq = left_hz + (event.x / width) * self._visible_span_hz
-        from tui.widgets.frequency_timeline import FrequencyTimeline
-        self.post_message(FrequencyTimeline.TuneRequest(clicked_freq))
+        self.app.set_focus(None)
 
     # ── API publica ──────────────────────────────────────────────────────────
 

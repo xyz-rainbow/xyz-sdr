@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import numpy as np
-from typing import Callable, Optional
+from typing import Optional
 
 try:
     import SoapySDR
@@ -23,7 +23,49 @@ class HardwareInitializationError(Exception):
     """Excepción lanzada cuando falla la inicialización del hardware real SDR."""
     pass
 
+
+class SampleRateError(ValueError):
+    """Sample rate / bandwidth no soportado por el dispositivo."""
+    pass
+
+
+# Presets de bandwidth IQ (Hz) — se filtran según capacidades del hardware
+BANDWIDTH_PRESETS: tuple[float, ...] = (
+    250_000,
+    500_000,
+    1_000_000,
+    2_048_000,
+    4_000_000,
+    8_000_000,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _format_bandwidth_hz(rate_hz: float) -> str:
+    """Etiqueta legible para logs y UI."""
+    if rate_hz >= 1_000_000:
+        value = rate_hz / 1_000_000
+        text = f"{value:.3f}".rstrip("0").rstrip(".")
+        return f"{text} MHz"
+    if rate_hz >= 1_000:
+        return f"{rate_hz / 1_000:.0f} kHz"
+    return f"{rate_hz:.0f} Hz"
+
+
+def _rate_within_soapy_range(rate_hz: float, rate_range) -> bool:
+    """Comprueba si un rate cae dentro del rango reportado por SoapySDR."""
+    minimum = float(rate_range.minimum())
+    maximum = float(rate_range.maximum())
+    if rate_hz < minimum or rate_hz > maximum:
+        return False
+    step = float(rate_range.step())
+    if step > 0:
+        steps = round((rate_hz - minimum) / step)
+        adjusted = minimum + steps * step
+        if abs(adjusted - rate_hz) > max(step * 0.01, 1.0):
+            return False
+    return True
 
 
 # ─── Modo simulación (sin hardware) ─────────────────────────────────────────
@@ -142,13 +184,7 @@ class SDRDevice:
     def close(self):
         """Cierra el stream y el dispositivo."""
         with self._lock:
-            if self._stream and SOAPYSDR_AVAILABLE:
-                try:
-                    self._sdr.deactivateStream(self._stream)
-                    self._sdr.closeStream(self._stream)
-                except Exception:
-                    pass
-                self._stream = None
+            self._stop_stream()
             if self._sdr:
                 try:
                     self._sdr.close() if hasattr(self._sdr, "close") else None
@@ -157,17 +193,107 @@ class SDRDevice:
                 self._sdr = None
         logger.info("Dispositivo cerrado")
 
+    # ── Bandwidth / sample rate ─────────────────────────────────────────────
+
+    def get_supported_sample_rates(self) -> list[float]:
+        """Lista de bandwidths disponibles para el dispositivo abierto."""
+        if self.is_simulated or self.driver == "simulated":
+            return list(BANDWIDTH_PRESETS)
+
+        if not self._sdr or not SOAPYSDR_AVAILABLE:
+            return list(BANDWIDTH_PRESETS)
+
+        try:
+            rate_range = self._sdr.getSampleRateRange(SOAPY_SDR_RX, self.channel)
+            supported = [
+                rate for rate in BANDWIDTH_PRESETS
+                if _rate_within_soapy_range(rate, rate_range)
+            ]
+            if supported:
+                return supported
+            logger.warning(
+                "Ningún preset encaja en el rango Soapy [%s, %s]; usando presets por defecto",
+                rate_range.minimum(),
+                rate_range.maximum(),
+            )
+        except Exception as exc:
+            logger.warning("No se pudo consultar rango de sample rate: %s", exc)
+
+        return list(BANDWIDTH_PRESETS)
+
+    def is_sample_rate_supported(self, rate_hz: float) -> bool:
+        """Indica si el dispositivo admite el bandwidth solicitado."""
+        supported = self.get_supported_sample_rates()
+        return any(abs(rate_hz - candidate) < 1.0 for candidate in supported)
+
+    def set_sample_rate(self, rate: float) -> None:
+        """Establece la tasa de muestreo (bandwidth IQ) en Hz."""
+        if rate <= 0:
+            raise SampleRateError(f"Sample rate inválido: {rate}")
+
+        if not self.is_sample_rate_supported(rate):
+            supported = ", ".join(_format_bandwidth_hz(r) for r in self.get_supported_sample_rates())
+            raise SampleRateError(
+                f"Bandwidth {_format_bandwidth_hz(rate)} no soportado. "
+                f"Opciones: {supported}"
+            )
+
+        if abs(self.sample_rate - rate) < 1.0:
+            return
+
+        previous_rate = self.sample_rate
+        self.sample_rate = rate
+
+        try:
+            if isinstance(self._sdr, SimulatedSDR):
+                self._sdr.sample_rate = rate
+            elif self._sdr and SOAPYSDR_AVAILABLE:
+                with self._lock:
+                    had_stream = self._stream is not None
+                    if had_stream:
+                        self._stop_stream()
+                    self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+                    # Reafirmar frecuencia y ganancia tras cambio de rate
+                    self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+                    self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
+                    if not self.auto_gain:
+                        self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
+                    if had_stream:
+                        self._start_stream()
+        except Exception as exc:
+            self.sample_rate = previous_rate
+            raise SampleRateError(f"No se pudo aplicar bandwidth {_format_bandwidth_hz(rate)}: {exc}") from exc
+
+        logger.info("Bandwidth: %s", _format_bandwidth_hz(rate))
+
     # ── Configuración ───────────────────────────────────────────────────────
 
     def _apply_settings(self):
         """Aplica la configuración actual al hardware."""
         if not SOAPYSDR_AVAILABLE or isinstance(self._sdr, SimulatedSDR):
+            if isinstance(self._sdr, SimulatedSDR):
+                self._sdr.center_freq = self.center_freq
+                self._sdr.sample_rate = self.sample_rate
+                self._sdr.gain = self.gain
             return
         self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, self.sample_rate)
         self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
         self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
         if not self.auto_gain:
             self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
+
+    def _stop_stream(self) -> None:
+        """Detiene y cierra el stream RX activo."""
+        if not self._stream or not SOAPYSDR_AVAILABLE or isinstance(self._sdr, SimulatedSDR):
+            self._stream = None
+            return
+        try:
+            self._sdr.deactivateStream(self._stream)
+            self._sdr.closeStream(self._stream)
+        except Exception as exc:
+            logger.warning("Error cerrando stream RX: %s", exc)
+        finally:
+            self._stream = None
 
     def _start_stream(self):
         """Inicia el stream RX."""
@@ -193,20 +319,6 @@ class SDRDevice:
             self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, False)
             self._sdr.setGain(SOAPY_SDR_RX, self.channel, gain_db)
         logger.debug(f"Ganancia: {gain_db} dB")
-
-    def set_sample_rate(self, rate: float):
-        """Establece la tasa de muestreo en Hz."""
-        self.sample_rate = rate
-        if self._sdr:
-            if SOAPYSDR_AVAILABLE and not isinstance(self._sdr, SimulatedSDR):
-                self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
-                # Reiniciar stream para aplicar nuevo sample rate
-                if self._stream:
-                    self._sdr.deactivateStream(self._stream)
-                    self._sdr.closeStream(self._stream)
-                self._start_stream()
-            elif isinstance(self._sdr, SimulatedSDR):
-                self._sdr.sample_rate = rate
 
     # ── Lectura de muestras ─────────────────────────────────────────────────
 

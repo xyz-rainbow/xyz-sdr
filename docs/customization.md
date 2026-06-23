@@ -122,3 +122,61 @@ Para mantener la cohesión visual y garantizar una experiencia de usuario consis
 2. **Fondo de Campos de Texto**: Los campos de entrada de texto interactivos (como el campo de frecuencia de sintonía en el menú de controles) deben usar fondo negro (`background: #000000;`) tanto en su estado de reposo como enfocado (`:focus`). El contorno o borde del input se utiliza para representar el foco visual (ej. `border: round #818cf8;`).
 3. **Ancho Proporcional**: Los controles desplegables (Select) para valores cortos (como Ganancia o Squelch) deben restringir su ancho (`width`) para evitar que ocupen el 100% de la barra lateral, dejando el ancho completo únicamente para listas largas como presets o nombres de dispositivos.
 
+### Soft corners sin orejas (Outline — sin tint)
+Textual dibuja `border: round` sobre un rectángulo. **`background-tint` y fondos sólidos vivos sangran** en las esquinas (no se recortan al radio del borde).
+
+**Patrón obligatorio** con `border: round`:
+```css
+/* Sidebar → background: #0b0f19 (PANEL_BG) */
+/* Espectro/cascada/velocidad → background: #090d16 (DISPLAY_BG) */
+
+MiWidget {
+    background: #090d16;           /* = fondo del padre inmediato */
+    border: round #4338ca;
+    color: #a5b4fc;
+}
+MiWidget:hover {
+    border: round #6366f1;
+    color: #e0e7ff;                /* solo borde + texto; sin tint */
+}
+MiWidget.activo {
+    background: #090d16;
+    border: round #10b981;
+    color: #ffffff;                /* fallback activo: texto lima #a3e635 */
+}
+```
+
+**No hacer:** `background-tint`, `background: #10b981`, ni `#1e1b4b` en widgets con `border: round`.
+
+### Barra de velocidad de cascada (Fase 1)
+- Ancho `3` columnas (~¼ del ancho anterior).
+- Fondo botón = `DISPLAY_BG` (`#090d16`).
+- Activo (plan B): borde verde + texto lima `#a3e635`, sin relleno.
+- Línea separadora: `border-left: solid #1e293b` en `#waterfall_speed_bar`.
+- Sin hover visual en controles sidebar (frecuencia, select, RX/Grabar).
+
+---
+
+## 6. Bandwidth IQ (Sample Rate)
+
+El **bandwidth de captura** equivale al `sample_rate` del SDR (`device.sample_rate` en TOML).
+
+### Comportamiento al cambiar bandwidth
+1. Se detiene RX de forma segura (worker sincronizado con `_rx_stop_event`).
+2. Se aplica el nuevo rate en hardware vía `SDRDevice.set_sample_rate()`.
+3. **No se modifican** `tuned_frequency` ni `viewport_center`.
+4. El zoom visible se **adapta**: si el span actual excede el nuevo máximo, se hace clamp al zoom-out sin mover el centro.
+5. Se reanuda RX si estaba activo.
+6. Se persiste en `config/defaults.toml` (`sample_rate`, `center_freq`, `gain`).
+
+### Presets y zoom dinámico
+- Presets en `core/device.py` → `BANDWIDTH_PRESETS` (250k … 8M), filtrados por hardware.
+- Niveles de zoom en `tui/app.py` → `build_visible_spans(sample_rate)` (100k … sample_rate).
+
+### Cambio de driver (Esc → Hardware)
+- Si el hardware no está disponible (p. ej. SDRplay sin SoapySDR), la app **no debe crashear**: revierte al driver anterior y muestra error en el log.
+- `change_device_driver()` devuelve `bool`; la UI de ajustes re-sincroniza el Select.
+
+### Atajo
+- Tecla **`B`**: enfoca `#sel_bandwidth` (mismo patrón que `G`/`V` para gain/volumen).
+
