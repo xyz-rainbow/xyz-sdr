@@ -30,24 +30,15 @@ Donde `nice_step` se ajusta a `[1.0, 2.0, 5.0, 10.0]` según la escala visual ó
 Muestra los picos de potencia de la señal en tiempo real mediante barras verticales de caracteres ASCII (`▁▂▃▄▅▆▇█`).
 
 ### Algoritmo de Agregación de Picos (Máxima Resolución)
-Al renderizar spans muy anchos de frecuencia en una terminal con pocas columnas (ej. 120 caracteres para 2 MHz), múltiples bins de la FFT (que tiene 4096 bins de resolución) caen dentro del rango representado por un único carácter de pantalla. 
-En lugar de tomar una muestra puntual (que causa aliasing y pérdida de señales), el widget calcula el rango exacto de la columna y obtiene el **valor máximo de potencia**:
-```python
-f_start = left_hz + col * hz_per_col
-f_end = left_hz + (col + 1) * hz_per_col
-idx_start = np.searchsorted(self._freqs_abs_hz, f_start)
-idx_end = np.searchsorted(self._freqs_abs_hz, f_end)
+Al renderizar spans muy anchos de frecuencia en una terminal con pocas columnas, múltiples bins de la FFT caen dentro del rango representado por un único carácter. El widget usa agregación **máximo** vía `slice_band_to_viewport` en `core/band_buffer.py`. Con zoom activo, el worker RX escala `fft_size` y `band_cache_cols` (`compute_effective_fft_size` / `compute_effective_band_cols`) para mantener detalle espectral.
 
-if idx_start < idx_end:
-    col_values[col] = np.max(self._psd[idx_start:idx_end])
-```
-Esto asegura que las portadoras portadoras y transmisiones estrechas (como CW o NBFM) siempre se dibujen a su altura máxima en el gráfico.
+Un contorno de pico (`·`) marca la curva de la señal encima del relleno de barras ASCII (`▁▂▃▄▅▆▇█`).
 
 ---
 
 ## 3. `WaterfallTimeline` (Espectrograma en Cascada)
 
-Muestra la actividad del espectro a lo largo del tiempo, desplazando las filas de arriba a abajo.
+Muestra la actividad del espectro a lo largo del tiempo. Las filas nuevas se añaden **abajo**; el historial sube cuando la pantalla está llena (estilo SDR clásico). Cada fila temporal ocupa exactamente una línea de terminal — el zoom horizontal solo afecta el eje de frecuencia, no la densidad temporal.
 
 ### Alineación Dinámica Histórica
 A diferencia de los waterfalls clásicos que asumen una frecuencia fija, `WaterfallTimeline` admite que el usuario cambie el zoom y el centro del viewport en cualquier momento.
@@ -65,12 +56,26 @@ Esto crea un efecto de **re-alineamiento físico dinámico**: si sintonizas a ot
 
 ---
 
-## 🖱️ Interactividad de Ratón Común
-Los tres widgets heredan los siguientes controladores de eventos para unificar la interacción:
+## 🖱️ Interactividad de Ratón — Banda audible (PASS)
+
+`FrequencyTimeline` y `SpectrumGraph` comparten el mixin `PassbandDragMixin` (`tui/widgets/passband_messages.py`):
+
+1. **`mouse_down`**: fija el **centro** de la banda audible en la columna clicada.
+2. **`mouse_move`** (botón pulsado): calcula ancho simétrico  
+   `width = 2 × |f_cursor − f_center|` y publica `PassbandPreview`.
+3. **`mouse_up`**: publica `PassbandSelectRequest(center, width)`.
+4. **Clic corto** (arrastre &lt; 5 px): ancho por defecto del modo (`wbfm` 200 kHz, etc.).
+
+Overlay visual:
+- Timeline: zona `▓` verde en la fila de ticks + lectura `▼ 100.600 MHz | 120 kHz`.
+- Espectro: columnas dentro de PASS en color normal; fuera, atenuadas.
+- Cascada: overlay pasivo (columnas fuera de PASS más oscuras).
+
+La barra de estado muestra **PASS** (ancho audible) separado de **ZOOM** (span visible) y **BW** (sample rate IQ).
+
+## 🖱️ Scroll y zoom
+
+Timeline, espectro y cascada comparten:
 * **`on_mouse_scroll_up` / `on_mouse_scroll_down`**:
-  * Desplazamiento normal: Envía un mensaje `ScrollRequest` para cambiar la frecuencia hacia arriba o hacia abajo.
-  * `Ctrl + Rueda`: Envía un mensaje `ZoomRequest` para acercar/alejar la vista (zoom).
-* **`on_mouse_down`**:
-  * Calcula la frecuencia física bajo la columna del ratón:
-    $$f_{clic} = f_{start} + \left( \frac{x_{mouse}}{\text{width}} \right) \times \text{span}$$
-  * Publica un mensaje `TuneRequest` para re-sintonizar el receptor inmediatamente a ese punto.
+  * Desplazamiento normal: `ScrollRequest` (cambia frecuencia sintonizada).
+  * `Ctrl + Rueda`: `ZoomRequest` (span visible).

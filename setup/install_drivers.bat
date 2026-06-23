@@ -5,10 +5,12 @@ rem Wrapper Batch — prefiere .venv del proyecto si existe
 rem ============================================================
 
 set "ROOT=%~dp0.."
+if not exist "%ROOT%\var\pycache" mkdir "%ROOT%\var\pycache"
+set "PYTHONPYCACHEPREFIX=%ROOT%\var\pycache"
 set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
 
 if exist "%VENV_PY%" (
-    "%VENV_PY%" "%~dp0install_drivers.py"
+    "%VENV_PY%" "%~dp0install_drivers.py" %*
     exit /b %errorlevel%
 )
 
@@ -22,4 +24,4 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-python "%~dp0install_drivers.py"
+python "%~dp0install_drivers.py" %*

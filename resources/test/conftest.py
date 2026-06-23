@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
-
-import numpy as np
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from core.runtime_paths import configure_pycache_prefix
+
+configure_pycache_prefix(ROOT)
+
+import numpy as np
+import pytest
+
+
+def pytest_configure(config) -> None:
+    basetemp = ROOT / "var" / "pytest-tmp"
+    basetemp.mkdir(parents=True, exist_ok=True)
+    config.option.basetemp = str(basetemp)
 
 
 @pytest.fixture

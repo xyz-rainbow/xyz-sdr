@@ -27,6 +27,8 @@ from core.config_store import patch_device_section, patch_dsp_section
 from core.band_buffer import BandFrameMailbox, make_band_frame
 from core.dsp import (
     average_psd,
+    compute_effective_band_cols,
+    compute_effective_fft_size,
     compute_rx_chunk_samples,
     apply_squelch_with_state,
     estimate_snr_at_freq,
@@ -36,6 +38,12 @@ from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
 from core.recorder import SDRRecorder, resolve_recordings_dir, recording_targets
 
+from core.passband import (
+    PASSBAND_KEYBOARD_STEP,
+    clamp_passband_width,
+    default_passband_width,
+)
+from tui.widgets.passband_messages import PassbandPreview, PassbandSelectRequest
 from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
 from tui.widgets.waterfall_timeline import WaterfallTimeline
@@ -145,6 +153,9 @@ class StatusBar(Static):
         text.append(" Freq ", dim)
         text.append("B", key)
         text.append(" BW ", dim)
+        text.append("[", key)
+        text.append("]", key)
+        text.append(" PASS ", dim)
         text.append("G", key)
         text.append(" Gain ", dim)
         text.append("V", key)
@@ -168,6 +179,7 @@ class StatusBar(Static):
         step: float,
         span: float,
         bandwidth: float,
+        passband_width: float,
         device: str,
         *,
         squelch_enabled: bool = False,
@@ -177,6 +189,7 @@ class StatusBar(Static):
         step_str = _format_hz(step)
         span_str = _format_hz(span)
         bw_str = _format_hz(bandwidth)
+        pass_str = _format_hz(passband_width)
         
         # Uso de colores ricos y estructura limpia
         from rich.text import Text
@@ -195,6 +208,10 @@ class StatusBar(Static):
 
         text.append("BW ", "bold #22d3ee")
         text.append(f"{bw_str}", "bold #ffffff")
+        text.append(" ┃ ", "#475569")
+
+        text.append("PASS ", "bold #22c55e")
+        text.append(f"{pass_str}", "bold #ffffff")
         text.append(" ┃ ", "#475569")
         
         text.append("GAIN ", "bold #fbbf24")
@@ -777,6 +794,8 @@ class XyzSDRApp(App):
         ("s",           "toggle_rx",     "Start/Stop"),
         ("m",           "cycle_mode",    "Modo"),
         ("f",           "focus_freq",    "Freq"),
+        ("[",           "passband_narrow", "PASS -"),
+        ("]",           "passband_widen",  "PASS +"),
         ("b",           "focus_bandwidth", "BW"),
         ("g",           "focus_gain",    "Gain"),
         ("v",           "focus_volume",  "Volumen"),
@@ -826,6 +845,13 @@ class XyzSDRApp(App):
         # ── Estado del viewport ──
         self.tuned_frequency: float = float(center_freq)
         self.viewport_center: float = float(center_freq)
+        dsp_cfg_init = self.config.get("dsp", {})
+        self.passband_center_hz: float = float(center_freq)
+        self.passband_width_hz: float = self._load_passband_width_for_mode(
+            demod_mode, dsp_cfg_init
+        )
+        self._passband_preview_width: float | None = None
+        self.fm_deemphasis_us: float = float(dsp_cfg_init.get("fm_deemphasis_us", 75))
         initial_rate = float(self.config.get("device", {}).get("sample_rate", 2_048_000))
         self.sample_rate: float = initial_rate
         self.visible_spans: list[float] = build_visible_spans(initial_rate)
@@ -876,6 +902,86 @@ class XyzSDRApp(App):
             project_root=self._project_root,
         )
         self._recorder = SDRRecorder(self._recordings_dir)
+
+    def _load_passband_width_for_mode(self, mode: str, dsp_cfg: dict | None = None) -> float:
+        cfg = dsp_cfg or self.config.get("dsp", {})
+        key_map = {
+            "wbfm": "wbfm_bandwidth",
+            "nbfm": "nbfm_bandwidth",
+            "am": "am_bandwidth",
+        }
+        key = key_map.get(mode)
+        if key and key in cfg:
+            return float(cfg[key])
+        return default_passband_width(mode)
+
+    def _sync_passband_widgets(self) -> None:
+        preview = self._passband_preview_width
+        try:
+            timeline = self.query_one("#timeline", FrequencyTimeline)
+            timeline.passband_center_hz = self.passband_center_hz
+            timeline.passband_width_hz = self.passband_width_hz
+            timeline.passband_preview_width_hz = preview
+        except Exception:
+            pass
+        try:
+            spectrum = self.query_one("#spectrum", SpectrumGraph)
+            spectrum.passband_center_hz = self.passband_center_hz
+            spectrum.passband_width_hz = self.passband_width_hz
+            spectrum.passband_preview_width_hz = preview
+        except Exception:
+            pass
+        try:
+            waterfall = self.query_one("#waterfall", WaterfallTimeline)
+            waterfall.passband_center_hz = self.passband_center_hz
+            waterfall.passband_width_hz = self.passband_width_hz
+            waterfall.passband_preview_width_hz = preview
+        except Exception:
+            pass
+
+    def _persist_passband_width(self) -> None:
+        kwargs: dict = {}
+        if self.demod_mode == "wbfm":
+            kwargs["wbfm_bandwidth"] = self.passband_width_hz
+        elif self.demod_mode == "nbfm":
+            kwargs["nbfm_bandwidth"] = self.passband_width_hz
+        elif self.demod_mode == "am":
+            kwargs["am_bandwidth"] = self.passband_width_hz
+        if kwargs:
+            patch_dsp_section(self.config_path, **kwargs)
+
+    def _apply_passband_selection(self, center_hz: float, width_hz: float) -> None:
+        center_hz = max(FREQ_MIN_HZ, min(FREQ_MAX_HZ, float(center_hz)))
+        if width_hz <= 0:
+            width_hz = self._load_passband_width_for_mode(self.demod_mode)
+        width_hz = clamp_passband_width(self.demod_mode, width_hz)
+
+        self.passband_center_hz = center_hz
+        self.passband_width_hz = width_hz
+        self.tuned_frequency = center_hz
+        self._passband_preview_width = None
+
+        self._apply_tuning()
+        self._sync_passband_widgets()
+        self._persist_passband_width()
+        self._log(
+            f"Banda: {center_hz / 1e6:.4f} MHz | {_format_hz(width_hz)}"
+        )
+
+    def _adjust_passband_width(self, delta_hz: float) -> None:
+        if self.demod_mode not in PASSBAND_KEYBOARD_STEP:
+            return
+        new_width = clamp_passband_width(
+            self.demod_mode,
+            self.passband_width_hz + delta_hz,
+        )
+        if abs(new_width - self.passband_width_hz) < 1.0:
+            return
+        self.passband_width_hz = new_width
+        self._sync_passband_widgets()
+        self._persist_passband_width()
+        self._update_status()
+        self._log(f"Ancho audible: {_format_hz(new_width)}")
 
     def _closest_preset_rate(self, rate_hz: float, rates: list[float] | None = None) -> float:
         """Elige el preset de bandwidth más cercano a rate_hz."""
@@ -1013,6 +1119,7 @@ class XyzSDRApp(App):
 
         # Inicializar viewport de widgets
         self._sync_viewport(immediate=True)
+        self._sync_passband_widgets()
         self._update_mode_ui()
         self._set_waterfall_speed(10)  # Establecer velocidad inicial de cascada (10 fps)
 
@@ -1024,7 +1131,8 @@ class XyzSDRApp(App):
             log.write_line(f"[OK]   Dispositivo abierto: driver={self.driver}")
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
-        log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | espacio centrar")
+        log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | [ ] ancho PASS")
+        log.write_line("[INFO] Ratón: clic+arrastre en timeline/espectro = banda audible simétrica")
         if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
         self._update_status()
@@ -1189,6 +1297,9 @@ class XyzSDRApp(App):
             timeline.viewport_center_hz = self.viewport_center
             timeline.visible_span_hz = self.visible_span
             timeline.tuned_freq_hz = self.tuned_frequency
+            timeline.passband_center_hz = self.passband_center_hz
+            timeline.passband_width_hz = self.passband_width_hz
+            timeline.passband_preview_width_hz = self._passband_preview_width
         except Exception:
             pass
 
@@ -1216,12 +1327,18 @@ class XyzSDRApp(App):
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
             spectrum.set_viewport(self.viewport_center, self.visible_span)
+            spectrum.passband_center_hz = self.passband_center_hz
+            spectrum.passband_width_hz = self.passband_width_hz
+            spectrum.passband_preview_width_hz = self._passband_preview_width
         except Exception:
             pass
 
         try:
             waterfall = self.query_one("#waterfall", WaterfallTimeline)
             waterfall.set_viewport(self.viewport_center, self.visible_span)
+            waterfall.passband_center_hz = self.passband_center_hz
+            waterfall.passband_width_hz = self.passband_width_hz
+            waterfall.passband_preview_width_hz = self._passband_preview_width
         except Exception:
             pass
 
@@ -1235,6 +1352,7 @@ class XyzSDRApp(App):
         self.tuned_frequency = max(
             FREQ_MIN_HZ, self.tuned_frequency - self.scroll_step
         )
+        self.passband_center_hz = self.tuned_frequency
         # Auto-paginacion suave con margen 10%
         left_edge = self.viewport_center - self.visible_span / 2
         margin = self.visible_span * 0.1
@@ -1253,6 +1371,7 @@ class XyzSDRApp(App):
         self.tuned_frequency = min(
             FREQ_MAX_HZ, self.tuned_frequency + self.scroll_step
         )
+        self.passband_center_hz = self.tuned_frequency
         # Auto-paginacion suave con margen 10%
         right_edge = self.viewport_center + self.visible_span / 2
         margin = self.visible_span * 0.1
@@ -1396,6 +1515,14 @@ class XyzSDRApp(App):
 
     # ── Otras acciones ───────────────────────────────────────────────────────
 
+    def action_passband_narrow(self) -> None:
+        step = PASSBAND_KEYBOARD_STEP.get(self.demod_mode, 10_000.0)
+        self._adjust_passband_width(-step)
+
+    def action_passband_widen(self) -> None:
+        step = PASSBAND_KEYBOARD_STEP.get(self.demod_mode, 10_000.0)
+        self._adjust_passband_width(step)
+
     def action_focus_freq(self) -> None:
         self.query_one("#inp_freq", Input).focus()
 
@@ -1411,6 +1538,8 @@ class XyzSDRApp(App):
     def action_cycle_mode(self) -> None:
         idx = self.DEMOD_MODES.index(self.demod_mode)
         self.demod_mode = self.DEMOD_MODES[(idx + 1) % len(self.DEMOD_MODES)]
+        self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode)
+        self._sync_passband_widgets()
         self._update_mode_ui()
         self._log(f"Modo: {self.demod_mode.upper()}")
         self._update_status()
@@ -1725,6 +1854,8 @@ class XyzSDRApp(App):
             self.audio_effects.play_blip()
             mode = event.widget.id.replace("btn_mode_", "")
             self.demod_mode = mode
+            self.passband_width_hz = self._load_passband_width_for_mode(mode)
+            self._sync_passband_widgets()
             self._update_mode_ui()
             self._log(f"Modo: {self.demod_mode.upper()}")
             self._update_status()
@@ -1741,6 +1872,7 @@ class XyzSDRApp(App):
                 new_freq = float(event.value) * 1e6
                 new_freq = max(FREQ_MIN_HZ, min(FREQ_MAX_HZ, new_freq))
                 self.tuned_frequency = new_freq
+                self.passband_center_hz = new_freq
                 self.viewport_center = new_freq
                 self._apply_tuning()
                 self._log(f"Frecuencia: {self.tuned_frequency / 1e6:.4f} MHz")
@@ -1798,8 +1930,10 @@ class XyzSDRApp(App):
             parts = str(event.value).split(":")
             if len(parts) == 2:
                 self.tuned_frequency = float(parts[0])
+                self.passband_center_hz = self.tuned_frequency
                 self.viewport_center = self.tuned_frequency
                 self.demod_mode = parts[1]
+                self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode)
                 self._update_mode_ui()
                 self._apply_tuning()
                 self.audio_effects.play_blip()
@@ -1808,17 +1942,12 @@ class XyzSDRApp(App):
                     f" {self.demod_mode.upper()}"
                 )
 
-    def on_frequency_timeline_scroll_request(self, message: FrequencyTimeline.ScrollRequest) -> None:
-        if message.direction > 0:
-            self.action_scroll_right()
-        else:
-            self.action_scroll_left()
+    def on_passband_preview(self, message: PassbandPreview) -> None:
+        self._passband_preview_width = message.width_hz
+        self._sync_passband_widgets()
 
-    def on_frequency_timeline_tune_request(self, message: FrequencyTimeline.TuneRequest) -> None:
-        self.tuned_frequency = max(FREQ_MIN_HZ, min(FREQ_MAX_HZ, message.frequency_hz))
-        self.viewport_center = self.tuned_frequency
-        self._apply_tuning()
-        self._log(f"Sintonizado: {self.tuned_frequency / 1e6:.4f} MHz")
+    def on_passband_select_request(self, message: PassbandSelectRequest) -> None:
+        self._apply_passband_selection(message.center_hz, message.width_hz)
 
     def on_waterfall_timeline_history_scroll_request(
         self, message: WaterfallTimeline.HistoryScrollRequest
@@ -1828,6 +1957,12 @@ class XyzSDRApp(App):
             self._log(f"Waterfall hist: offset {wf.history_offset}")
         except Exception:
             pass
+
+    def on_frequency_timeline_scroll_request(self, message: FrequencyTimeline.ScrollRequest) -> None:
+        if message.direction > 0:
+            self.action_scroll_right()
+        else:
+            self.action_scroll_left()
 
     def on_frequency_timeline_zoom_request(self, message: FrequencyTimeline.ZoomRequest) -> None:
         if message.direction > 0:
@@ -1843,10 +1978,10 @@ class XyzSDRApp(App):
         logger.info("RX worker iniciado")
 
         dsp_cfg = self.config.get("dsp", {})
-        fft_size = int(dsp_cfg.get("fft_size", 4096))
+        base_fft = int(dsp_cfg.get("fft_size", 8192))
         num_avg = int(dsp_cfg.get("fft_avg_windows", 8))
         fft_overlap = float(dsp_cfg.get("fft_overlap", 0.5))
-        band_cols = int(dsp_cfg.get("band_cache_cols", 512))
+        base_band_cols = int(dsp_cfg.get("band_cache_cols", 1024))
 
         try:
             while self._rx_active:
@@ -1856,10 +1991,28 @@ class XyzSDRApp(App):
 
                 capture_rate = float(self.sample_rate)
                 capture_freq = float(self.tuned_frequency)
+                capture_span = float(self.visible_span)
+                display_width = max(int(self._display_width), 40)
+                fft_size = compute_effective_fft_size(
+                    base_fft,
+                    capture_rate,
+                    capture_span,
+                    display_width=display_width,
+                )
+                band_cols = compute_effective_band_cols(
+                    base_band_cols,
+                    capture_rate,
+                    capture_span,
+                    display_width=display_width,
+                )
                 capture_mode = self.demod_mode
                 capture_squelch_enabled = self.squelch_enabled
                 capture_squelch_threshold = float(self.squelch_threshold)
-                capture_tuned_freq = float(self.tuned_frequency)
+                capture_passband_center = float(self.passband_center_hz)
+                capture_passband_width = float(self.passband_width_hz)
+                capture_deemph = float(self.fm_deemphasis_us)
+                audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
+                freq_offset = capture_passband_center - capture_freq
 
                 num_samples = compute_rx_chunk_samples(
                     fft_size=fft_size,
@@ -1885,7 +2038,8 @@ class XyzSDRApp(App):
                         psd,
                         capture_freq,
                         capture_rate,
-                        capture_tuned_freq,
+                        capture_passband_center,
+                        passband_width_hz=capture_passband_width,
                     )
                     self._squelch_gate.configure(threshold_db=capture_squelch_threshold)
                     frame = make_band_frame(
@@ -1914,7 +2068,10 @@ class XyzSDRApp(App):
                                 samples,
                                 mode=capture_mode,
                                 sample_rate=capture_rate,
-                                audio_rate=48000,
+                                audio_rate=audio_rate,
+                                passband_width_hz=capture_passband_width,
+                                fm_deemphasis_us=capture_deemph,
+                                frequency_offset_hz=freq_offset,
                             )
                             audio, squelch_open = apply_squelch_with_state(
                                 audio,
@@ -1994,6 +2151,7 @@ class XyzSDRApp(App):
                 step=self.scroll_step,
                 span=self.visible_span,
                 bandwidth=self.sample_rate,
+                passband_width=self.passband_width_hz,
                 device=device_str,
                 squelch_enabled=self.squelch_enabled,
                 squelch_open=self._squelch_open,

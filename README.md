@@ -18,7 +18,7 @@
   * Atajo `B` para enfocar el selector.
 * **Interactividad Híbrida Completa**:
   * **Navegación por Teclado**: Scroll de sintonía con `← / →`, ajuste de pasos (`1k … 5M`) con `↑ / ↓`, zoom con `Ctrl + ← / →` (o `+ / -`), centrado con `Space`.
-  * **Control total con Ratón**: Haz clic en la **timeline de frecuencias** para sintonizar directamente. Clic en espectro o cascada desenfoca los controles sin cambiar la frecuencia. Usa la rueda del ratón (`Scroll`) en timeline, espectro o cascada para desplazarte por la banda, y `Ctrl + Scroll` para zoom in/out.
+  * **Control total con Ratón**: Clic en la **timeline** o el **espectro** fija el centro de la banda audible; **arrastra** simétricamente para definir el ancho (overlay verde + métrica `PASS` en la barra de estado). Clic corto sin arrastre = sintonía + ancho por defecto del modo. Rueda del ratón en timeline/espectro/cascada para desplazarte; `Ctrl + Scroll` para zoom.
 * **Motor Visual Cyberpunk & Neon de Alta Resolución**:
   * **Gradiente de Intensidad de 32 pasos**: Representación visual de señales débiles que se desvanecen gradualmente a negro absoluto (simulando opacidad por decibelios), transitando por cian, verde, amarillo, naranja, rojo vivo y blanco puro para señales en saturación máxima.
   * **Señalización de Rango Inactivo**: Las zonas fuera de la tasa de muestreo del hardware o sin datos históricos se renderizan con un elegante patrón de sombreado (`░`) para denotar inactividad de forma intuitiva.
@@ -70,6 +70,7 @@ xyz-sdr/
 | `M` | Ciclar modo de demodulación (`wbfm`, `nbfm`, `am`, `usb`, `lsb`, etc.) | Clic directo en la matriz de la interfaz |
 | `F` | Enfocar la caja de texto para introducir frecuencia manual | — |
 | `B` | Enfocar el selector de bandwidth IQ (sample rate) | Desplegable **BANDWIDTH** |
+| `[` / `]` | Estrechar / ensanchar banda audible (PASS) | Arrastre simétrico con ratón |
 | `G` | Enfocar el selector de ganancia del hardware | — |
 | `V` | Enfocar el selector de volumen de salida de audio | — |
 | `Esc` | Abrir menú de ajustes (hardware, squelch, efectos) | — |
@@ -79,46 +80,52 @@ xyz-sdr/
 
 ## 💾 Instalación y Ejecución rápida
 
-**Requisito hardware real:** Python **3.11 o 3.12** (64-bit), o **3.9** con bindings Pothos embebidos. En **3.13+** el instalador y `main.py` pueden crear/usar `.venv` automáticamente.
+**Requisito:** entorno `.venv` con Python **3.9** (bindings Pothos) o **3.11/3.12** (64-bit). El instalador crea/repara ese entorno automáticamente.
 
-1. **Instalar Drivers SDR (Solo Windows)**:
+1. **Instalador (Windows)**:
    ```powershell
    .\setup\install_drivers.ps1
    ```
-   - Opción **[V]**: crea `.venv` con Python 3.11/3.12 (vía `py` launcher) e instala dependencias.
-   - Opción **[3]**: si tu Python global es incompatible (p. ej. 3.14), crea `.venv` solo.
-2. **Instalar Dependencias de Python** (si no usaste [V]/[3]):
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **Verificar el Entorno**:
-   ```bash
-   python setup/check_env.py
-   ```
-   Debe mostrar `[OK] SoapySDR importado` y tu dispositivo (p. ej. `driver=sdrplay`).
-   Si acabas de instalar PothosSDR, **cierra y reabre la terminal** antes de continuar.
+   Menú Express:
+   - **[1] Instalar o reparar todo** — recomendado (git pull + drivers + Python + verificación). Log en `var/log/install-*.log`.
+   - **[2] Ejecutar xyz-sdr** — cuando el entorno esté listo (usa `--sim` si no hay SDR conectado).
+   - **[3] Diagnóstico rápido** — resumen y siguiente paso.
+   - **[A] Opciones avanzadas** — pasos sueltos, diagnóstico completo, update git, idioma.
 
-4. **Listar hardware detectado**:
+   Modo headless (CI/scripts):
+   ```powershell
+   .\setup\install_drivers.ps1 --repair --quiet
+   .\setup\install_drivers.ps1 --check
+   .\setup\install_drivers.ps1 --check --verbose
+   ```
+
+2. **Verificar el entorno**:
+   ```powershell
+   .\scripts\run.ps1 --check
+   ```
+   O diagnóstico completo: `python setup/check_env.py --verbose`
+
+3. **Listar hardware detectado**:
    ```bash
    python main.py --list-dev
    ```
 
-5. **Verificación manual (Windows)**:
+4. **Verificación manual (Windows)**:
    ```powershell
    SoapySDRUtil --find=driver=sdrplay
    ```
 
-6. **Ejecutar en modo Simulado (Sin Hardware SDR conectado)**:
-   ```bash
-   python main.py --sim
+5. **Modo simulado (opcional, mismo `.venv`)**:
+   ```powershell
+   .\scripts\run.ps1 --sim
    ```
 
-7. **Ejecutar con Hardware SDR**:
-   ```bash
-   python main.py --driver sdrplay --freq 100.6 --gain 40
+6. **Ejecución normal (hardware SDR)**:
+   ```powershell
+   .\scripts\run.ps1
+   .\scripts\run.ps1 --driver sdrplay --freq 100.6 --gain 40
    ```
-   Con Python 3.14+ global, `main.py` intenta re-lanzarse con `.venv` o `py -3.12` automáticamente.
-   O deja que elija el primer dispositivo: `python main.py --driver auto`
+   Sin hardware conectado la app **no** entra en simulación automática; usa `--sim` o conecta el SDR.
 
 ---
 
@@ -127,6 +134,7 @@ xyz-sdr/
 Para profundizar en el diseño e implementación del proyecto, consulta los documentos de desarrollo en el directorio `/docs`:
 - [Arquitectura Interna](docs/architecture.md)
 - [Bandwidth IQ (Sample Rate)](docs/bandwidth.md)
+- [Banda audible (PASS)](docs/passband.md)
 - [Funcionamiento de Widgets](docs/widgets.md)
 - [Guía de Modificación y Estilos](docs/customization.md)
 

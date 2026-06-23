@@ -1,223 +1,216 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os, sys
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-"""
-xyz-sdr | check_env.py
-Verifica que todos los componentes necesarios estén instalados correctamente.
-"""
+"""Verifica que todos los componentes necesarios estén instalados correctamente."""
 
+from __future__ import annotations
+
+import io
+import os
 import sys
-import struct
-import subprocess
 from pathlib import Path
 
-# Bootstrap Soapy antes de cualquier import del paquete
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from core.soapy_runtime import (  # noqa: E402
-    bootstrap_soapy,
-    check_sdrplay_api,
-    check_sdrplay_plugin,
-    find_pothos_install,
-    format_hardware_help,
-    is_python_64bit,
-)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+from core.runtime_paths import configure_pycache_prefix
 
-def ok(msg):    print(f"  \033[92m[OK]\033[0m {msg}")
-def warn(msg):  print(f"  \033[93m[!!]\033[0m {msg}")
-def fail(msg):  print(f"  \033[91m[XX]\033[0m {msg}")
-def step(msg):  print(f"\n\033[96m[>>] {msg}\033[0m")
+configure_pycache_prefix(ROOT)
 
-errors = []
 
-# ─── 1. Python version ───────────────────────────────────────────────────────
+def ok(msg: str) -> None:
+    print(f"  \033[92m[OK]\033[0m {msg}")
 
-step("Python")
-v = sys.version_info
-if v.major == 3 and v.minor >= 10:
-    ok(f"Python {v.major}.{v.minor}.{v.micro}")
-else:
-    fail(f"Python 3.10+ requerido. Tienes: {v.major}.{v.minor}.{v.micro}")
-    errors.append("python_version")
 
-if is_python_64bit():
-    ok("Arquitectura: 64-bit (amd64)")
-else:
-    fail("Se requiere Python 64-bit para PothosSDR/SoapySDR.")
-    errors.append("python_bitness")
+def warn(msg: str) -> None:
+    print(f"  \033[93m[!!]\033[0m {msg}")
 
-from core.soapy_runtime import _soapy_pip_supported  # noqa: E402
 
-if v.major == 3 and v.minor >= 13:
-    warn(
-        f"Python {v.major}.{v.minor}: no hay wheel SoapySDR en pip. "
-        "Para hardware real usa Python 3.11 o 3.12."
+def fail(msg: str) -> None:
+    print(f"  \033[91m[XX]\033[0m {msg}")
+
+
+def step(msg: str) -> None:
+    print(f"\n\033[96m[>>] {msg}\033[0m")
+
+
+def run_check(*, verbose: bool = True, lang: str = "es") -> int:
+    from core.soapy_runtime import (
+        _soapy_pip_supported,
+        bootstrap_soapy,
+        find_pothos_install,
+        format_hardware_help,
+        is_python_64bit,
     )
-elif not _soapy_pip_supported():
-    warn(f"Python {v.major}.{v.minor} puede no tener soporte SoapySDR en pip.")
-else:
-    ok("Versión compatible con pip SoapySDR o bindings Pothos 3.9")
+    from core.python_runtime import _query_python_version, is_version_soapy_compatible, project_venv_python
+    from setup.env_state import probe_environment
+    from setup.windows_installers import refresh_windows_environment
 
-# ─── 2. PothosSDR / rutas ───────────────────────────────────────────────────
+    refresh_windows_environment()
 
-step("PothosSDR")
-pothos = find_pothos_install()
-if pothos:
-    ok(f"Instalación detectada: {pothos}")
-    bin_dir = os.path.join(pothos, "bin")
-    if os.path.isdir(bin_dir):
-        ok(f"bin: {bin_dir}")
-else:
-    fail("PothosSDR no encontrado. Ejecuta setup\\install_drivers.bat → [2].")
-    errors.append("pothos")
+    if not verbose:
+        state = probe_environment(bootstrap_soapy=True)
+        from setup.install_guidance import format_action
+        from setup.install_i18n import t as tr
 
-# ─── 3. SDRplay API ───────────────────────────────────────────────────────────
+        _, _, reason = format_action(state, lang)
+        print(f"\n{tr(lang, 'status_summary')}: {state.readiness_level()}")
+        print(f"  {tr(lang, 'next_step_label')}: {reason}")
+        if state.env_ready:
+            print(f"\n  [OK] {tr(lang, 'check_short_ok')}")
+            if not state.has_devices:
+                print(f"  [!!] {tr(lang, 'status_row_no_device')}")
+        else:
+            print(f"\n  [XX] {tr(lang, 'check_short_fail')}")
+            for blocker in state.install_blockers:
+                print(f"    - {blocker}")
+        print(f"\n  {tr(lang, 'check_short_hint')}\n")
+        return 0 if state.env_ready else 1
 
-step("SDRplay API v3")
-if check_sdrplay_api():
-    ok("SDRplay API detectada (carpeta, DLL o servicio)")
-else:
-    fail("SDRplay API no detectada. Instala opción [1] en install_drivers.")
-    errors.append("sdrplay_api")
-
-# ─── 4. SoapySDR (Python + dispositivos) ─────────────────────────────────────
-
-step("SoapySDR (Python)")
-status = bootstrap_soapy(force=True)
-
-if status.import_ok:
-    ok("SoapySDR importado correctamente")
-    if status.pothos_bin:
-        ok(f"DLL path: {status.pothos_bin}")
-            if status.python_bindings_path:
-                ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-                expected = os.path.join(status.pothos_root or "", "lib", ver, "site-packages")
-                if os.path.normcase(status.python_bindings_path) == os.path.normcase(expected):
-                    ok(f"Bindings: {status.python_bindings_path}")
-                else:
-                    warn(
-                        f"Bindings embebidos son para otra versión: {status.python_bindings_path}"
-                    )
-                    warn(f"Con Python {sys.version_info.major}.{sys.version_info.minor}: pip install SoapySDR")
-    if status.devices:
-        ok(f"Dispositivos encontrados: {len(status.devices)}")
-        for r in status.devices:
-            print(f"    → driver={r.get('driver', '?')} label={r.get('label', '?')}")
+    errors: list[str] = []
+    venv_py = project_venv_python()
+    if venv_py:
+        checked = _query_python_version(str(venv_py))
+        v = checked if checked else sys.version_info[:3]
+        python_label = f"{venv_py} ({v[0]}.{v[1]}.{v[2]})"
     else:
-        warn("Ningún dispositivo SDR detectado (¿está conectado? ¿SDRuno cerrado?)")
-else:
-    fail("SoapySDR no importa en Python.")
-    help_text = format_hardware_help(status)
-    for line in help_text.splitlines():
-        print(f"    {line}")
-    errors.append("soapysdr")
+        v = sys.version_info[:3]
+        python_label = f"{v[0]}.{v[1]}.{v[2]}"
 
-# ─── 5. Plugin sdrplay ───────────────────────────────────────────────────────
-
-step("SoapySDR plugin sdrplay")
-if check_sdrplay_plugin():
-    ok("SoapySDRUtil --find=driver=sdrplay OK")
-else:
-    warn("Plugin sdrplay no visible vía SoapySDRUtil.")
-    warn("Comprueba PATH (PothosSDR\\bin) y reinicia la terminal.")
-
-# ─── 6. SoapySDRUtil en PATH ─────────────────────────────────────────────────
-
-step("SoapySDRUtil (CLI)")
-try:
-    result = subprocess.run(
-        ["SoapySDRUtil", "--find"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if result.returncode == 0:
-        ok("SoapySDRUtil disponible en PATH")
+    step("Python")
+    if is_version_soapy_compatible((v[0], v[1])):
+        ok(f"Python {python_label}")
     else:
-        warn("SoapySDRUtil encontrado pero sin dispositivos.")
-except FileNotFoundError:
-    fail("SoapySDRUtil no encontrado en PATH.")
-    warn("Añade 'C:\\Program Files\\PothosSDR\\bin' al PATH del usuario y reinicia la terminal.")
-    errors.append("soapysdrutil")
-except Exception as e:
-    warn(f"Error ejecutando SoapySDRUtil: {e}")
+        fail(f"Python incompatible con SoapySDR. Tienes: {v[0]}.{v[1]}.{v[2]}")
+        errors.append("python_version")
 
-# ─── 7. Librerías Python core ───────────────────────────────────────────────
-
-step("Librerías Python")
-
-packages = {
-    "numpy":        "NumPy (DSP)",
-    "scipy":        "SciPy (filtros)",
-    "sounddevice":  "sounddevice (audio output)",
-    "textual":      "Textual (TUI)",
-    "rich":         "Rich (terminal styling)",
-}
-
-for pkg, label in packages.items():
-    try:
-        __import__(pkg)
-        ok(label)
-
-        if pkg == "sounddevice":
-            try:
-                import sounddevice as sd
-                devices = sd.query_devices()
-                outputs = [d for d in devices if d.get("max_output_channels", 0) > 0]
-                if outputs:
-                    ok(f"  → Audio: {len(outputs)} dispositivos de salida detectados")
-                else:
-                    warn("  → Audio: No se detectaron dispositivos de salida de audio activos.")
-            except Exception as ae:
-                warn(f"  → Audio: Error al consultar dispositivos: {ae}")
-    except ImportError:
-        fail(f"{label} — no instalado (pip install {pkg})")
-        errors.append(pkg)
-
-try:
-    if sys.version_info >= (3, 11):
-        import tomllib
-        ok("tomllib (TOML parser integrado)")
+    if is_python_64bit():
+        ok("Arquitectura: 64-bit (amd64)")
     else:
-        import tomli
-        ok("tomli (TOML parser)")
-except ImportError:
-    fail("tomli — no instalado (requerido para Python < 3.11, pip install tomli)")
-    errors.append("tomli")
+        fail("Se requiere Python 64-bit para PothosSDR/SoapySDR.")
+        errors.append("python_bitness")
 
-# ─── 8. Módulos IA (opcionales) ─────────────────────────────────────────────
+    if v[0] == 3 and v[1] >= 13:
+        warn(
+            f"Python {v[0]}.{v[1]}: no hay wheel SoapySDR en pip. "
+            "Usa el .venv del proyecto (install_drivers → [1] Reparar)."
+        )
+    elif v[1] == 9:
+        ok("Versión compatible con bindings Pothos 3.9")
+    elif not _soapy_pip_supported():
+        warn(f"Python {v[0]}.{v[1]} puede no tener soporte SoapySDR en pip.")
+    else:
+        ok("Versión compatible con pip SoapySDR o bindings Pothos 3.9")
 
-step("Módulos IA (opcionales)")
+    step("Entorno .venv")
+    if venv_py:
+        ok(f".venv detectado: {venv_py}")
+        if os.path.normcase(str(venv_py)) != os.path.normcase(sys.executable):
+            warn(f"Ejecutando check con {sys.executable}; el proyecto usa {venv_py}")
+            warn("Preferido: .\\scripts\\run.ps1 --check")
+    else:
+        fail(".venv no encontrado. install_drivers → [1] Reparar")
+        errors.append("venv")
 
-ai_packages = {
-    "faster_whisper": "faster-whisper (transcripción de voz)",
-    "sklearn":        "scikit-learn (clasificación de señales)",
-}
+    state = probe_environment(bootstrap_soapy=bool(venv_py))
 
-for pkg, label in ai_packages.items():
-    try:
-        __import__(pkg)
-        ok(label)
-    except ImportError:
-        warn(f"{label} — no instalado (opcional, pip install {pkg.replace('_','-')})")
+    step("PothosSDR")
+    pothos = find_pothos_install()
+    if pothos:
+        ok(f"Instalación detectada: {pothos}")
+        if state.path_in_process:
+            ok("PATH activo en esta terminal")
+        elif state.path_in_registry:
+            warn("PATH en registro pero no activo aquí; install_drivers → [1] Reparar")
+        else:
+            fail("Pothos instalado pero PATH no configurado")
+            errors.append("pothos_path")
+    else:
+        fail("PothosSDR no encontrado. install_drivers → [1] Reparar")
+        errors.append("pothos")
 
-# ─── Resumen ────────────────────────────────────────────────────────────────
+    step("SDRplay API v3")
+    if state.sdrplay_ok:
+        ok("SDRplay API detectada")
+    else:
+        fail("SDRplay API no detectada. install_drivers → [1] Reparar")
+        errors.append("sdrplay_api")
 
-print("\n" + "=" * 50)
-if not errors:
-    print("\033[92m  [OK] Todo listo. Ejecuta: python main.py --list-dev\033[0m")
-else:
-    print(f"\033[91m  [FAIL] {len(errors)} problema(s) encontrado(s):\033[0m")
-    for e in errors:
-        print(f"    - {e}")
-    print("\n  Ejecuta: .\\setup\\install_drivers.bat")
-    print("  Tras instalar PATH, cierra y reabre la terminal.")
-print("=" * 50 + "\n")
+    step("SoapySDR (Python)")
+    status = None
+    if state.soapy_import_ok:
+        ok("SoapySDR importado correctamente")
+        if state.venv_ok and venv_py:
+            from core.soapy_runtime import get_pothos_site_packages_for_version
 
-sys.exit(0 if not errors else 1)
+            pothos_sp = get_pothos_site_packages_for_version(v[0], v[1])
+            if pothos_sp:
+                ok(f"Bindings: {pothos_sp}")
+            status = bootstrap_soapy(force=True) if os.path.normcase(sys.executable) == os.path.normcase(str(venv_py)) else None
+            if status and status.pothos_bin:
+                ok(f"DLL path: {status.pothos_bin}")
+        if state.has_devices and state.device_count:
+            ok(f"Dispositivos encontrados: {state.device_count}")
+            if state.venv_ok and venv_py and os.path.normcase(sys.executable) != os.path.normcase(str(venv_py)):
+                from setup.env_state import probe_soapy_in_python
+
+                _, devices = probe_soapy_in_python(str(venv_py))
+                for device in devices:
+                    print(f"    → driver={device.get('driver', '?')} label={device.get('label', '?')}")
+            elif status and status.devices:
+                for device in status.devices:
+                    print(f"    → driver={device.get('driver', '?')} label={device.get('label', '?')}")
+        else:
+            warn("Ningún dispositivo SDR detectado (¿conectado? ¿SDRuno cerrado?)")
+    else:
+        status = bootstrap_soapy(force=True) if state.venv_ok and os.path.normcase(sys.executable) == os.path.normcase(str(venv_py or "")) else None
+        fail("SoapySDR no importa en Python.")
+        if status:
+            help_text = format_hardware_help(status)
+            for line in help_text.splitlines():
+                print(f"    {line}")
+        errors.append("soapysdr")
+
+    step("SoapySDR plugin sdrplay")
+    if state.sdrplay_plugin_ok:
+        ok("SoapySDRUtil --find=driver=sdrplay OK")
+    else:
+        warn("Plugin sdrplay no visible vía SoapySDRUtil.")
+        warn("Comprueba PATH (PothosSDR\\bin) y reinicia la terminal.")
+
+    step("Librerías Python")
+    if state.python_libs_ok:
+        for lib in ("numpy", "scipy", "sounddevice", "textual", "rich"):
+            ok(lib)
+    elif state.venv_ok:
+        for lib in state.python_libs_missing:
+            fail(f"{lib} — no instalado en .venv")
+            errors.append(lib)
+    else:
+        fail("Sin .venv no se pueden verificar dependencias")
+        errors.append("python_libs")
+
+    print("\n" + "=" * 50)
+    if not errors:
+        print("\033[92m  [OK] Todo listo. Ejecuta: .\\scripts\\run.ps1 --list-dev\033[0m")
+    else:
+        print(f"\033[91m  [FAIL] {len(errors)} problema(s) encontrado(s):\033[0m")
+        for item in errors:
+            print(f"    - {item}")
+        print("\n  Ejecuta: .\\setup\\install_drivers.ps1 → [1] Instalar o reparar todo")
+        print("  Si PATH falla en otra terminal, ábrela de nuevo tras reparar drivers.")
+    print("=" * 50 + "\n")
+    return 0 if not errors else 1
+
+
+if __name__ == "__main__":
+    import argparse
+
+    _parser = argparse.ArgumentParser()
+    _parser.add_argument("--verbose", action="store_true")
+    _args, _ = _parser.parse_known_args()
+    sys.exit(run_check(verbose=_args.verbose))

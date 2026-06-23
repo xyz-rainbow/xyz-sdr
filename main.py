@@ -5,10 +5,19 @@ Punto de entrada principal. Lanza la TUI o el modo CLI.
 
 from __future__ import annotations
 
+import os
 import sys
+
+_ROOT = __import__("pathlib").Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core.runtime_paths import configure_pycache_prefix
+
+configure_pycache_prefix(_ROOT)
+
 import argparse
 import logging
-import os
 
 # Forzar salida UTF-8 en Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -33,6 +42,8 @@ def parse_args():
     parser.add_argument("--gain",     type=float, default=None, help="Ganancia en dB")
     parser.add_argument("--mode",     default=None, choices=["wbfm","nbfm","am","usb","lsb"], help="Modo de demodulación")
     parser.add_argument("--sim",      action="store_true", help="Forzar modo simulación (sin hardware)")
+    parser.add_argument("--allow-system-python", action="store_true",
+                        help="No exige .venv (solo desarrollo)")
     parser.add_argument("--check",    action="store_true", help="Verificar entorno y salir")
     parser.add_argument("--list-dev", action="store_true", help="Listar dispositivos y salir")
     parser.add_argument("--config",   default="config/defaults.toml", help="Ruta al archivo de configuración")
@@ -61,13 +72,17 @@ def load_config(path: str) -> dict:
 def main():
     args = parse_args()
 
-    # Re-lanzar con Python 3.9–3.12 si el intérprete actual no soporta SoapySDR
+    # Re-lanzar con .venv / Python compatible (mismo entorno con o sin --sim)
     if not os.environ.get("XYZ_SDR_REEXEC_DONE"):
         try:
             from core.python_runtime import try_reexec_for_soapy
-            try_reexec_for_soapy(force_sim=args.sim)
-        except Exception:
-            pass
+            try_reexec_for_soapy()
+        except Exception as exc:
+            logger.debug("Re-exec omitido: %s", exc)
+
+    if not args.allow_system_python:
+        from core.python_runtime import ensure_project_venv_or_exit
+        ensure_project_venv_or_exit()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -77,9 +92,8 @@ def main():
 
     # ── Modo check ──────────────────────────────────────────────────────────
     if args.check:
-        import subprocess
-        result = subprocess.run([sys.executable, "setup/check_env.py"])
-        sys.exit(result.returncode)
+        from setup.check_env import run_check
+        sys.exit(run_check())
 
     # ── Listar dispositivos ─────────────────────────────────────────────────
     if args.list_dev:
@@ -126,31 +140,17 @@ def main():
         has_hardware = status.import_ok and status.has_devices
 
         if not has_hardware:
-            if sys.stdin.isatty():
-                help_text = format_hardware_help(status)
-                if not status.import_ok:
-                    print("⚠️  SoapySDR no carga en Python (bindings/DLL/PATH).")
-                else:
-                    print("⚠️  SoapySDR OK pero no se detectó ningún dispositivo SDR.")
-                if help_text:
-                    print(help_text)
-                try:
-                    response = input(
-                        "\n¿Deseas iniciar en modo Simulado (Simulación sin Hardware)? [S/n]: "
-                    ).strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    print("\nOperación cancelada.")
-                    sys.exit(0)
-
-                if response in ("", "s", "si", "y", "yes"):
-                    print("🛰️  Iniciando en modo Simulado...")
-                    driver = "simulated"
-                else:
-                    print("Cancelando ejecución. Ejecuta: python setup/check_env.py")
-                    sys.exit(0)
+            help_text = format_hardware_help(status)
+            if not status.import_ok:
+                print("SoapySDR no disponible en Python (bindings/DLL/PATH).")
             else:
-                print("⚠️  Hardware no disponible. Fallback automático a modo Simulado.")
-                driver = "simulated"
+                print("SoapySDR OK pero no se detectó ningún dispositivo SDR conectado.")
+            if help_text:
+                print(help_text)
+            print("\nConfigura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
+            print("Ejecuta la app: .\\scripts\\run.ps1")
+            print("Pruebas sin hardware (opcional): .\\scripts\\run.ps1 --sim")
+            sys.exit(1)
         elif driver in ("auto", ""):
             try:
                 kwargs = resolve_device("auto", status.devices)
@@ -184,7 +184,7 @@ def main():
         sys.exit(1)
     except ImportError as e:
         logger.error(f"No se pudo importar la TUI: {e}")
-        logger.error("Instala las dependencias: pip install -r requirements.txt")
+        logger.error("Configura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Saliendo...")

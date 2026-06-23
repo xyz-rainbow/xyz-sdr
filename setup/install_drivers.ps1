@@ -6,10 +6,13 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path $PSScriptRoot -Parent
+$Pycache = Join-Path $Root "var\pycache"
+New-Item -ItemType Directory -Force -Path $Pycache | Out-Null
+$env:PYTHONPYCACHEPREFIX = $Pycache
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (Test-Path $VenvPy) {
-    & $VenvPy (Join-Path $PSScriptRoot "install_drivers.py")
+    & $VenvPy (Join-Path $PSScriptRoot "install_drivers.py") @args
     exit $LASTEXITCODE
 }
 
@@ -23,4 +26,4 @@ if (-not $hasPython) {
     exit 1
 }
 
-python (Join-Path $PSScriptRoot "install_drivers.py")
+python (Join-Path $PSScriptRoot "install_drivers.py") @args

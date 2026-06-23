@@ -19,6 +19,7 @@ from textual.message import Message
 from textual import events
 
 from core.band_buffer import BandFrame, slice_band_history_to_viewport, slice_band_to_viewport
+from core.passband import freq_to_col
 from core.input_modifiers import is_shift_pressed
 
 
@@ -58,6 +59,7 @@ WATERFALL_GRADIENT = [
 ]
 
 NO_DATA_COLOR = "#08080f"
+_NORM_BLEND = 0.22  # EMA al actualizar rango dB (evita flash al cambiar zoom)
 
 
 class _WaterfallRow:
@@ -83,7 +85,38 @@ class WaterfallTimeline(Widget):
 
     viewport_center_hz: reactive[float] = reactive(100_600_000.0)
     visible_span_hz: reactive[float] = reactive(2_048_000.0)
+    passband_center_hz: reactive[float] = reactive(100_600_000.0)
+    passband_width_hz: reactive[float] = reactive(200_000.0)
+    passband_preview_width_hz: reactive[float | None] = reactive(None)
     waterfall_speed: reactive[int] = reactive(10)
+
+    def _effective_passband_width(self) -> float | None:
+        preview = self.passband_preview_width_hz
+        if preview is not None and preview > 0:
+            return preview
+        if self.passband_width_hz > 0:
+            return self.passband_width_hz
+        return None
+
+    def _passband_cols(self, width: int) -> tuple[int, int] | None:
+        band_w = self._effective_passband_width()
+        if band_w is None or band_w <= 0:
+            return None
+        left_hz = self.passband_center_hz - band_w / 2
+        right_hz = self.passband_center_hz + band_w / 2
+        col_l = freq_to_col(
+            left_hz,
+            widget_width=width,
+            viewport_center_hz=self._viewport_center_hz,
+            visible_span_hz=self._visible_span_hz,
+        )
+        col_r = freq_to_col(
+            right_hz,
+            widget_width=width,
+            viewport_center_hz=self._viewport_center_hz,
+            visible_span_hz=self._visible_span_hz,
+        )
+        return min(col_l, col_r), max(col_l, col_r)
 
     class HistoryScrollRequest(Message):
         """Desplaza la ventana vertical sobre el historial almacenado."""
@@ -250,22 +283,22 @@ class WaterfallTimeline(Widget):
 
         self._last_row_time = now
         self._ensure_history_maxlen()
-        self._history.appendleft(
+        self._history.append(
             _WaterfallRow(frame.center_hz, frame.sample_rate, frame.band_cols),
         )
         self._history_offset = min(self._history_offset, self._max_history_offset())
         self._update_normalization()
 
         if self._history_offset == 0:
-            self._prepend_slice_row(frame)
+            self._append_slice_row(frame)
         else:
             self._rebuild_slice_cache()
 
         self._invalidate_rich_cache()
         self.refresh()
 
-    def _prepend_slice_row(self, frame: BandFrame) -> None:
-        """Actualiza caché slice en O(ancho) en lugar de re-slicear todo el historial."""
+    def _append_slice_row(self, frame: BandFrame) -> None:
+        """Actualiza caché slice en O(ancho); fila nueva al final (abajo en pantalla)."""
         width = self._view_width()
         height = self._view_height()
         if width < 5 or height < 1:
@@ -285,8 +318,8 @@ class WaterfallTimeline(Widget):
             and self._slice_cache_width == width
             and self._slice_cache.shape[1] == width
         ):
-            combined = np.vstack([new_row, self._slice_cache])
-            self._slice_cache = combined[:height]
+            combined = np.vstack([self._slice_cache, new_row])
+            self._slice_cache = combined[-height:]
         else:
             self._rebuild_slice_cache()
             return
@@ -315,13 +348,15 @@ class WaterfallTimeline(Widget):
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
         self._rebuild_slice_cache()
+        self._update_normalization(force=True)
         self._invalidate_rich_cache()
         self.refresh()
 
     def _history_rows_for_viewport(self, rows_to_show: int) -> list[_WaterfallRow]:
-        return list(
-            islice(self._history, self._history_offset, self._history_offset + rows_to_show)
-        )
+        total = len(self._history)
+        end = max(0, total - self._history_offset)
+        start = max(0, end - rows_to_show)
+        return list(islice(self._history, start, end))
 
     def _rebuild_slice_cache(self) -> None:
         width = self._view_width()
@@ -368,6 +403,9 @@ class WaterfallTimeline(Widget):
             height,
             self._slice_cache_rows,
             self._history_offset,
+            self.passband_center_hz,
+            self.passband_width_hz,
+            self.passband_preview_width_hz,
         )
         if self._rich_visual_cache is not None and cache_key == self._rich_visual_cache_key:
             return self._rich_visual_cache
@@ -377,10 +415,12 @@ class WaterfallTimeline(Widget):
         if rng <= 0:
             rng = 1.0
 
+        empty_rows = height - rows_to_show
         result = Text()
         for row_idx in range(height):
-            if row_idx < rows_to_show and self._slice_cache is not None:
-                row_data = self._slice_cache[row_idx]
+            data_idx = row_idx - empty_rows
+            if data_idx >= 0 and self._slice_cache is not None:
+                row_data = self._slice_cache[data_idx]
                 line = self._render_row_cached(row_data, width, rng)
             else:
                 line = Text("░" * width, f"#1e1b4b on {NO_DATA_COLOR}")
@@ -410,23 +450,45 @@ class WaterfallTimeline(Widget):
         return line
 
     def _render_row_from_cache(self, col_values: np.ndarray, width: int, rng: float) -> Text:
+        passband_cols = self._passband_cols(width)
         line = Text()
         for col in range(width):
+            in_band = passband_cols and passband_cols[0] <= col <= passband_cols[1]
             val = col_values[col] if col < len(col_values) else np.nan
             if np.isnan(val):
-                line.append("░", f"#1e1b4b on {NO_DATA_COLOR}")
+                bg = NO_DATA_COLOR if in_band else "#050508"
+                line.append("░", f"#1e1b4b on {bg}")
             else:
                 norm = max(0.0, min(1.0, (val - self._norm_min) / rng))
-                color_idx = min(
-                    int(norm * (len(WATERFALL_GRADIENT) - 1)),
-                    len(WATERFALL_GRADIENT) - 1,
-                )
-                line.append(" ", f"on {WATERFALL_GRADIENT[color_idx]}")
+                if in_band:
+                    color_idx = min(
+                        int(norm * (len(WATERFALL_GRADIENT) - 1)),
+                        len(WATERFALL_GRADIENT) - 1,
+                    )
+                    line.append(" ", f"on {WATERFALL_GRADIENT[color_idx]}")
+                else:
+                    color_idx = min(
+                        int(norm * (len(WATERFALL_GRADIENT) - 1)),
+                        len(WATERFALL_GRADIENT) - 1,
+                    )
+                    line.append(" ", f"on #0a0a12")
         return line
 
-    def _update_normalization(self) -> None:
+    def watch_passband_center_hz(self, value: float) -> None:
+        self._invalidate_rich_cache()
+        self.refresh()
+
+    def watch_passband_width_hz(self, value: float) -> None:
+        self._invalidate_rich_cache()
+        self.refresh()
+
+    def watch_passband_preview_width_hz(self, value: float | None) -> None:
+        self._invalidate_rich_cache()
+        self.refresh()
+
+    def _update_normalization(self, *, force: bool = False) -> None:
         now = time.time()
-        if now - self._norm_last_update < 0.5:
+        if not force and now - self._norm_last_update < 0.5:
             return
 
         height = max(self._layout_height, self._view_height(), 1)
@@ -435,7 +497,16 @@ class WaterfallTimeline(Widget):
             return
 
         all_vals = np.concatenate([r.band_cols for r in visible])
-        self._norm_min = float(np.percentile(all_vals, 5))
-        self._norm_max = float(np.percentile(all_vals, 99))
+        new_min = float(np.percentile(all_vals, 5))
+        new_max = float(np.percentile(all_vals, 99))
+
+        if self._norm_last_update <= 0.0:
+            self._norm_min = new_min
+            self._norm_max = new_max
+        else:
+            blend = _NORM_BLEND if force else _NORM_BLEND * 0.5
+            self._norm_min = (1.0 - blend) * self._norm_min + blend * new_min
+            self._norm_max = (1.0 - blend) * self._norm_max + blend * new_max
+
         self._norm_last_update = now
         self._invalidate_rich_cache()

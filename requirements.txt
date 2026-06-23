@@ -1,6 +1,6 @@
 # xyz-sdr — Dependencias Python
 # Instala con: pip install -r requirements.txt
-# O con uv:   uv pip install -r requirements.txt --system
+# Recomendado (instalador): uv pip install -r requirements.txt
 
 # ─── Core SDR ────────────────────────────────────────────────────────────────
 SoapySDR               # Abstracción hardware SDR (requiere PothosSDR instalado)

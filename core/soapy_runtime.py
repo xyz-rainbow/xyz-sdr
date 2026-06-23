@@ -75,15 +75,45 @@ def _python_site_packages(pothos_root: str) -> str | None:
 
 def _fallback_pothos_site_packages(pothos_root: str) -> str | None:
     """Bindings embebidos de otra versión (referencia diagnóstica; no importar)."""
-    lib_root = os.path.join(pothos_root, "lib")
-    if not os.path.isdir(lib_root):
+    versions = list_pothos_python_versions(pothos_root)
+    if not versions:
         return None
-    for name in sorted(os.listdir(lib_root), reverse=True):
-        if name.startswith("python"):
-            candidate = os.path.join(lib_root, name, "site-packages")
-            if os.path.isdir(candidate):
-                return candidate
-    return None
+    major, minor = versions[0]
+    path = os.path.join(pothos_root, "lib", f"python{major}.{minor}", "site-packages")
+    return path if os.path.isdir(path) else None
+
+
+def list_pothos_python_versions(pothos_root: str | None = None) -> list[tuple[int, int]]:
+    """Versiones de Python con bindings SoapySDR incluidos en PothosSDR."""
+    root = pothos_root or find_pothos_install()
+    if not root:
+        return []
+    lib_root = os.path.join(root, "lib")
+    if not os.path.isdir(lib_root):
+        return []
+    versions: list[tuple[int, int]] = []
+    for name in os.listdir(lib_root):
+        if not name.startswith("python"):
+            continue
+        parts = name.replace("python", "").split(".", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            major, minor = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        site_packages = os.path.join(lib_root, name, "site-packages")
+        if os.path.isdir(site_packages):
+            versions.append((major, minor))
+    return sorted(versions, reverse=True)
+
+
+def get_pothos_site_packages_for_version(major: int, minor: int, pothos_root: str | None = None) -> str | None:
+    root = pothos_root or find_pothos_install()
+    if not root:
+        return None
+    path = os.path.join(root, "lib", f"python{major}.{minor}", "site-packages")
+    return path if os.path.isdir(path) else None
 
 
 def _prepend_path(path: str) -> None:

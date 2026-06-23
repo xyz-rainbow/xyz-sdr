@@ -1,5 +1,7 @@
 # Python
 __pycache__/
+.pytest_cache/
+resources/test/.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -24,6 +26,7 @@ env.toml
 *.swo
 
 # Project specific
+var/
 scratch/
 recordings/
 *.sigmf-data

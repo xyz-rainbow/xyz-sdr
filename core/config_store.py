@@ -84,6 +84,10 @@ def patch_dsp_section(
     squelch_threshold: float | None = None,
     squelch_hang_ms: float | None = None,
     volume: float | None = None,
+    wbfm_bandwidth: float | None = None,
+    nbfm_bandwidth: float | None = None,
+    am_bandwidth: float | None = None,
+    fm_deemphasis_us: float | None = None,
 ) -> None:
     """Actualiza valores en la sección [dsp] del archivo TOML."""
     config_path = Path(path)
@@ -97,6 +101,10 @@ def patch_dsp_section(
         "squelch_threshold": int(squelch_threshold) if squelch_threshold is not None else None,
         "squelch_hang_ms": int(squelch_hang_ms) if squelch_hang_ms is not None else None,
         "volume": volume,
+        "wbfm_bandwidth": int(wbfm_bandwidth) if wbfm_bandwidth is not None else None,
+        "nbfm_bandwidth": int(nbfm_bandwidth) if nbfm_bandwidth is not None else None,
+        "am_bandwidth": int(am_bandwidth) if am_bandwidth is not None else None,
+        "fm_deemphasis_us": int(fm_deemphasis_us) if fm_deemphasis_us is not None else None,
     }
 
     for key, value in updates.items():
