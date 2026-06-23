@@ -620,11 +620,10 @@ class XyzSDRApp(App):
         width: 100%;
         height: 2;
         min-height: 2;
-        max-height: none;
+        max-height: 2;
         min-width: 0;
         margin: 0;
         padding: 0;
-        line-pad: 0;
         text-style: bold;
         text-align: center;
         content-align: center middle;
