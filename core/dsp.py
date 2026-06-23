@@ -5,6 +5,8 @@ Procesado digital de señal: FFT, demodulación FM/AM/SSB, filtros.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy import signal as scipy_signal
 from typing import Literal
@@ -18,8 +20,88 @@ NORMALIZE_LEVEL = 0.35
 RX_REFERENCE_SAMPLE_RATE = 2_048_000.0
 RX_REFERENCE_FFT_WINDOWS = 16
 
+DEFAULT_FFT_MAX = 65_536
+DEFAULT_TARGET_BINS_PER_COLUMN = 4.0
+
 
 # ─── FFT / Espectro ─────────────────────────────────────────────────────────
+
+def round_fft_size(size: int, *, minimum: int = 256, maximum: int = DEFAULT_FFT_MAX) -> int:
+    """Redondea a la potencia de 2 más cercana dentro de [minimum, maximum]."""
+    size = max(minimum, min(maximum, int(size)))
+    if size <= minimum:
+        return minimum
+    power = 1 << int(math.ceil(math.log2(size)))
+    return min(power, maximum)
+
+
+def compute_effective_fft_size(
+    base_fft: int,
+    sample_rate: float,
+    visible_span: float,
+    *,
+    display_width: int = 120,
+    target_bins_per_column: float = DEFAULT_TARGET_BINS_PER_COLUMN,
+    min_fft: int = 4096,
+    max_fft: int = DEFAULT_FFT_MAX,
+) -> int:
+    """
+    Escala el tamaño FFT al hacer zoom para mantener bins suficientes en el viewport.
+
+    Cuando visible_span << sample_rate, aumenta la resolución espectral para que
+    espectro y waterfall tengan varios bins por columna de pantalla.
+    """
+    base_fft = round_fft_size(base_fft, minimum=min_fft // 2, maximum=max_fft)
+    if sample_rate <= 0 or visible_span <= 0 or visible_span >= sample_rate * 0.99:
+        return base_fft
+
+    width = max(display_width, 40)
+    required = int(width * target_bins_per_column * (sample_rate / visible_span))
+    return round_fft_size(max(base_fft, required), minimum=min_fft, maximum=max_fft)
+
+
+def map_psd_to_columns(
+    psd: np.ndarray,
+    capture_center_hz: float,
+    sample_rate: float,
+    viewport_center_hz: float,
+    visible_span_hz: float,
+    width: int,
+) -> np.ndarray:
+    """
+    Mapea bins PSD a columnas de pantalla con agregación de picos (máximo).
+
+    Usado por espectro y waterfall para garantizar la misma resolución visual.
+    """
+    width = max(width, 1)
+    col_values = np.full(width, np.nan, dtype=np.float64)
+
+    if psd is None or len(psd) == 0 or sample_rate <= 0 or visible_span_hz <= 0:
+        return col_values
+
+    left_hz = viewport_center_hz - visible_span_hz / 2
+    hz_per_col = visible_span_hz / width
+    capture_left = capture_center_hz - sample_rate / 2
+    capture_right = capture_center_hz + sample_rate / 2
+    psd_len = len(psd)
+    hz_per_bin = sample_rate / psd_len
+
+    for col in range(width):
+        f_start = left_hz + col * hz_per_col
+        f_end = left_hz + (col + 1) * hz_per_col
+
+        overlap_start = max(f_start, capture_left)
+        overlap_end = min(f_end, capture_right)
+        if overlap_start >= overlap_end:
+            continue
+
+        bin_start = int((overlap_start - capture_left) / hz_per_bin)
+        bin_end = int((overlap_end - capture_left) / hz_per_bin)
+        bin_start = max(0, min(bin_start, psd_len - 1))
+        bin_end = max(bin_start + 1, min(bin_end, psd_len))
+        col_values[col] = float(np.max(psd[bin_start:bin_end]))
+
+    return col_values
 
 def compute_psd(
     samples: np.ndarray,
@@ -50,9 +132,11 @@ def average_psd(
     fft_size: int = 2048,
     sample_rate: float = 2.048e6,
     num_avg: int = 8,
+    overlap: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """PSD promediada sobre `num_avg` ventanas para reducir ruido."""
-    step   = fft_size
+    overlap = max(0.0, min(0.95, float(overlap)))
+    step   = max(1, int(fft_size * (1.0 - overlap)))
     total  = len(samples)
     accum  = np.zeros(fft_size)
     count  = 0

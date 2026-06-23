@@ -123,10 +123,20 @@ class FrequencyTimeline(Widget):
         digital_style = ""
         if self.hover_col is not None and 0 <= self.hover_col < width:
             hover_freq = left_hz + (self.hover_col / width) * self.visible_span_hz
-            digital_text = f" ▽ {hover_freq / 1e6:.6f} MHz "
+            if self.visible_span_hz >= 500e3:
+                digital_text = f" ▽ {hover_freq / 1e6:.6f} MHz "
+            elif self.visible_span_hz >= 50e3:
+                digital_text = f" ▽ {hover_freq / 1e6:.7f} MHz "
+            else:
+                digital_text = f" ▽ {hover_freq / 1e6:.8f} MHz "
             digital_style = "bold #38bdf8"
         else:
-            digital_text = f" ▼ {self.tuned_freq_hz / 1e6:.6f} MHz "
+            if self.visible_span_hz >= 500e3:
+                digital_text = f" ▼ {self.tuned_freq_hz / 1e6:.6f} MHz "
+            elif self.visible_span_hz >= 50e3:
+                digital_text = f" ▼ {self.tuned_freq_hz / 1e6:.7f} MHz "
+            else:
+                digital_text = f" ▼ {self.tuned_freq_hz / 1e6:.8f} MHz "
             digital_style = "bold #ff6b6b"
 
         if digital_text:
@@ -202,7 +212,7 @@ class FrequencyTimeline(Widget):
 
     def _nice_tick_spacing(self, width: int) -> float:
         """Calcula un espaciado 'bonito' para los ticks (1, 2, 5 x 10^n)."""
-        target_ticks = max(3, width // 14)
+        target_ticks = max(5, width // 8)
         raw = self.visible_span_hz / target_ticks
         if raw <= 0:
             return 1000.0
@@ -225,8 +235,12 @@ class FrequencyTimeline(Widget):
             return f"{mhz:.1f}M"
         elif self.visible_span_hz >= 500e3:
             return f"{mhz:.2f}M"
-        else:
+        elif self.visible_span_hz >= 50e3:
             return f"{mhz:.3f}M"
+        elif self.visible_span_hz >= 10e3:
+            return f"{mhz:.4f}M"
+        else:
+            return f"{mhz:.5f}M"
 
     def _build_label_row(
         self,

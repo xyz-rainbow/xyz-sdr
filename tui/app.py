@@ -23,6 +23,7 @@ from textual import work, events
 
 from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
 from core.config_store import patch_device_section
+from core.band_buffer import BandFrameMailbox, make_band_frame
 from core.dsp import average_psd, compute_rx_chunk_samples
 from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
@@ -45,6 +46,9 @@ DEFAULT_STEP_INDEX = 5  # 100 kHz
 
 # Pasos de zoom base (Hz) — se filtran y completan hasta sample_rate
 ZOOM_SPAN_STEPS = [
+    10_000,
+    25_000,
+    50_000,
     100_000,
     200_000,
     500_000,
@@ -612,56 +616,71 @@ class XyzSDRApp(App):
         margin: 0;
     }
 
-    #waterfall_speed_bar .spd-btn {
+    #waterfall_speed_bar Button.spd-btn {
         width: 100%;
-        height: 1;
-        min-height: 1;
+        height: 2;
+        min-height: 2;
+        max-height: none;
         min-width: 0;
         margin: 0;
         padding: 0;
+        line-pad: 0;
         text-style: bold;
         text-align: center;
         content-align: center middle;
-        box-sizing: border-box;
+        box-sizing: content-box;
         background: #090d16;
         border: round #4338ca;
         border-top: round #4338ca;
         border-bottom: round #4338ca;
     }
 
-    #waterfall_speed_bar .spd-btn:hover,
-    #waterfall_speed_bar .spd-btn:focus,
-    #waterfall_speed_bar .spd-btn.-active,
-    #waterfall_speed_bar .spd-btn.-highlight {
+    #waterfall_speed_bar Button.spd-btn:hover,
+    #waterfall_speed_bar Button.spd-btn:focus,
+    #waterfall_speed_bar Button.spd-btn.-active,
+    #waterfall_speed_bar Button.spd-btn.-highlight {
         background: #090d16;
         background-tint: transparent;
+        border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
     }
 
-    #waterfall_speed_bar .spd-a {
+    #waterfall_speed_bar Button.spd-a {
         color: #818cf8;
         border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
     }
 
-    #waterfall_speed_bar .spd-b {
+    #waterfall_speed_bar Button.spd-b {
         color: #c084fc;
         border: round #6d28d9;
+        border-top: round #6d28d9;
+        border-bottom: round #6d28d9;
     }
 
-    #waterfall_speed_bar .spd-a:hover {
+    #waterfall_speed_bar Button.spd-a:hover,
+    #waterfall_speed_bar Button.spd-a:focus {
         color: #818cf8;
         border: round #4338ca;
+        border-top: round #4338ca;
+        border-bottom: round #4338ca;
     }
 
-    #waterfall_speed_bar .spd-b:hover {
+    #waterfall_speed_bar Button.spd-b:hover,
+    #waterfall_speed_bar Button.spd-b:focus {
         color: #c084fc;
         border: round #6d28d9;
+        border-top: round #6d28d9;
+        border-bottom: round #6d28d9;
     }
 
-    #waterfall_speed_bar .spd-btn.active-spd,
-    #waterfall_speed_bar .spd-btn.active-spd:hover,
-    #waterfall_speed_bar .spd-btn.active-spd:focus,
-    #waterfall_speed_bar .spd-btn.active-spd.-active,
-    #waterfall_speed_bar .spd-btn.active-spd.-highlight {
+    #waterfall_speed_bar Button.spd-btn.active-spd,
+    #waterfall_speed_bar Button.spd-btn.active-spd:hover,
+    #waterfall_speed_bar Button.spd-btn.active-spd:focus,
+    #waterfall_speed_bar Button.spd-btn.active-spd.-active,
+    #waterfall_speed_bar Button.spd-btn.active-spd.-highlight {
         background: #090d16;
         background-tint: transparent;
         color: #a3e635;
@@ -737,6 +756,7 @@ class XyzSDRApp(App):
         demod_mode: str = "wbfm",
         config: dict = None,
         config_path: str = "config/defaults.toml",
+        debug: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -744,6 +764,7 @@ class XyzSDRApp(App):
         self.demod_mode = demod_mode
         self.config = config or {}
         self.config_path = config_path
+        self.debug = debug
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
@@ -767,6 +788,19 @@ class XyzSDRApp(App):
         self._bandwidth_changing = False
         self._rx_stop_event = threading.Event()
         self._rx_stop_event.set()
+        self._display_width: int = 120
+        self._band_mailbox = BandFrameMailbox()
+        self._display_sequence: int = 0
+
+        # Instrumentación --debug
+        self._debug_lock = threading.Lock()
+        self._debug_rx_proc_ms: list[float] = []
+        self._debug_rx_iter_count: int = 0
+        self._debug_display_frames: int = 0
+        self._debug_ui_proc_ms: list[float] = []
+        self._debug_frame_latency_ms: list[float] = []
+        self._debug_last_viewport_ms: float = 0.0
+        self._debug_report_window_start: float = time.time()
 
         dsp_cfg = self.config.get("dsp", {})
         self.squelch_enabled = bool(dsp_cfg.get("squelch_enabled", False))
@@ -870,7 +904,7 @@ class XyzSDRApp(App):
                                 yield Button(
                                     str(spd),
                                     id=f"btn_spd_{spd}",
-                                    classes=f"spd-btn -textual-compact spd-{'a' if i % 2 == 0 else 'b'}",
+                                    classes=f"spd-btn spd-{'a' if i % 2 == 0 else 'b'}",
                                 )
                 yield Log(id="log_panel", max_lines=200)
 
@@ -916,7 +950,121 @@ class XyzSDRApp(App):
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
         log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | espacio centrar")
+        if self.debug:
+            log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
         self._update_status()
+        self.call_after_refresh(self._update_display_width)
+
+        display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
+        self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
+        if self.debug:
+            self.set_interval(3.0, self._report_debug_metrics)
+
+    def _invalidate_band_cache(self) -> None:
+        """Limpia caché espectral al cambiar bandwidth o reiniciar RX."""
+        self._band_mailbox.clear()
+        self._display_sequence = 0
+        try:
+            self.query_one("#spectrum", SpectrumGraph).clear()
+        except Exception:
+            pass
+        try:
+            self.query_one("#waterfall", WaterfallTimeline).clear_history()
+        except Exception:
+            pass
+
+    def _flush_display_frames(self) -> None:
+        """Coalescing: aplica el frame más reciente al espectro y waterfall."""
+        if not self._rx_active:
+            return
+
+        frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
+        if frame is None:
+            return
+
+        self._display_sequence = seq
+        self._last_snr = snr
+
+        ui_t0 = time.perf_counter()
+        try:
+            self.query_one("#spectrum", SpectrumGraph).set_band_frame(frame)
+        except Exception:
+            pass
+
+        try:
+            self.query_one("#waterfall", WaterfallTimeline).add_band_row(frame)
+        except Exception:
+            pass
+
+        self._update_status()
+
+        if self.debug:
+            ui_ms = (time.perf_counter() - ui_t0) * 1000.0
+            latency_ms = max(0.0, (time.time() - frame.timestamp) * 1000.0)
+            with self._debug_lock:
+                self._debug_display_frames += 1
+                self._debug_ui_proc_ms.append(ui_ms)
+                self._debug_frame_latency_ms.append(latency_ms)
+                if len(self._debug_ui_proc_ms) > 120:
+                    self._debug_ui_proc_ms.pop(0)
+                if len(self._debug_frame_latency_ms) > 120:
+                    self._debug_frame_latency_ms.pop(0)
+
+    def _report_debug_metrics(self) -> None:
+        """Escribe métricas de rendimiento en el panel de log (--debug)."""
+        if not self.debug:
+            return
+
+        now = time.time()
+        window_s = max(now - self._debug_report_window_start, 0.001)
+
+        with self._debug_lock:
+            rx_iters = self._debug_rx_iter_count
+            rx_proc = list(self._debug_rx_proc_ms)
+            ui_frames = self._debug_display_frames
+            ui_proc = list(self._debug_ui_proc_ms)
+            latencies = list(self._debug_frame_latency_ms)
+            viewport_ms = self._debug_last_viewport_ms
+
+            self._debug_rx_iter_count = 0
+            self._debug_display_frames = 0
+            self._debug_report_window_start = now
+
+        if not self._rx_active:
+            return
+
+        rx_rate = rx_iters / window_s
+        ui_fps = ui_frames / window_s
+
+        parts = [f"[DEBUG] perf {window_s:.1f}s"]
+        if rx_iters:
+            avg_rx = sum(rx_proc) / len(rx_proc) if rx_proc else 0.0
+            p95_rx = float(np.percentile(rx_proc, 95)) if rx_proc else 0.0
+            parts.append(f"RX {rx_rate:.1f} iter/s proc {avg_rx:.1f}ms p95 {p95_rx:.1f}ms")
+        if ui_frames:
+            avg_ui = sum(ui_proc) / len(ui_proc) if ui_proc else 0.0
+            avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+            p95_lat = float(np.percentile(latencies, 95)) if latencies else 0.0
+            parts.append(f"UI {ui_fps:.1f} fps draw {avg_ui:.1f}ms lat {avg_lat:.0f}ms p95 {p95_lat:.0f}ms")
+        if viewport_ms > 0:
+            parts.append(f"viewport {viewport_ms:.1f}ms")
+
+        if len(parts) > 1:
+            self._log(" | ".join(parts))
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_display_width()
+
+    def _update_display_width(self) -> None:
+        """Ancho de referencia; re-slicea espectro al redimensionar terminal."""
+        try:
+            spectrum = self.query_one("#spectrum", SpectrumGraph)
+            width = spectrum.size.width
+            if width > 0:
+                self._display_width = width
+                spectrum.set_viewport(self.viewport_center, self.visible_span)
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if self._rx_active:
@@ -958,6 +1106,8 @@ class XyzSDRApp(App):
 
     def _sync_viewport(self) -> None:
         """Propaga el estado del viewport a los 3 widgets de visualizacion."""
+        vp_t0 = time.perf_counter() if self.debug else 0.0
+
         try:
             timeline = self.query_one("#timeline", FrequencyTimeline)
             timeline.viewport_center_hz = self.viewport_center
@@ -977,6 +1127,9 @@ class XyzSDRApp(App):
             waterfall.set_viewport(self.viewport_center, self.visible_span)
         except Exception:
             pass
+
+        if self.debug:
+            self._debug_last_viewport_ms = (time.perf_counter() - vp_t0) * 1000.0
 
     # ── Acciones de Scroll (← →) ─────────────────────────────────────────────
 
@@ -1094,6 +1247,7 @@ class XyzSDRApp(App):
         except Exception:
             pass
         self._log("RX iniciado")
+        self._invalidate_band_cache()
         self._rx_worker()
 
     def _stop_rx(self) -> None:
@@ -1467,6 +1621,8 @@ class XyzSDRApp(App):
         dsp_cfg = self.config.get("dsp", {})
         fft_size = int(dsp_cfg.get("fft_size", 4096))
         num_avg = int(dsp_cfg.get("fft_avg_windows", 8))
+        fft_overlap = float(dsp_cfg.get("fft_overlap", 0.5))
+        band_cols = int(dsp_cfg.get("band_cache_cols", 512))
 
         try:
             while self._rx_active:
@@ -1477,6 +1633,7 @@ class XyzSDRApp(App):
                 capture_rate = float(self.sample_rate)
                 capture_freq = float(self.tuned_frequency)
                 capture_mode = self.demod_mode
+
                 num_samples = compute_rx_chunk_samples(
                     fft_size=fft_size,
                     sample_rate=capture_rate,
@@ -1488,30 +1645,32 @@ class XyzSDRApp(App):
                     if not self._rx_active or self._bandwidth_changing:
                         continue
 
-                    freqs_mhz, psd = average_psd(
+                    proc_t0 = time.perf_counter()
+                    _, psd = average_psd(
                         samples,
                         fft_size=fft_size,
                         sample_rate=capture_rate,
                         num_avg=num_avg,
+                        overlap=fft_overlap,
                     )
 
-                    # Actualizar espectro
-                    self.call_from_thread(
-                        self.query_one("#spectrum", SpectrumGraph).update_data,
-                        freqs_mhz,
+                    snr = float(np.max(psd) - np.percentile(psd, 10))
+                    frame = make_band_frame(
                         psd,
-                        capture_freq,
-                    )
-
-                    # Actualizar waterfall (cada fila guarda su sample_rate)
-                    self.call_from_thread(
-                        self.query_one("#waterfall", WaterfallTimeline).add_row,
                         capture_freq,
                         capture_rate,
-                        psd,
+                        band_cols=band_cols,
                     )
+                    self._band_mailbox.publish(frame, snr)
 
-                    # Demodulación y salida de audio en tiempo real
+                    if self.debug:
+                        proc_ms = (time.perf_counter() - proc_t0) * 1000.0
+                        with self._debug_lock:
+                            self._debug_rx_iter_count += 1
+                            self._debug_rx_proc_ms.append(proc_ms)
+                            if len(self._debug_rx_proc_ms) > 120:
+                                self._debug_rx_proc_ms.pop(0)
+
                     if self._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
                         from core.dsp import demodulate
                         try:
@@ -1524,10 +1683,6 @@ class XyzSDRApp(App):
                             self._audio_output.enqueue(audio)
                         except Exception as ae:
                             logger.error(f"Error en reproducción de audio: {ae}")
-
-                    snr = float(np.max(psd) - np.percentile(psd, 10))
-                    self._last_snr = snr
-                    self.call_from_thread(self._update_status)
 
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:

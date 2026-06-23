@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--check",    action="store_true", help="Verificar entorno y salir")
     parser.add_argument("--list-dev", action="store_true", help="Listar dispositivos y salir")
     parser.add_argument("--config",   default="config/defaults.toml", help="Ruta al archivo de configuración")
+    parser.add_argument("--debug",    action="store_true", help="Activa logs de depuración e instrumentación en el panel")
     return parser.parse_args()
 
 
@@ -58,6 +59,11 @@ def load_config(path: str) -> dict:
 
 def main():
     args   = parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+
     config = load_config(args.config)
 
     # ── Modo check ──────────────────────────────────────────────────────────
@@ -135,6 +141,7 @@ def main():
             demod_mode=demod_mode,
             config=config,
             config_path=args.config,
+            debug=args.debug,
         )
         print_startup_splash()
         app.run()

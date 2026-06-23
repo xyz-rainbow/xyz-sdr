@@ -9,9 +9,11 @@ auto_gain    = false
 ppm_correction = 0            # Corrección PPM del oscilador
 
 [dsp]
-fft_size     = 4096           # Tamaño FFT para espectro
+fft_size     = 4096           # Tamaño FFT fijo (independiente del zoom)
 fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
 fft_avg_windows = 8           # Ventanas FFT promediadas por iteración RX
+band_cache_cols = 512         # Rejilla interna del BW completo (pre-render)
+display_fps  = 20             # Tope de refresco visual espectro/waterfall
 demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
 audio_rate   = 48_000         # Hz — tasa de audio de salida
 volume       = 75.0           # Volumen de salida 0–100 %
