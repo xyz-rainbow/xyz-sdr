@@ -11,6 +11,9 @@ from typing import Literal
 
 DemodMode = Literal["wbfm", "nbfm", "am", "usb", "lsb"]
 
+# Headroom fijo tras normalización; el volumen de usuario se aplica en audio_output.
+NORMALIZE_LEVEL = 0.35
+
 
 # ─── FFT / Espectro ─────────────────────────────────────────────────────────
 
@@ -114,7 +117,7 @@ def demod_wbfm(
     # Normalizar
     peak = np.max(np.abs(audio))
     if peak > 0:
-        audio = audio / peak * 0.8
+        audio = audio / peak * NORMALIZE_LEVEL
 
     return audio.astype(np.float32)
 
@@ -145,7 +148,7 @@ def demod_nbfm(
     # Normalizar
     peak = np.max(np.abs(audio))
     if peak > 0:
-        audio = np.clip(audio / peak, -1, 1) * 0.8
+        audio = np.clip(audio / peak, -1, 1) * NORMALIZE_LEVEL
 
     return audio.astype(np.float32)
 
@@ -177,7 +180,7 @@ def demod_am(
     # Normalizar
     peak = np.max(np.abs(audio))
     if peak > 0:
-        audio = audio / peak * 0.8
+        audio = audio / peak * NORMALIZE_LEVEL
 
     return audio.astype(np.float32)
 
@@ -211,7 +214,7 @@ def demod_ssb(
     # Normalizar
     peak = np.max(np.abs(audio))
     if peak > 0:
-        audio = audio / peak * 0.8
+        audio = audio / peak * NORMALIZE_LEVEL
 
     return audio.astype(np.float32)
 

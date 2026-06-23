@@ -19,6 +19,10 @@ except ImportError:
     SOAPYSDR_AVAILABLE = False
     logging.warning("SoapySDR no disponible — usando modo simulación")
 
+class HardwareInitializationError(Exception):
+    """Excepción lanzada cuando falla la inicialización del hardware real SDR."""
+    pass
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,11 +117,18 @@ class SDRDevice:
     # ── Apertura / cierre ───────────────────────────────────────────────────
 
     def open(self) -> bool:
-        """Abre el dispositivo SDR. Retorna True si éxito."""
-        if not SOAPYSDR_AVAILABLE:
-            logger.warning("SoapySDR no disponible, usando simulación")
+        """Abre el dispositivo SDR. Retorna True si éxito.
+        Lanza HardwareInitializationError si falla la inicialización real.
+        """
+        if self.driver == "simulated":
             self._sdr = SimulatedSDR()
             return True
+
+        if not SOAPYSDR_AVAILABLE:
+            raise HardwareInitializationError(
+                "SoapySDR no disponible en el entorno Python. "
+                "Por favor, instala SoapySDR o usa el modo simulado (--sim)."
+            )
 
         try:
             self._sdr = SoapySDR.Device(dict(driver=self.driver))
@@ -126,10 +137,7 @@ class SDRDevice:
             logger.info(f"Dispositivo abierto: driver={self.driver}")
             return True
         except Exception as e:
-            logger.error(f"No se pudo abrir el dispositivo: {e}")
-            logger.info("Usando modo simulación")
-            self._sdr = SimulatedSDR()
-            return False
+            raise HardwareInitializationError(str(e))
 
     def close(self):
         """Cierra el stream y el dispositivo."""

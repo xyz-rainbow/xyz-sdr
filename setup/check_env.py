@@ -83,16 +83,45 @@ packages = {
     "sounddevice":  "sounddevice (audio output)",
     "textual":      "Textual (TUI)",
     "rich":         "Rich (terminal styling)",
-    "toml":         "TOML (configuración)",
 }
 
 for pkg, label in packages.items():
     try:
         __import__(pkg)
         ok(label)
+        
+        # Realizar chequeo adicional de dispositivos de salida de audio para sounddevice
+        if pkg == "sounddevice":
+            try:
+                import sounddevice as sd
+                devices = sd.query_devices()
+                outputs = [d for d in devices if d.get('max_output_channels', 0) > 0]
+                if outputs:
+                    ok(f"  → Audio: {len(outputs)} dispositivos de salida detectados")
+                    default_dev = sd.default.device[1]
+                    if default_dev is not None and default_dev >= 0 and default_dev < len(devices):
+                        print(f"    → Salida por defecto: {devices[default_dev].get('name')}")
+                    else:
+                        print(f"    → Salida por defecto: ID {default_dev}")
+                else:
+                    warn("  → Audio: No se detectaron dispositivos de salida de audio activos.")
+            except Exception as ae:
+                warn(f"  → Audio: Error al consultar dispositivos: {ae}")
     except ImportError:
         fail(f"{label} — no instalado (pip install {pkg})")
         errors.append(pkg)
+
+# Verificar parser TOML
+try:
+    if sys.version_info >= (3, 11):
+        import tomllib
+        ok("tomllib (TOML parser integrado)")
+    else:
+        import tomli
+        ok("tomli (TOML parser)")
+except ImportError:
+    fail("tomli — no instalado (requerido para Python < 3.11, pip install tomli)")
+    errors.append("tomli")
 
 # ─── 5. Librerías IA (opcionales) ───────────────────────────────────────────
 

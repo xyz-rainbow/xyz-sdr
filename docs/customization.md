@@ -103,3 +103,22 @@ PRESETS = [
 ]
 ```
 Cuando un usuario selecciona uno de estos presets en la interfaz, la aplicación actualiza automáticamente la sintonía física del dispositivo, centra el viewport y cambia el demodulador a la configuración correspondiente.
+
+---
+
+## 5. Normas de Diseño de la TUI (Actuales y Futuras)
+
+Para mantener la cohesión visual y garantizar una experiencia de usuario consistente a largo plazo, todas las modificaciones de la interfaz deben seguir estas directrices:
+
+### Consistencia en Menús Modales (ESC Settings)
+1. **Jerarquía Modular**: El menú de Ajustes (`SettingsScreen`) debe organizarse en base a páginas internas reactivas (`current_page`), con un menú principal de categorías generales que derivan a subpáginas específicas de formularios (ej. `page_hardware`, `page_noise`). Esto previene el desorden visual y simplifica la expansión de opciones futuras.
+2. **Ubicación de Botones de Salida**: Todos los menús y submenús modales deben posicionar sus botones de navegación/cierre exactamente en el mismo lugar:
+   * **Abajo a la derecha** (`align: right middle;` dentro de la clase `.settings-actions`).
+   * El botón de salida (`Cerrar` o `Atrás`) debe ser el primer botón a la izquierda de la sección de acciones, seguido a su derecha por el botón de acción positiva (`Aplicar` o `Guardar`), si corresponde.
+   * Esto asegura que el usuario pueda salir del menú o de cualquier subnivel presionando el mismo punto físico o usando la navegación de teclado uniforme.
+
+### Alineación de Controles en Formulario
+1. **Distribución Horizontal Compacta**: Al agrupar un interruptor de encendido/apagado y su selector de valor de control (ej. el switch de Squelch y su dropdown de umbral en dB), los controles deben presentarse en paralelo usando un contenedor con `layout: horizontal; height: 3; align: left middle;`. Esto previene el desperdicio de espacio vertical en terminales de baja resolución.
+2. **Fondo de Campos de Texto**: Los campos de entrada de texto interactivos (como el campo de frecuencia de sintonía en el menú de controles) deben usar fondo negro (`background: #000000;`) tanto en su estado de reposo como enfocado (`:focus`). El contorno o borde del input se utiliza para representar el foco visual (ej. `border: round #818cf8;`).
+3. **Ancho Proporcional**: Los controles desplegables (Select) para valores cortos (como Ganancia o Squelch) deben restringir su ancho (`width`) para evitar que ocupen el 100% de la barra lateral, dejando el ancho completo únicamente para listas largas como presets o nombres de dispositivos.
+

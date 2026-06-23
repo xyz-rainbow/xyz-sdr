@@ -13,7 +13,10 @@ fft_size     = 4096           # Tamaño FFT para espectro
 fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
 demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
 audio_rate   = 48_000         # Hz — tasa de audio de salida
-squelch_db   = -70.0          # Umbral de squelch en dBFS
+volume       = 75.0           # Volumen de salida 0–100 %
+squelch_db       = -70.0          # Umbral de squelch en dBFS (legacy)
+squelch_enabled  = false
+squelch_threshold = 15            # Umbral UI en dB (5–40)
 
 [display]
 waterfall_history = 100       # Líneas de historia en waterfall

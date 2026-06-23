@@ -34,7 +34,7 @@ xyz-sdr/
 ├── core/
 │   ├── device.py               # Abstracción e interfaz del hardware SDR (SoapySDR)
 │   ├── dsp.py                  # Procesamiento de señal: FFT, filtros, demodulación (FM/AM/SSB)
-│   ├── recorder.py             # Grabación IQ y de audio demodulado
+│   ├── audio_output.py         # Salida de audio demodulado (callback + cola)
 │   └── scanner.py              # Escáner espectral automatizado
 ├── tui/
 │   ├── app.py                  # Orquestador del layout y bindings de la TUI Textual
@@ -62,9 +62,9 @@ xyz-sdr/
 | `Space` | Centrar la vista en la frecuencia sintonizada actual | — |
 | `S` | Iniciar / Detener la recepción de radio | Botón de interfaz `>> INICIAR RX` |
 | `M` | Ciclar modo de demodulación (`wbfm`, `nbfm`, `am`, `usb`, `lsb`, etc.) | Clic directo en la matriz de la interfaz |
-| `R` | Iniciar / Detener grabación del archivo IQ | Botón de interfaz `(o) GRABAR IQ` |
 | `F` | Enfocar la caja de texto para introducir frecuencia manual | — |
 | `G` | Enfocar el selector de ganancia del hardware | — |
+| `V` | Enfocar el selector de volumen de salida de audio | — |
 | `Q` | Cerrar la aplicación de manera segura | — |
 
 ---

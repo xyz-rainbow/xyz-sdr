@@ -22,6 +22,8 @@ from textual import work, events
 
 from core.device import SDRDevice
 from core.dsp import average_psd
+from core.audio_effects import AudioEffects
+from core.audio_output import AudioOutputQueue
 
 from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
@@ -80,6 +82,7 @@ class StatusBar(Static):
         self,
         freq: float,
         gain: float,
+        volume: float,
         mode: str,
         snr: float,
         step: float,
@@ -106,6 +109,10 @@ class StatusBar(Static):
         
         text.append("GAIN ", "bold #fbbf24")
         text.append(f"{gain:.0f} dB", "bold #ffffff")
+        text.append(" ┃ ", "#475569")
+
+        text.append("VOL ", "bold #fb923c")
+        text.append(f"{volume:.0f}%", "bold #ffffff")
         text.append(" ┃ ", "#475569")
         
         text.append("MODE ", "bold #f472b6")
@@ -185,6 +192,26 @@ class XyzSDRApp(App):
         border: round #818cf8;
     }
 
+    .gain-volume-row {
+        layout: horizontal;
+        height: auto;
+        min-height: 3;
+        align: left middle;
+        grid-gutter: 1 0;
+        margin-bottom: 0;
+    }
+
+    .gain-volume-row Select {
+        width: 1fr;
+        min-width: 0;
+        padding: 0 1;
+        margin: 0;
+    }
+
+    #sel_preset {
+        width: 100%;
+    }
+
     #controls Button {
         width: 100%;
         margin-top: 1;
@@ -221,6 +248,11 @@ class XyzSDRApp(App):
         border: round #f87171;
     }
 
+    #lbl_demod,
+    #lbl_presets {
+        margin-top: 0;
+    }
+
     /* ── Matriz 3x3 de modos demod ── */
     .mode-grid {
         layout: grid;
@@ -228,9 +260,10 @@ class XyzSDRApp(App):
         grid-columns: 1fr 1fr 1fr;
         grid-rows: 3 3 3;
         grid-gutter: 0 1;
-        height: 11;
+        height: 9;
         margin-top: 1;
-        min-height: 11;
+        margin-bottom: 0;
+        min-height: 9;
     }
 
     .mode-grid Static {
@@ -364,6 +397,7 @@ class XyzSDRApp(App):
         ("m",           "cycle_mode",    "Modo"),
         ("f",           "focus_freq",    "Freq"),
         ("g",           "focus_gain",    "Gain"),
+        ("v",           "focus_volume",  "Volumen"),
         ("r",           "record",        "Grabar"),
         ("escape",      "show_settings", "Ajustes"),
         ("q",           "quit",          "Salir"),
@@ -374,6 +408,8 @@ class XyzSDRApp(App):
 
     DEMOD_MODES = ["wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw", "auto"]
     GAIN_OPTIONS = [0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
+    VOLUME_OPTIONS = [0, 10, 20, 30, 40, 50, 60, 70, 75, 80, 90, 100]
+    SQUELCH_THRESHOLD_OPTIONS = [5, 10, 12, 15, 18, 20, 25, 30, 35, 40]
 
     # ── Inicializacion ───────────────────────────────────────────────────────
 
@@ -382,6 +418,7 @@ class XyzSDRApp(App):
         driver: str = "sdrplay",
         center_freq: float = 100_600_000,
         gain: float = 40.0,
+        volume: float = 75.0,
         demod_mode: str = "wbfm",
         config: dict = None,
         **kwargs,
@@ -393,7 +430,8 @@ class XyzSDRApp(App):
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
-        self._audio_stream = None
+        self._audio_output: Optional[AudioOutputQueue] = None
+        self.audio_effects = AudioEffects()
 
         # ── Estado del viewport ──
         self.tuned_frequency: float = float(center_freq)
@@ -403,8 +441,17 @@ class XyzSDRApp(App):
         self.step_index: int = DEFAULT_STEP_INDEX
         self.zoom_index: int = DEFAULT_ZOOM_INDEX
         self.gain_value: float = float(gain)
+        self.volume_value: float = float(volume)
         self.sample_rate: float = 2_048_000.0
         self._last_snr: float = 0.0
+
+        dsp_cfg = self.config.get("dsp", {})
+        self.squelch_enabled = bool(dsp_cfg.get("squelch_enabled", False))
+        raw_squelch = dsp_cfg.get("squelch_threshold", dsp_cfg.get("squelch_db", 15))
+        squelch_int = int(float(raw_squelch))
+        if squelch_int not in self.SQUELCH_THRESHOLD_OPTIONS or squelch_int < 0:
+            squelch_int = 15
+        self.squelch_threshold = float(squelch_int)
 
     # ── Layout ───────────────────────────────────────────────────────────────
 
@@ -421,19 +468,25 @@ class XyzSDRApp(App):
                     id="inp_freq",
                 )
 
-                yield Label("-- GANANCIA (dB) --")
-                yield Select(
-                    [(f"{g} dB", g) for g in self.GAIN_OPTIONS],
-                    value=int(self.gain_value) if int(self.gain_value) in self.GAIN_OPTIONS else self.GAIN_OPTIONS[-1],
-                    id="sel_gain",
-                )
+                yield Label("[ Ganancia (dB) - Volumen ]")
+                with Horizontal(classes="gain-volume-row"):
+                    yield Select(
+                        [(f"{g}", g) for g in self.GAIN_OPTIONS],
+                        value=int(self.gain_value) if int(self.gain_value) in self.GAIN_OPTIONS else self.GAIN_OPTIONS[-1],
+                        id="sel_gain",
+                    )
+                    yield Select(
+                        [(f"{v}", v) for v in self.VOLUME_OPTIONS],
+                        value=int(self.volume_value) if int(self.volume_value) in self.VOLUME_OPTIONS else 75,
+                        id="sel_volume",
+                    )
 
-                yield Label("-- MODO DEMOD --")
+                yield Label("-- MODO DEMOD --", id="lbl_demod")
                 with Container(classes="mode-grid"):
                     for m in self.DEMOD_MODES:
                         yield Static(m.upper(), id=f"btn_mode_{m}")
 
-                yield Label("-- PRESETS --")
+                yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
                     [(name, f"{freq}:{mode}") for name, freq, mode in PRESETS],
                     prompt="Seleccionar...",
@@ -485,7 +538,11 @@ class XyzSDRApp(App):
         self._update_status()
 
     def on_unmount(self) -> None:
-        self._rx_active = False
+        if self._rx_active:
+            self._stop_rx()
+        elif self._audio_output:
+            self._audio_output.stop()
+            self._audio_output = None
         if self._device:
             self._device.close()
 
@@ -604,18 +661,13 @@ class XyzSDRApp(App):
     def _start_rx(self) -> None:
         self._rx_active = True
 
-        # Inicializar salida de audio con sounddevice
-        import sounddevice as sd
         try:
-            self._audio_stream = sd.OutputStream(
-                samplerate=48000,
-                channels=1,
-                dtype='float32',
-            )
-            self._audio_stream.start()
-            self._log("[OK]   Salida de audio iniciada (48 kHz)")
+            self._audio_output = AudioOutputQueue(sample_rate=48_000)
+            self._audio_output.set_volume(self.volume_value / 100.0)
+            self._audio_output.start()
+            self._log("[OK]   Salida de audio iniciada (48 kHz, callback)")
         except Exception as e:
-            self._audio_stream = None
+            self._audio_output = None
             self._log(f"[WARN] Sin salida de audio: {e}")
 
         btn = self.query_one("#btn_rx", Button)
@@ -628,13 +680,12 @@ class XyzSDRApp(App):
         self._rx_active = False
 
         # Detener salida de audio
-        if self._audio_stream:
+        if self._audio_output:
             try:
-                self._audio_stream.stop()
-                self._audio_stream.close()
+                self._audio_output.stop()
             except Exception:
                 pass
-            self._audio_stream = None
+            self._audio_output = None
             self._log("[INFO] Salida de audio detenida")
 
         btn = self.query_one("#btn_rx", Button)
@@ -649,6 +700,9 @@ class XyzSDRApp(App):
 
     def action_focus_gain(self) -> None:
         self.query_one("#sel_gain", Select).focus()
+
+    def action_focus_volume(self) -> None:
+        self.query_one("#sel_volume", Select).focus()
 
     def action_cycle_mode(self) -> None:
         idx = self.DEMOD_MODES.index(self.demod_mode)
@@ -699,10 +753,13 @@ class XyzSDRApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_rx":
+            self.audio_effects.play_blip()
             self.action_toggle_rx()
         elif event.button.id == "btn_rec":
+            self.audio_effects.play_blip()
             self.action_record()
         elif event.button.id and event.button.id.startswith("btn_spd_"):
+            self.audio_effects.play_blip()
             speed_val = int(event.button.id.replace("btn_spd_", ""))
             self._set_waterfall_speed(speed_val)
 
@@ -728,6 +785,7 @@ class XyzSDRApp(App):
 
     def on_click(self, event: events.Click) -> None:
         if event.widget and event.widget.id and event.widget.id.startswith("btn_mode_"):
+            self.audio_effects.play_blip()
             mode = event.widget.id.replace("btn_mode_", "")
             self.demod_mode = mode
             self._update_mode_ui()
@@ -744,6 +802,7 @@ class XyzSDRApp(App):
                 self._apply_tuning()
                 self._log(f"Frecuencia: {self.tuned_frequency / 1e6:.4f} MHz")
             except ValueError:
+                self.audio_effects.play_error()
                 self._log(f"[ERROR] Frecuencia invalida: {event.value}")
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -752,10 +811,24 @@ class XyzSDRApp(App):
                 self.gain_value = float(event.value)
                 if self._device:
                     self._device.set_gain(self.gain_value)
+                self.audio_effects.play_blip()
                 self._log(f"Ganancia: {self.gain_value:.0f} dB")
                 self._update_status()
             except ValueError:
+                self.audio_effects.play_error()
                 self._log(f"[ERROR] Ganancia invalida: {event.value}")
+
+        elif event.select.id == "sel_volume" and event.value != Select.BLANK:
+            try:
+                self.volume_value = float(event.value)
+                if self._audio_output:
+                    self._audio_output.set_volume(self.volume_value / 100.0)
+                self.audio_effects.play_blip()
+                self._log(f"Volumen: {self.volume_value:.0f}%")
+                self._update_status()
+            except ValueError:
+                self.audio_effects.play_error()
+                self._log(f"[ERROR] Volumen invalido: {event.value}")
 
         elif event.select.id == "sel_preset" and event.value != Select.BLANK:
             parts = str(event.value).split(":")
@@ -765,6 +838,7 @@ class XyzSDRApp(App):
                 self.demod_mode = parts[1]
                 self._update_mode_ui()
                 self._apply_tuning()
+                self.audio_effects.play_blip()
                 self._log(
                     f"Preset: {self.tuned_frequency / 1e6:.3f} MHz"
                     f" {self.demod_mode.upper()}"
@@ -826,7 +900,7 @@ class XyzSDRApp(App):
                 )
 
                 # Demodulación y salida de audio en tiempo real
-                if self._audio_stream and self.demod_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
+                if self._audio_output and self.demod_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
                     from core.dsp import demodulate
                     try:
                         audio = demodulate(
@@ -835,7 +909,7 @@ class XyzSDRApp(App):
                             sample_rate=self.sample_rate,
                             audio_rate=48000,
                         )
-                        self._audio_stream.write(audio)
+                        self._audio_output.enqueue(audio)
                     except Exception as ae:
                         logger.error(f"Error en reproducción de audio: {ae}")
 
@@ -894,6 +968,7 @@ class XyzSDRApp(App):
             self.query_one("#status", StatusBar).update_status(
                 freq=self.tuned_frequency,
                 gain=self.gain_value,
+                volume=self.volume_value,
                 mode=self.demod_mode,
                 snr=self._last_snr,
                 step=self.scroll_step,
