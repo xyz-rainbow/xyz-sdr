@@ -68,6 +68,11 @@ T = {
         "py_installing_deps": "Instalando paquetes con {}...",
         "py_success": "Dependencias de Python instaladas correctamente.",
         "py_fail": "Hubo un error al instalar los paquetes de Python.",
+        "py_venv_label": "Entorno Python (.venv) para hardware SDR",
+        "py_venv_creating": "Creando .venv con {}…",
+        "py_venv_ready": "Entorno listo: {}",
+        "py_venv_hint": "Usa .venv\\Scripts\\python main.py o vuelve a ejecutar install_drivers.bat.",
+        "menu_opt_venv": "Crear/reparar .venv SoapySDR (Python 3.11/3.12 o 3.9 Pothos)",
         "diag_running": "Iniciando análisis del entorno con check_env.py...",
         "already_installed_title": "{} ya está instalado.",
         "already_installed_skip": "No es necesario volver a instalar.",
@@ -114,6 +119,11 @@ T = {
         "py_installing_deps": "Installing packages with {}...",
         "py_success": "Python dependencies successfully installed.",
         "py_fail": "There was an error installing the Python packages.",
+        "py_venv_label": "Python environment (.venv) for SDR hardware",
+        "py_venv_creating": "Creating .venv with {}…",
+        "py_venv_ready": "Environment ready: {}",
+        "py_venv_hint": "Use .venv\\Scripts\\python main.py or re-run install_drivers.bat.",
+        "menu_opt_venv": "Create/repair .venv for SoapySDR (Python 3.11/3.12 or 3.9 Pothos)",
         "diag_running": "Starting environment diagnostics with check_env.py...",
         "already_installed_title": "{} is already installed.",
         "already_installed_skip": "Reinstallation is not required.",
@@ -497,8 +507,43 @@ def _install_pothos(temp_dir: str) -> None:
         print(f"  {pothos_url}{C_RESET}")
 
 
-def _install_python_deps() -> None:
+def _install_python_deps(*, force_venv: bool = False) -> None:
     lang = CURRENT_LANG
+    from core.python_runtime import (
+        ensure_project_venv_with_deps,
+        find_best_soapy_python,
+        install_requirements,
+        is_current_soapy_compatible,
+        project_venv_python,
+    )
+
+    venv_py = project_venv_python()
+    use_venv = force_venv or not is_current_soapy_compatible() or venv_py is not None
+
+    if use_venv:
+        best = find_best_soapy_python()
+        if not best and not venv_py:
+            print(f"\n{C_RED}[ERROR] {T[lang]['py_fail']}: no hay Python 3.9–3.12 instalado.{C_RESET}")
+            print(f"  {C_ORANGE}Instala Python 3.12: winget install Python.Python.3.12{C_RESET}")
+            return
+        try:
+            if venv_py and not force_venv:
+                print(f"  {T[lang]['py_installing_deps'].format('.venv')}")
+                install_requirements(str(venv_py))
+                print(f"\n{C_LIME}[SUCCESS] {T[lang]['py_success']}{C_RESET}")
+                print(f"  {C_CYAN}{T[lang]['py_venv_hint']}{C_RESET}")
+                return
+            label = best.label() if best else ".venv"
+            print(f"  {T[lang]['py_venv_creating'].format(label)}")
+            py = ensure_project_venv_with_deps()
+            print(f"  {C_LIME}[SUCCESS] {T[lang]['py_venv_ready'].format(py)}{C_RESET}")
+            print(f"\n{C_LIME}[SUCCESS] {T[lang]['py_success']}{C_RESET}")
+            print(f"  {C_CYAN}{T[lang]['py_venv_hint']}{C_RESET}")
+            return
+        except Exception as e:
+            print(f"\n{C_RED}[ERROR] {T[lang]['py_fail']}: {e}{C_RESET}")
+            return
+
     has_uv = False
     try:
         res = subprocess.run(["uv", "--version"], capture_output=True, text=True, check=False)
@@ -517,6 +562,18 @@ def _install_python_deps() -> None:
         print(f"\n{C_LIME}[SUCCESS] {T[lang]['py_success']}{C_RESET}")
     except Exception as e:
         print(f"\n{C_RED}[ERROR] {T[lang]['py_fail']}: {e}{C_RESET}")
+
+
+def _python_runtime_status_line(lang: str) -> str:
+    try:
+        from core.python_runtime import format_python_compat_status, project_venv_python
+        text, level = format_python_compat_status(lang)
+        if project_venv_python():
+            text += " | .venv OK"
+        colors = {"ok": C_LIME, "warn": C_ORANGE, "fail": C_RED}
+        return f"{colors.get(level, C_GRAY)}{text}{C_RESET}"
+    except Exception:
+        return f"{C_GRAY}Python — ?{C_RESET}"
 
 # --- Impresión del Banner y Menú ---
 def print_banner():
@@ -553,6 +610,7 @@ def print_interface():
     print(f" {C_BOLD}{T[lang]['status_device']}:{C_RESET}")
     print(f"  ├── {T[lang]['sdrplay_label']}:      {sdrplay_status}")
     print(f"  ├── {T[lang]['pothos_label']}: {pothos_status}")
+    print(f"  ├── {T[lang]['py_venv_label']}: {_python_runtime_status_line(lang)}")
     print(f"  └── {T[lang]['py_libs_label']}:      {py_status}")
     print(f"{C_CYAN} ─────────────────────────────────────────────────────────────────────────────────────────{C_RESET}")
     
@@ -567,6 +625,7 @@ def print_interface():
     print(f"  {C_PINK}[1]{C_RESET} {T[lang]['menu_opt_sdrplay']} {lbl_sdrplay}")
     print(f"  {C_PINK}[2]{C_RESET} {T[lang]['menu_opt_pothos']} {lbl_pothos}")
     print(f"  {C_PINK}[3]{C_RESET} {T[lang]['menu_opt_py']} {lbl_py}")
+    print(f"  {C_PINK}[V]{C_RESET} {T[lang]['menu_opt_venv']}")
     print(f"  {C_PINK}[4]{C_RESET} {T[lang]['menu_opt_diag']}")
     print(f"  {C_PINK}[L]{C_RESET} {T[lang]['menu_opt_lang']}")
     print(f"  {C_PINK}[S]{C_RESET} {T[lang]['menu_opt_exit']}")
@@ -611,17 +670,32 @@ def main():
         elif opc == "3":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_py'].upper()} ───{C_RESET}")
             _, py_missing = check_python_libs()
-            if not py_missing:
+            from core.python_runtime import is_current_soapy_compatible, project_venv_python
+
+            venv_ok = project_venv_python() is not None
+            if not py_missing and is_current_soapy_compatible() and not venv_ok:
                 _handle_already_installed(T[CURRENT_LANG]["py_libs_label"])
             else:
                 _install_python_deps()
                 input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
+
+        elif opc == "V":
+            print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_venv'].upper()} ───{C_RESET}")
+            _install_python_deps(force_venv=True)
+            input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")
             
         elif opc == "4":
             print(f"\n{C_CYAN}─── {T[CURRENT_LANG]['menu_opt_diag'].upper()} ───{C_RESET}")
             print(f"  {T[CURRENT_LANG]['diag_running']}")
             try:
-                subprocess.run([sys.executable, "setup/check_env.py"], check=False)
+                venv_py = None
+                try:
+                    from core.python_runtime import project_venv_python
+                    venv_py = project_venv_python()
+                except Exception:
+                    pass
+                py_exe = str(venv_py) if venv_py else sys.executable
+                subprocess.run([py_exe, "setup/check_env.py"], check=False)
             except Exception as e:
                 print(f"  [XX] Error: {e}")
             input(f"\n{T[CURRENT_LANG]['press_enter_menu']}")

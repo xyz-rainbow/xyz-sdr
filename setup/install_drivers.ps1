@@ -1,21 +1,26 @@
 # ============================================================
 # xyz-sdr | install_drivers.ps1
-# Wrapper de PowerShell para lanzar el instalador interactivo de Python
+# Wrapper PowerShell — prefiere .venv del proyecto si existe
 # ============================================================
 
 $ErrorActionPreference = "Stop"
 
-# Comprobar si Python está instalado
+$Root = Split-Path $PSScriptRoot -Parent
+$VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
+
+if (Test-Path $VenvPy) {
+    & $VenvPy (Join-Path $PSScriptRoot "install_drivers.py")
+    exit $LASTEXITCODE
+}
+
 $hasPython = Get-Command python -ErrorAction SilentlyContinue
 
 if (-not $hasPython) {
-    Write-Host "`n[XX] Error: Python 3.10+ no encontrado." -ForegroundColor Red
-    Write-Host "Por favor, descarga e instala Python desde https://python.org y asegúrate de marcar 'Add Python to PATH'." -ForegroundColor Yellow
+    Write-Host "`n[XX] Error: Python no encontrado." -ForegroundColor Red
+    Write-Host "Instala Python 3.12 o ejecuta: winget install Python.Python.3.12" -ForegroundColor Yellow
     Write-Host "Presiona cualquier tecla para salir..." -ForegroundColor Gray
     [void][System.Console]::ReadKey()
     exit 1
 }
 
-# Ejecutar el instalador interactivo de Python
-$scriptPath = Join-Path $PSScriptRoot "install_drivers.py"
-python $scriptPath
+python (Join-Path $PSScriptRoot "install_drivers.py")

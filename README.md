@@ -79,13 +79,15 @@ xyz-sdr/
 
 ## 💾 Instalación y Ejecución rápida
 
-**Requisito hardware real:** Python **3.11 o 3.12** (64-bit). PothosSDR incluye bindings embebidos solo para Python 3.9; en 3.13+ no hay wheel `SoapySDR` en pip.
+**Requisito hardware real:** Python **3.11 o 3.12** (64-bit), o **3.9** con bindings Pothos embebidos. En **3.13+** el instalador y `main.py` pueden crear/usar `.venv` automáticamente.
 
 1. **Instalar Drivers SDR (Solo Windows)**:
    ```powershell
    .\setup\install_drivers.ps1
    ```
-2. **Instalar Dependencias de Python**:
+   - Opción **[V]**: crea `.venv` con Python 3.11/3.12 (vía `py` launcher) e instala dependencias.
+   - Opción **[3]**: si tu Python global es incompatible (p. ej. 3.14), crea `.venv` solo.
+2. **Instalar Dependencias de Python** (si no usaste [V]/[3]):
    ```bash
    pip install -r requirements.txt
    ```
@@ -115,6 +117,7 @@ xyz-sdr/
    ```bash
    python main.py --driver sdrplay --freq 100.6 --gain 40
    ```
+   Con Python 3.14+ global, `main.py` intenta re-lanzarse con `.venv` o `py -3.12` automáticamente.
    O deja que elija el primer dispositivo: `python main.py --driver auto`
 
 ---

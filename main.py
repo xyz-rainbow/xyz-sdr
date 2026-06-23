@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import argparse
 import logging
+import os
 
 # Forzar salida UTF-8 en Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -58,7 +59,15 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    args   = parse_args()
+    args = parse_args()
+
+    # Re-lanzar con Python 3.9–3.12 si el intérprete actual no soporta SoapySDR
+    if not os.environ.get("XYZ_SDR_REEXEC_DONE"):
+        try:
+            from core.python_runtime import try_reexec_for_soapy
+            try_reexec_for_soapy(force_sim=args.sim)
+        except Exception:
+            pass
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)

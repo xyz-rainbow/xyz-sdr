@@ -1,14 +1,22 @@
 @echo off
 rem ============================================================
 rem xyz-sdr | install_drivers.bat
-rem Wrapper Batch para lanzar el instalador interactivo de Python
+rem Wrapper Batch — prefiere .venv del proyecto si existe
 rem ============================================================
+
+set "ROOT=%~dp0.."
+set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
+
+if exist "%VENV_PY%" (
+    "%VENV_PY%" "%~dp0install_drivers.py"
+    exit /b %errorlevel%
+)
 
 where python >nul 2>nul
 if %errorlevel% neq 0 (
     echo.
     echo [XX] Error: Python 3.10+ no encontrado.
-    echo Por favor, descarga e instala Python desde https://python.org y asegúrate de marcar 'Add Python to PATH'.
+    echo Instala Python 3.12 o ejecuta: winget install Python.Python.3.12
     echo.
     pause
     exit /b 1
