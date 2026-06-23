@@ -141,7 +141,7 @@ def main():
             demod_mode=demod_mode,
             config=config,
             config_path=args.config,
-            debug=args.debug,
+            debug_mode=args.debug,
         )
         print_startup_splash()
         app.run()

@@ -756,7 +756,7 @@ class XyzSDRApp(App):
         demod_mode: str = "wbfm",
         config: dict = None,
         config_path: str = "config/defaults.toml",
-        debug: bool = False,
+        debug_mode: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -764,7 +764,7 @@ class XyzSDRApp(App):
         self.demod_mode = demod_mode
         self.config = config or {}
         self.config_path = config_path
-        self.debug = debug
+        self.debug_mode = debug_mode
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
@@ -950,14 +950,14 @@ class XyzSDRApp(App):
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
         log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | espacio centrar")
-        if self.debug:
+        if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
         self._update_status()
         self.call_after_refresh(self._update_display_width)
 
         display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
         self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
-        if self.debug:
+        if self.debug_mode:
             self.set_interval(3.0, self._report_debug_metrics)
 
     def _invalidate_band_cache(self) -> None:
@@ -998,7 +998,7 @@ class XyzSDRApp(App):
 
         self._update_status()
 
-        if self.debug:
+        if self.debug_mode:
             ui_ms = (time.perf_counter() - ui_t0) * 1000.0
             latency_ms = max(0.0, (time.time() - frame.timestamp) * 1000.0)
             with self._debug_lock:
@@ -1012,7 +1012,7 @@ class XyzSDRApp(App):
 
     def _report_debug_metrics(self) -> None:
         """Escribe métricas de rendimiento en el panel de log (--debug)."""
-        if not self.debug:
+        if not self.debug_mode:
             return
 
         now = time.time()
@@ -1106,7 +1106,7 @@ class XyzSDRApp(App):
 
     def _sync_viewport(self) -> None:
         """Propaga el estado del viewport a los 3 widgets de visualizacion."""
-        vp_t0 = time.perf_counter() if self.debug else 0.0
+        vp_t0 = time.perf_counter() if self.debug_mode else 0.0
 
         try:
             timeline = self.query_one("#timeline", FrequencyTimeline)
@@ -1128,7 +1128,7 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
-        if self.debug:
+        if self.debug_mode:
             self._debug_last_viewport_ms = (time.perf_counter() - vp_t0) * 1000.0
 
     # ── Acciones de Scroll (← →) ─────────────────────────────────────────────
@@ -1663,7 +1663,7 @@ class XyzSDRApp(App):
                     )
                     self._band_mailbox.publish(frame, snr)
 
-                    if self.debug:
+                    if self.debug_mode:
                         proc_ms = (time.perf_counter() - proc_t0) * 1000.0
                         with self._debug_lock:
                             self._debug_rx_iter_count += 1
