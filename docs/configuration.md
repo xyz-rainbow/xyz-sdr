@@ -160,16 +160,20 @@ Ver [roadmap.md](roadmap.md) fases 4–5.
 
 ---
 
-## `[scanner]` — escáner espectral (planificado)
+## `[scanner]` — escáner espectral
+
+Parámetros en `config/defaults.toml`; ajustables en **Esc → Ajustes del Escáner**. Uso en TUI: botón **ESCANEAR BANDA** (requiere RX activo).
 
 | Clave | Tipo | Default | Descripción |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activa escáner |
+| `enabled` | bool | `false` | Reservado (activación vía botón TUI) |
 | `freq_start` | int | `88_000_000` | Inicio barrido (Hz) |
 | `freq_end` | int | `108_000_000` | Fin barrido |
 | `freq_step` | int | `200_000` | Paso (Hz) |
-| `dwell_ms` | int | `500` | Tiempo por frecuencia |
-| `min_snr_db` | float | `10.0` | SNR mínima para detener |
+| `dwell_ms` | int | `500` | Tiempo mínimo por frecuencia sin señal |
+| `min_snr_db` | float | `10.0` | Umbral SNR en PASS para considerar señal |
+
+Persistencia: `patch_scanner_section()` desde ajustes o `_persist_scanner_config()` en la app.
 
 ---
 

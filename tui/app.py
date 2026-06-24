@@ -30,6 +30,8 @@ from core.config_store import (
     patch_dsp_section,
     patch_display_section,
     persist_band_profile,
+    patch_recorder_section,
+    patch_scanner_section,
 )
 from core.auto_demod import resolve_auto_demod_mode
 from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
@@ -54,6 +56,7 @@ from core.passband import (
     PASSBAND_KEYBOARD_STEP,
     clamp_passband_width,
     default_passband_width,
+    freq_to_col,
 )
 from tui.rx_worker import run_rx_iteration
 from tui.bandwidth import validate_sample_rate
@@ -590,7 +593,8 @@ class XyzSDRApp(App):
     }
 
     #controls #btn_rx,
-    #controls #btn_rec {
+    #controls #btn_rec,
+    #controls #btn_scan {
         margin-top: 0;
         margin-bottom: 0;
     }
@@ -856,6 +860,9 @@ class XyzSDRApp(App):
         self._rx_active = False
         self._recording = False
         self._recorder: Optional[SDRRecorder] = None
+        self._scanning = False
+        self._scan_tuned_time = 0.0
+        self._scan_last_signal_time = 0.0
         self._squelch_open = True
         self._audio_output: Optional[AudioOutputQueue] = None
         self.audio_effects = AudioEffects()
@@ -1132,6 +1139,7 @@ class XyzSDRApp(App):
                 with VerticalGroup(classes="action-btns"):
                     yield Button(">> INICIAR RX", id="btn_rx", variant="success", classes="-textual-compact")
                     yield Button("(o) GRABAR IQ", id="btn_rec", variant="warning", classes="-textual-compact")
+                    yield Button("🔍 ESCANEAR BANDA", id="btn_scan", variant="primary", classes="-textual-compact")
 
                 yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
@@ -1411,6 +1419,9 @@ class XyzSDRApp(App):
         )
 
         floors, ceilings = self._compute_column_levels(cols, display_cfg)
+
+        if self._scanning:
+            self._handle_scanner_step(frame, snr, floors, ceilings)
 
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
@@ -2015,6 +2026,180 @@ class XyzSDRApp(App):
         except Exception as exc:
             self._log(f"[WARN] No se pudo guardar config DSP: {exc}")
 
+    def _persist_recorder_config(
+        self,
+        *,
+        record_iq: bool | None = None,
+        record_audio: bool | None = None,
+    ) -> None:
+        """Guarda ajustes de grabación en el TOML de configuración."""
+        try:
+            patch_recorder_section(
+                self.config_path,
+                record_iq=record_iq,
+                record_audio=record_audio,
+            )
+            rec_cfg = self.config.setdefault("recorder", {})
+            if record_iq is not None:
+                rec_cfg["record_iq"] = record_iq
+            if record_audio is not None:
+                rec_cfg["record_audio"] = record_audio
+        except Exception as exc:
+            self._log(f"[WARN] No se pudo guardar config de grabacion: {exc}")
+
+    def _persist_scanner_config(
+        self,
+        *,
+        freq_start: float | None = None,
+        freq_end: float | None = None,
+        freq_step: float | None = None,
+        dwell_ms: float | None = None,
+        min_snr_db: float | None = None,
+    ) -> None:
+        """Guarda ajustes del escáner en el TOML de configuración."""
+        try:
+            patch_scanner_section(
+                self.config_path,
+                freq_start=freq_start,
+                freq_end=freq_end,
+                freq_step=freq_step,
+                dwell_ms=dwell_ms,
+                min_snr_db=min_snr_db,
+            )
+            scan_cfg = self.config.setdefault("scanner", {})
+            if freq_start is not None:
+                scan_cfg["freq_start"] = int(freq_start)
+            if freq_end is not None:
+                scan_cfg["freq_end"] = int(freq_end)
+            if freq_step is not None:
+                scan_cfg["freq_step"] = int(freq_step)
+            if dwell_ms is not None:
+                scan_cfg["dwell_ms"] = int(dwell_ms)
+            if min_snr_db is not None:
+                scan_cfg["min_snr_db"] = float(min_snr_db)
+        except Exception as exc:
+            self._log(f"[WARN] No se pudo guardar config de escaneo: {exc}")
+
+    def action_toggle_scan(self) -> None:
+        """Inicia o detiene el escáner de banda."""
+        if self._scanning:
+            self._stop_scanning()
+        else:
+            self._start_scanning()
+
+    def _start_scanning(self) -> None:
+        if not self._rx_active:
+            self.audio_effects.play_error()
+            self._log("[ERROR] Inicia RX antes de escanear")
+            return
+
+        # Cargar parámetros actuales del escáner
+        scan_cfg = self.config.get("scanner", {})
+        self._scan_start_hz = float(scan_cfg.get("freq_start", 88_000_000))
+        self._scan_end_hz = float(scan_cfg.get("freq_end", 108_000_000))
+        self._scan_step_hz = float(scan_cfg.get("freq_step", 200_000))
+        self._scan_dwell_s = float(scan_cfg.get("dwell_ms", 500)) / 1000.0
+        self._scan_min_snr = float(scan_cfg.get("min_snr_db", 10.0))
+
+        self._scanning = True
+        try:
+            btn = self.query_one("#btn_scan", Button)
+            btn.label = "■ DETENER ESCANEO"
+            btn.variant = "error"
+        except Exception:
+            pass
+
+        self._log(
+            f"[SCAN] Iniciando escaneo ({self._scan_start_hz / 1e6:.2f} - "
+            f"{self._scan_end_hz / 1e6:.2f} MHz, paso {self._scan_step_hz / 1e3:.1f} kHz)"
+        )
+
+        # Iniciar en la frecuencia de inicio
+        self._is_scanner_stepping = True
+        try:
+            self.tuned_frequency = self._scan_start_hz
+            self.passband_center_hz = self._scan_start_hz
+            self.viewport_center = self._scan_start_hz
+            self._apply_tuning()
+        finally:
+            self._is_scanner_stepping = False
+
+        self._scan_tuned_time = time.time()
+        self._scan_last_signal_time = 0.0
+
+    def _stop_scanning(self) -> None:
+        if not self._scanning:
+            return
+        self._scanning = False
+        try:
+            btn = self.query_one("#btn_scan", Button)
+            btn.label = "🔍 ESCANEAR BANDA"
+            btn.variant = "primary"
+        except Exception:
+            pass
+        self._log("[SCAN] Escaneo detenido")
+
+    def _step_scanner(self) -> None:
+        next_freq = self.tuned_frequency + self._scan_step_hz
+        if next_freq > self._scan_end_hz:
+            next_freq = self._scan_start_hz
+
+        self._log(f"[SCAN] Sintonizando: {next_freq / 1e6:.4f} MHz")
+        self._is_scanner_stepping = True
+        try:
+            self.tuned_frequency = next_freq
+            self.passband_center_hz = next_freq
+            self.viewport_center = next_freq
+            self._apply_tuning()
+        finally:
+            self._is_scanner_stepping = False
+
+        self._scan_tuned_time = time.time()
+        self._scan_last_signal_time = 0.0
+
+    def _handle_scanner_step(self, frame, snr: float, floors: np.ndarray, ceilings: np.ndarray) -> None:
+        # 1. Verificar si la frecuencia central del frame coincide con la sintonizada
+        if abs(frame.center_hz - self.tuned_frequency) > 10.0:
+            return
+
+        # 2. Calcular SNR en el passband usando la estimación auto-level por columnas
+        band_w = self.passband_width_hz
+        left_hz = self.passband_center_hz - band_w / 2
+        right_hz = self.passband_center_hz + band_w / 2
+        col_l = freq_to_col(
+            left_hz,
+            widget_width=self._display_width,
+            viewport_center_hz=self.viewport_center,
+            visible_span_hz=self.visible_span,
+        )
+        col_r = freq_to_col(
+            right_hz,
+            widget_width=self._display_width,
+            viewport_center_hz=self.viewport_center,
+            visible_span_hz=self.visible_span,
+        )
+        pb_l, pb_r = min(col_l, col_r), max(col_l, col_r)
+        pb_l = max(0, min(pb_l, self._display_width - 1))
+        pb_r = max(0, min(pb_r, self._display_width - 1))
+
+        if pb_r >= pb_l:
+            passband_floors = floors[pb_l : pb_r + 1]
+            passband_ceilings = ceilings[pb_l : pb_r + 1]
+            passband_snr = float(np.max(passband_ceilings - passband_floors))
+        else:
+            passband_snr = 0.0
+
+        now = time.time()
+        # 3. Comprobar SNR
+        if passband_snr >= self._scan_min_snr:
+            if self._scan_last_signal_time == 0.0:
+                self._log(f"[SCAN] Señal encontrada en {self.tuned_frequency / 1e6:.4f} MHz (SNR: {passband_snr:.1f} dB)")
+            self._scan_last_signal_time = now
+        else:
+            ref_time = self._scan_last_signal_time if self._scan_last_signal_time > 0.0 else self._scan_tuned_time
+            if now - ref_time >= self._scan_dwell_s:
+                self._step_scanner()
+
     def change_device_driver(self, new_driver: str) -> bool:
         """Cambia dinámicamente el driver del dispositivo SDR en tiempo real."""
         if new_driver == "sim":
@@ -2167,6 +2352,9 @@ class XyzSDRApp(App):
         elif event.button.id == "btn_save_bookmark":
             self.audio_effects.play_blip()
             self._action_save_bookmark()
+        elif event.button.id == "btn_scan":
+            self.audio_effects.play_blip()
+            self.action_toggle_scan()
         elif event.button.id and event.button.id.startswith("btn_spd_"):
             self.audio_effects.play_blip()
             speed_val = int(event.button.id.replace("btn_spd_", ""))
@@ -2418,6 +2606,9 @@ class XyzSDRApp(App):
 
     def _apply_tuning(self) -> None:
         """Aplica la frecuencia sintonizada al dispositivo y actualiza UI."""
+        if self._scanning and not getattr(self, "_is_scanner_stepping", False):
+            self._stop_scanning()
+
         if self._device:
             self._device.set_frequency(self.tuned_frequency)
 
