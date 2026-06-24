@@ -30,10 +30,10 @@ def test_resolve_recordings_dir_absolute(tmp_path: Path):
     assert resolve_recordings_dir(str(custom)) == custom
 
 
-def test_recording_targets_cw_iq_only():
+def test_recording_targets_cw_includes_audio():
     do_iq, do_audio = recording_targets("cw", record_iq=True, record_audio=True)
     assert do_iq is True
-    assert do_audio is False
+    assert do_audio is True
 
 
 def test_recording_targets_wbfm_both():

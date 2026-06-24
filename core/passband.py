@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-DemodPassbandMode = Literal["wbfm", "nbfm", "am", "usb", "lsb"]
+DemodPassbandMode = Literal["wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw", "auto"]
 
 PASSBAND_DEFAULTS: dict[str, float] = {
     "wbfm": 200_000.0,
@@ -15,6 +15,10 @@ PASSBAND_DEFAULTS: dict[str, float] = {
     "am": 10_000.0,
     "usb": 3_000.0,
     "lsb": 3_000.0,
+    "cw": 800.0,
+    "dsb": 6_000.0,
+    "raw": 50_000.0,
+    "auto": 12_500.0,
 }
 
 PASSBAND_LIMITS: dict[str, tuple[float, float]] = {
@@ -23,6 +27,10 @@ PASSBAND_LIMITS: dict[str, tuple[float, float]] = {
     "am": (3_000.0, 15_000.0),
     "usb": (1_500.0, 6_000.0),
     "lsb": (1_500.0, 6_000.0),
+    "cw": (200.0, 3_000.0),
+    "dsb": (3_000.0, 15_000.0),
+    "raw": (1_000.0, 500_000.0),
+    "auto": (1_000.0, 500_000.0),
 }
 
 # Umbral de arrastre en píxeles: por debajo = clic corto (ancho por defecto).
@@ -33,6 +41,12 @@ PASSBAND_KEYBOARD_STEP: dict[str, float] = {
     "wbfm": 10_000.0,
     "nbfm": 2_500.0,
     "am": 1_000.0,
+    "usb": 200.0,
+    "lsb": 200.0,
+    "cw": 100.0,
+    "dsb": 500.0,
+    "raw": 5_000.0,
+    "auto": 1_000.0,
 }
 
 

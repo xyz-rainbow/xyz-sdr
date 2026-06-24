@@ -150,8 +150,8 @@ def run_rx_iteration(host: RxWorkerHost) -> RxIterationResult | None:
         host._recorder.write_iq(samples)
 
     audio_enqueued = False
-    capture_mode = host.demod_mode
-    if host._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
+    capture_mode = host.active_demod_mode
+    if host._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw"]:
         audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
         freq_offset = float(host.passband_center_hz) - capture_freq
         demod_t0 = time.perf_counter()

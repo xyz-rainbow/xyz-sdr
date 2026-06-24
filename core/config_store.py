@@ -179,6 +179,64 @@ def patch_app_section(
     logger.info("Config app actualizada: %s", path)
 
 
+def patch_recorder_section(
+    path: str,
+    *,
+    record_iq: bool | None = None,
+    record_audio: bool | None = None,
+) -> None:
+    """Actualiza valores en la sección [recorder] del archivo TOML."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    text = config_path.read_text(encoding="utf-8")
+    updates = {
+        "record_iq": record_iq,
+        "record_audio": record_audio,
+    }
+
+    for key, value in updates.items():
+        if value is not None:
+            text = _patch_key(text, key, value)
+
+    config_path.write_text(text, encoding="utf-8")
+    logger.info("Config Recorder actualizada: %s", path)
+
+
+def patch_scanner_section(
+    path: str,
+    *,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    freq_step: float | None = None,
+    dwell_ms: float | None = None,
+    min_snr_db: float | None = None,
+) -> None:
+    """Actualiza valores en la sección [scanner] del archivo TOML."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    text = config_path.read_text(encoding="utf-8")
+    updates = {
+        "freq_start": int(freq_start) if freq_start is not None else None,
+        "freq_end": int(freq_end) if freq_end is not None else None,
+        "freq_step": int(freq_step) if freq_step is not None else None,
+        "dwell_ms": int(dwell_ms) if dwell_ms is not None else None,
+        "min_snr_db": min_snr_db,
+    }
+
+    for key, value in updates.items():
+        if value is not None:
+            text = _patch_key(text, key, value)
+
+    config_path.write_text(text, encoding="utf-8")
+    logger.info("Config Scanner actualizada: %s", path)
+
+
 def persist_band_profile(path: str, profile_id: str, profile: dict[str, Any]) -> None:
     """Persiste un perfil de banda en defaults.toml (device, dsp, display, [app])."""
     dev = profile.get("device", {}) if isinstance(profile.get("device"), dict) else {}

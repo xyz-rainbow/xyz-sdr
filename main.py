@@ -54,7 +54,9 @@ def parse_args():
     parser.add_argument("--driver",   default=None, help="Driver SDR (auto, sdrplay, rtlsdr, hackrf...)")
     parser.add_argument("--freq",     type=float, default=None, help="Frecuencia inicial en MHz")
     parser.add_argument("--gain",     type=float, default=None, help="Ganancia en dB")
-    parser.add_argument("--mode",     default=None, choices=["wbfm","nbfm","am","usb","lsb"], help="Modo de demodulación")
+    parser.add_argument("--mode",     default=None,
+                        choices=["wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw", "auto"],
+                        help="Modo de demodulación")
     parser.add_argument("--sim",      action="store_true", help="Forzar modo simulación (sin hardware)")
     parser.add_argument("--allow-system-python", action="store_true",
                         help="No exige .venv (solo desarrollo)")

@@ -17,7 +17,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-AUDIO_DEMOD_MODES = frozenset({"wbfm", "nbfm", "am", "usb", "lsb"})
+AUDIO_DEMOD_MODES = frozenset({"wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw"})
 
 
 def resolve_recordings_dir(

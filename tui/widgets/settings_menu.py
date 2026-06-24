@@ -9,7 +9,7 @@ from typing import Optional
 from textual.screen import ModalScreen
 from textual.app import ComposeResult
 from textual.containers import Vertical, Horizontal, Container
-from textual.widgets import Label, Select, Button, Switch
+from textual.widgets import Label, Select, Button, Switch, Input
 from textual.reactive import reactive
 
 from tui.widgets.waterfall_timeline import WaterfallTimeline
@@ -63,6 +63,12 @@ class SettingsScreen(ModalScreen):
     #page_noise {
         display: none;
     }
+    #page_recording {
+        display: none;
+    }
+    #page_scanner {
+        display: none;
+    }
 
     SettingsScreen.show-hardware #page_main {
         display: none;
@@ -76,6 +82,43 @@ class SettingsScreen(ModalScreen):
     }
     SettingsScreen.show-noise #page_noise {
         display: block;
+    }
+
+    SettingsScreen.show-recording #page_main {
+        display: none;
+    }
+    SettingsScreen.show-recording #page_recording {
+        display: block;
+    }
+
+    SettingsScreen.show-scanner #page_main {
+        display: none;
+    }
+    SettingsScreen.show-scanner #page_scanner {
+        display: block;
+    }
+
+    #page_recording Label,
+    #page_scanner Label {
+        width: 20;
+    }
+
+    #sw_record_iq,
+    #sw_record_audio {
+        margin-top: 1;
+    }
+
+    #set_scan_start,
+    #set_scan_end,
+    #set_scan_step,
+    #set_scan_dwell,
+    #set_scan_snr {
+        width: 24;
+        height: 3;
+        background: #0b0f19;
+        border: round #4338ca;
+        color: #e0e7ff;
+        padding: 0 1;
     }
 
     /* ── Estilos de los botones de navegación ── */
@@ -148,10 +191,16 @@ class SettingsScreen(ModalScreen):
     def watch_current_page(self, new_page: str) -> None:
         self.remove_class("show-hardware")
         self.remove_class("show-noise")
+        self.remove_class("show-recording")
+        self.remove_class("show-scanner")
         if new_page == "hardware":
             self.add_class("show-hardware")
         elif new_page == "noise":
             self.add_class("show-noise")
+        elif new_page == "recording":
+            self.add_class("show-recording")
+        elif new_page == "scanner":
+            self.add_class("show-scanner")
 
     def _squelch_select_value(self) -> int:
         opts = getattr(self.app, "SQUELCH_THRESHOLD_OPTIONS", [5, 10, 12, 15, 18, 20, 25, 30, 35, 40])
@@ -203,6 +252,8 @@ class SettingsScreen(ModalScreen):
                 yield Label("⚙️ AJUSTES GENERALES", id="settings_title")
                 yield Button("📡 Hardware SDR", id="btn_go_hardware", classes="nav-btn")
                 yield Button("🔊 Audio FM / Noise", id="btn_go_noise", classes="nav-btn")
+                yield Button("💾 Ajustes de Grabación", id="btn_go_recording", classes="nav-btn")
+                yield Button("🔍 Ajustes del Escáner", id="btn_go_scanner", classes="nav-btn")
                 with Horizontal(classes="setting-row"):
                     yield Label("Efectos Sonido:")
                     yield Switch(value=self.app.audio_effects.enabled, id="sw_sound_effects")
@@ -264,9 +315,71 @@ class SettingsScreen(ModalScreen):
                     yield Button("Atrás", id="btn_back_to_main_noise")
                     yield Button("Aplicar", variant="success", id="btn_apply_noise")
 
+            # ─── PÁGINA 4: AJUSTES DE GRABACIÓN ───
+            with Container(id="page_recording"):
+                yield Label("💾 AJUSTES DE GRABACIÓN", id="settings_title")
+                with Horizontal(classes="setting-row"):
+                    yield Label("Grabar IQ (SigMF):")
+                    yield Switch(
+                        value=bool(self.app.config.get("recorder", {}).get("record_iq", True)),
+                        id="sw_record_iq",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Grabar Audio (WAV):")
+                    yield Switch(
+                        value=bool(self.app.config.get("recorder", {}).get("record_audio", True)),
+                        id="sw_record_audio",
+                    )
+                with Horizontal(classes="settings-actions"):
+                    yield Button("Atrás", id="btn_back_to_main_rec")
+                    yield Button("Aplicar", variant="success", id="btn_apply_recording")
+
+            # ─── PÁGINA 5: AJUSTES DEL ESCÁNER ───
+            with Container(id="page_scanner"):
+                yield Label("🔍 AJUSTES DEL ESCÁNER", id="settings_title")
+                scan_cfg = self.app.config.get("scanner", {})
+                with Horizontal(classes="setting-row"):
+                    yield Label("Frecuencia Inicio:")
+                    yield Input(
+                        value=f"{float(scan_cfg.get('freq_start', 88_000_000)) / 1e6:.3f}",
+                        placeholder="MHz",
+                        id="set_scan_start",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Frecuencia Fin:")
+                    yield Input(
+                        value=f"{float(scan_cfg.get('freq_end', 108_000_000)) / 1e6:.3f}",
+                        placeholder="MHz",
+                        id="set_scan_end",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Paso Escaneo:")
+                    yield Input(
+                        value=f"{float(scan_cfg.get('freq_step', 200_000)) / 1e3:.1f}",
+                        placeholder="kHz",
+                        id="set_scan_step",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Dwell Time:")
+                    yield Input(
+                        value=f"{int(scan_cfg.get('dwell_ms', 500))}",
+                        placeholder="ms",
+                        id="set_scan_dwell",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Umbral Min SNR:")
+                    yield Input(
+                        value=f"{float(scan_cfg.get('min_snr_db', 10.0)):.1f}",
+                        placeholder="dB",
+                        id="set_scan_snr",
+                    )
+                with Horizontal(classes="settings-actions"):
+                    yield Button("Atrás", id="btn_back_to_main_scan")
+                    yield Button("Aplicar", variant="success", id="btn_apply_scanner")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         # Efectos de sonido al pulsar botones
-        if event.button.id == "btn_apply_noise":
+        if event.button.id in ("btn_apply_noise", "btn_apply_recording", "btn_apply_scanner"):
             self.app.audio_effects.play_chime()
         elif event.button.id != "btn_apply_hardware":
             self.app.audio_effects.play_blip()
@@ -276,10 +389,62 @@ class SettingsScreen(ModalScreen):
             self.current_page = "hardware"
         elif event.button.id == "btn_go_noise":
             self.current_page = "noise"
-        elif event.button.id in ("btn_back_to_main_hw", "btn_back_to_main_noise"):
+        elif event.button.id == "btn_go_recording":
+            self.current_page = "recording"
+        elif event.button.id == "btn_go_scanner":
+            self.current_page = "scanner"
+        elif event.button.id in (
+            "btn_back_to_main_hw",
+            "btn_back_to_main_noise",
+            "btn_back_to_main_rec",
+            "btn_back_to_main_scan",
+        ):
             self.current_page = "main"
         elif event.button.id == "btn_close_settings":
             self.dismiss()
+
+        # Acciones - Aplicar Grabación
+        elif event.button.id == "btn_apply_recording":
+            iq_val = self.query_one("#sw_record_iq", Switch).value
+            audio_val = self.query_one("#sw_record_audio", Switch).value
+            self.app._persist_recorder_config(record_iq=iq_val, record_audio=audio_val)
+            self.app._log(
+                f"[OK]   Grabación: IQ {'ON' if iq_val else 'OFF'}"
+                f" | Audio {'ON' if audio_val else 'OFF'}"
+            )
+            self.current_page = "main"
+
+        # Acciones - Aplicar Escáner
+        elif event.button.id == "btn_apply_scanner":
+            start_str = self.query_one("#set_scan_start", Input).value
+            end_str = self.query_one("#set_scan_end", Input).value
+            step_str = self.query_one("#set_scan_step", Input).value
+            dwell_str = self.query_one("#set_scan_dwell", Input).value
+            snr_str = self.query_one("#set_scan_snr", Input).value
+
+            try:
+                start_val = float(start_str) * 1e6
+                end_val = float(end_str) * 1e6
+                step_val = float(step_str) * 1e3
+                dwell_val = float(dwell_str)
+                snr_val = float(snr_str)
+            except ValueError:
+                self.app.audio_effects.play_error()
+                self.app._log("[ERROR] Parámetros del escáner inválidos")
+                return
+
+            self.app._persist_scanner_config(
+                freq_start=start_val,
+                freq_end=end_val,
+                freq_step=step_val,
+                dwell_ms=dwell_val,
+                min_snr_db=snr_val,
+            )
+            self.app._log(
+                f"[OK]   Escáner: {start_str} a {end_str} MHz"
+                f" | Paso: {step_str} kHz | Dwell: {dwell_val:.0f} ms | Min SNR: {snr_val:.1f} dB"
+            )
+            self.current_page = "main"
 
         # Acciones - Aplicar Hardware
         elif event.button.id == "btn_apply_hardware":

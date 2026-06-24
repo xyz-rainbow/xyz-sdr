@@ -63,6 +63,10 @@ Ver [dx-packaging.md](dx-packaging.md).
 
 Otras claves solo se editan a mano en el TOML.
 
+### Bookmarks de frecuencia (`var/bookmarks.toml`)
+
+Lista de emisoras/favoritos del selector **PRESETS** en la TUI. Se crea automáticamente desde los presets integrados la primera vez; el botón **Guardar Bookmark** añade la frecuencia y modo actuales. Gitignored (`var/`).
+
 ---
 
 ## `[device]` — hardware SDR
@@ -87,7 +91,7 @@ Otras claves solo se editan a mano en el TOML.
 | `fft_avg_windows` | int | `4` | Ventanas promediadas por iteración RX |
 | `band_cache_cols` | int | `1024` | Columnas de rejilla espectral base |
 | `display_fps` | int | `20` | Tope FPS espectro/cascada |
-| `demod_mode` | string | `"wbfm"` | `wbfm`, `nbfm`, `am`, `usb`, `lsb` |
+| `demod_mode` | string | `"wbfm"` | `wbfm`, `nbfm`, `am`, `usb`, `lsb`, `cw`, `dsb`, `raw`, `auto` |
 | `audio_rate` | int | `48_000` | Hz de salida de audio — [dsp.md](dsp.md) |
 | `wbfm_bandwidth` | int | `80_000` | Ancho PASS WBFM (Hz) |
 | `nbfm_bandwidth` | int | `12_500` | Ancho PASS NBFM |

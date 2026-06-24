@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.dsp import FmDemodState, _hann_window, average_psd, low_pass_filter, low_pass_filter_with_state
+from core.dsp import FmDemodState, _hann_window, average_psd, demodulate, low_pass_filter, low_pass_filter_with_state
 
 
 def test_hann_window_cached():
@@ -42,3 +42,18 @@ def test_low_pass_filter_zi_chunk_continuity():
     y_chunked = np.concatenate([y_a, y_b])
 
     np.testing.assert_allclose(y_full, y_chunked, rtol=1e-5, atol=1e-4)
+
+
+def test_demod_raw_produces_audio():
+    rng = np.random.default_rng(1)
+    iq = (rng.standard_normal(4096) + 1j * rng.standard_normal(4096)).astype(np.complex64) * 0.1
+    audio = demodulate(iq, mode="raw", sample_rate=250_000, audio_rate=48_000)
+    assert len(audio) > 0
+    assert np.isfinite(audio).all()
+
+
+def test_demod_cw_routes_to_ssb():
+    t = np.arange(4096, dtype=np.float64) / 250_000
+    tone = np.exp(2j * np.pi * 1000 * t).astype(np.complex64)
+    audio = demodulate(tone, mode="cw", sample_rate=250_000, audio_rate=48_000, passband_width_hz=800)
+    assert len(audio) > 0

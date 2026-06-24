@@ -54,6 +54,8 @@ También: doble clic en `scripts\xyz-sdr.cmd`.
 
 * **Visualización en 3 capas alineadas** — `FrequencyTimeline`, `SpectrumGraph` (render RLE), `WaterfallTimeline` (ring buffer, auto-level por columna). [display.md](docs/display.md)
 * **Perfiles por banda** — `config/bands/*.toml` (FM, airband, PMR, HF); selector **BANDA** en TUI; persistencia en `defaults.toml`. [dx-packaging.md](docs/dx-packaging.md)
+* **Bookmarks** — favoritos en `var/bookmarks.toml`; botón **Guardar Bookmark** en sidebar. [configuration.md](docs/configuration.md)
+* **Modos demod extendidos** — `cw`, `dsb`, `raw`, `auto` (heurística por frecuencia). [dsp.md](docs/dsp.md)
 * **Bandwidth IQ** — presets 250 kHz–8 MHz; atajo `B`. [bandwidth.md](docs/bandwidth.md)
 * **Observabilidad** — indicador `DROP` en status bar (overflows IQ); `--debug` con `iq drop`, RX/UI timing. [observability.md](docs/observability.md)
 * **Interactividad** — teclado + ratón (PASS arrastrable, zoom, scroll). Ver tabla de bindings abajo.

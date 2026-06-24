@@ -80,10 +80,15 @@ Replaces legacy `int(SR / 48000)` decimation that produced ~50.9 kHz intermediat
 
 | Function | Mode | Notes |
 |----------|------|-------|
+| `demodulate()` | router | wbfm, nbfm, am, usb, lsb, **cw**, **dsb**, **raw** |
 | `demod_wbfm()` | wbfm | Phase discriminator + de-emphasis |
 | `demod_nbfm()` | nbfm | Scaled discriminator, deviation 5 kHz |
 | `demod_am()` | am | Envelope detection |
 | `demod_ssb()` | usb/lsb | PASS + offset supported; IQ decimation |
+| `demod_raw()` | raw | Parte real IQ → audio (sin demod analógica) |
+| CW | cw | SSB USB con BFO +800 Hz sobre el offset PASS |
+
+Modo **`auto`** (TUI): `core/auto_demod.py` elige el demod según la frecuencia; el RX usa `active_demod_mode`. Ver [configuration.md](configuration.md).
 
 Router: `demodulate(mode, ..., passband_width_hz, frequency_offset_hz, fm_state, profile)`.
 

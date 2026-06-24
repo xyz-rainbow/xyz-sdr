@@ -20,7 +20,8 @@
 | [audio-presets-research.md](audio-presets-research.md) | Matriz presets, validación |
 | [display.md](display.md) | Paleta, auto-level, ColumnLevelTracker |
 | [widgets.md](widgets.md) | Timeline, espectro RLE, cascada |
-| [configuration.md](configuration.md) | Referencia `defaults.toml`, `[app]`, bandas |
+| [configuration.md](configuration.md) | Referencia `defaults.toml`, `[app]`, bandas, bookmarks |
+| [dsp.md](dsp.md) | Demod CW/DSB/RAW/AUTO, pipeline IQ |
 | [customization.md](customization.md) | Temas CSS, tuning |
 | [roadmap.md](roadmap.md) | Plan de ruta |
 

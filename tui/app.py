@@ -31,7 +31,7 @@ from core.config_store import (
     patch_display_section,
     persist_band_profile,
 )
-from core.band_buffer import BandFrameMailbox, slice_band_to_viewport
+from core.auto_demod import resolve_auto_demod_mode
 from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
 from core.stream_stats import StreamStats
 from core.dsp import (
@@ -927,6 +927,7 @@ class XyzSDRApp(App):
 
         rec_cfg = self.config.get("recorder", {})
         self._project_root = Path(self.config_path).resolve().parent.parent
+        self._bookmarks = self._load_bookmarks()
         self._recordings_dir = resolve_recordings_dir(
             rec_cfg.get("output_dir"),
             project_root=self._project_root,
@@ -997,21 +998,29 @@ class XyzSDRApp(App):
             self._log(f"[WARN] No se pudo guardar config display: {exc}")
 
     def _persist_passband_width(self) -> None:
+        mode = self._passband_mode()
         kwargs: dict = {}
-        if self.demod_mode == "wbfm":
+        if mode == "wbfm":
             kwargs["wbfm_bandwidth"] = self.passband_width_hz
-        elif self.demod_mode == "nbfm":
+        elif mode == "nbfm":
             kwargs["nbfm_bandwidth"] = self.passband_width_hz
-        elif self.demod_mode == "am":
+        elif mode == "am":
             kwargs["am_bandwidth"] = self.passband_width_hz
         if kwargs:
             patch_dsp_section(self.config_path, **kwargs)
 
+    def _passband_mode(self) -> str:
+        """Modo usado para límites PASS (resuelve AUTO)."""
+        if self.demod_mode == "auto":
+            return self.active_demod_mode
+        return self.demod_mode
+
     def _apply_passband_selection(self, center_hz: float, width_hz: float) -> None:
         center_hz = max(FREQ_MIN_HZ, min(FREQ_MAX_HZ, float(center_hz)))
+        pb_mode = self._passband_mode()
         if width_hz <= 0:
-            width_hz = self._load_passband_width_for_mode(self.demod_mode)
-        width_hz = clamp_passband_width(self.demod_mode, width_hz)
+            width_hz = self._load_passband_width_for_mode(pb_mode)
+        width_hz = clamp_passband_width(pb_mode, width_hz)
 
         self.passband_center_hz = center_hz
         self.passband_width_hz = width_hz
@@ -1026,10 +1035,11 @@ class XyzSDRApp(App):
         )
 
     def _adjust_passband_width(self, delta_hz: float) -> None:
-        if self.demod_mode not in PASSBAND_KEYBOARD_STEP:
+        pb_mode = self._passband_mode()
+        if pb_mode not in PASSBAND_KEYBOARD_STEP:
             return
         new_width = clamp_passband_width(
-            self.demod_mode,
+            pb_mode,
             self.passband_width_hz + delta_hz,
         )
         if abs(new_width - self.passband_width_hz) < 1.0:
@@ -1125,10 +1135,11 @@ class XyzSDRApp(App):
 
                 yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
-                    [(name, f"{freq}:{mode}") for name, freq, mode in PRESETS],
+                    [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks],
                     prompt="Emisora...",
                     id="sel_preset",
                 )
+                yield Button("📌 Guardar Bookmark", id="btn_save_bookmark", classes="-textual-compact")
 
                 band_options = list_band_profiles()
                 if band_options:
@@ -1829,11 +1840,11 @@ class XyzSDRApp(App):
     # ── Otras acciones ───────────────────────────────────────────────────────
 
     def action_passband_narrow(self) -> None:
-        step = PASSBAND_KEYBOARD_STEP.get(self.demod_mode, 10_000.0)
+        step = PASSBAND_KEYBOARD_STEP.get(self._passband_mode(), 10_000.0)
         self._adjust_passband_width(-step)
 
     def action_passband_widen(self) -> None:
-        step = PASSBAND_KEYBOARD_STEP.get(self.demod_mode, 10_000.0)
+        step = PASSBAND_KEYBOARD_STEP.get(self._passband_mode(), 10_000.0)
         self._adjust_passband_width(step)
 
     def action_focus_freq(self) -> None:
@@ -1851,7 +1862,10 @@ class XyzSDRApp(App):
     def action_cycle_mode(self) -> None:
         idx = self.DEMOD_MODES.index(self.demod_mode)
         self.demod_mode = self.DEMOD_MODES[(idx + 1) % len(self.DEMOD_MODES)]
-        self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode)
+        if self.demod_mode == "auto":
+            self.passband_width_hz = self._load_passband_width_for_mode(self.active_demod_mode)
+        else:
+            self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode)
         self._fm_demod_state.reset()
         self._sync_passband_widgets()
         self._update_mode_ui()
@@ -1880,7 +1894,7 @@ class XyzSDRApp(App):
         dsp_cfg = self.config.get("dsp", {})
         audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
         do_iq, do_audio = recording_targets(
-            self.demod_mode,
+            self.active_demod_mode,
             record_iq=bool(rec_cfg.get("record_iq", True)),
             record_audio=bool(rec_cfg.get("record_audio", True)),
         )
@@ -1889,7 +1903,7 @@ class XyzSDRApp(App):
             iq_path, wav_path = self._recorder.start(
                 center_freq_hz=self.tuned_frequency,
                 sample_rate_hz=self.sample_rate,
-                demod_mode=self.demod_mode,
+                demod_mode=self.active_demod_mode,
                 audio_rate=audio_rate,
                 record_iq=do_iq,
                 record_audio=do_audio,
@@ -2116,9 +2130,9 @@ class XyzSDRApp(App):
             profile = profile_for_sample_rate(new_rate)
             if self.demod_mode == "wbfm" and new_rate <= 250_000:
                 self._log("[INFO] WBFM @ 250 kHz: PASS limitado; 1–2 MHz recomendado para FM broadcast")
-            elif not is_mode_recommended(self.demod_mode, profile):
+            elif not is_mode_recommended(self.active_demod_mode, profile):
                 modes = ", ".join(profile.recommended_modes)
-                self._log(f"[INFO] Modo {self.demod_mode.upper()}: preset óptimo para {modes}")
+                self._log(f"[INFO] Modo {self.active_demod_mode.upper()}: preset óptimo para {modes}")
             if new_span < previous_span - 1.0:
                 self._log(
                     f"[INFO] Zoom adaptado: {_format_hz(previous_span)} -> {_format_hz(new_span)}"
@@ -2150,10 +2164,38 @@ class XyzSDRApp(App):
         elif event.button.id == "btn_rec":
             self.audio_effects.play_blip()
             self.action_record()
+        elif event.button.id == "btn_save_bookmark":
+            self.audio_effects.play_blip()
+            self._action_save_bookmark()
         elif event.button.id and event.button.id.startswith("btn_spd_"):
             self.audio_effects.play_blip()
             speed_val = int(event.button.id.replace("btn_spd_", ""))
             self._set_waterfall_speed(speed_val)
+
+    def _action_save_bookmark(self) -> None:
+        """Guarda la frecuencia y el modo actuales en la lista de favoritos."""
+        freq_mhz = self.tuned_frequency / 1e6
+        mode = self.demod_mode.upper()
+        name = f"{freq_mhz:.3f} MHz ({mode})"
+
+        exists = any(abs(b[1] - self.tuned_frequency) < 1.0 and b[2] == self.demod_mode for b in self._bookmarks)
+        if exists:
+            self._log(f"[WARN] Bookmark ya existe para {freq_mhz:.3f} MHz en modo {mode}")
+            self.audio_effects.play_error()
+            return
+
+        self._bookmarks.append((name, self.tuned_frequency, self.demod_mode))
+        bookmarks_path = self._project_root / "var" / "bookmarks.toml"
+        self._save_bookmarks_to_file(bookmarks_path, self._bookmarks)
+
+        try:
+            sel = self.query_one("#sel_preset", Select)
+            options = [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks]
+            sel.update(options)
+        except Exception as e:
+            logger.exception("Error actualizando presets Select: %s", e)
+
+        self._log(f"[OK] Guardado bookmark: {name}")
 
     def _set_waterfall_speed(self, speed: int) -> None:
         """Establece la velocidad de la cascada (FPS) y actualiza los estilos de los botones."""
@@ -2180,7 +2222,10 @@ class XyzSDRApp(App):
             self.audio_effects.play_blip()
             mode = event.widget.id.replace("btn_mode_", "")
             self.demod_mode = mode
-            self.passband_width_hz = self._load_passband_width_for_mode(mode)
+            if mode == "auto":
+                self.passband_width_hz = self._load_passband_width_for_mode(self.active_demod_mode)
+            else:
+                self.passband_width_hz = self._load_passband_width_for_mode(mode)
             self._sync_passband_widgets()
             self._update_mode_ui()
             self._log(f"Modo: {self.demod_mode.upper()}")
@@ -2339,6 +2384,26 @@ class XyzSDRApp(App):
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
+    @property
+    def active_demod_mode(self) -> str:
+        """Modo de demodulación activo actual (resuelve 'auto' si está activo)."""
+        if self.demod_mode == "auto":
+            return self._resolve_auto_demod_mode(self.tuned_frequency)
+        return self.demod_mode
+
+    def _resolve_auto_demod_mode(self, frequency: float) -> str:
+        return resolve_auto_demod_mode(frequency)
+
+    def _sync_auto_demod_passband(self) -> None:
+        """Actualiza PASS y UI cuando el modo AUTO resuelve otro demod."""
+        if self.demod_mode != "auto":
+            return
+        resolved = self.active_demod_mode
+        target_width = self._load_passband_width_for_mode(resolved)
+        if abs(target_width - self.passband_width_hz) > 1.0:
+            self.passband_width_hz = target_width
+            self._sync_passband_widgets()
+
     def _update_mode_ui(self) -> None:
         """Actualiza la clase CSS activa en los botones de modo."""
         for m in self.DEMOD_MODES:
@@ -2365,10 +2430,12 @@ class XyzSDRApp(App):
 
         # Sincronizar viewport
         self._sync_viewport()
+        self._sync_auto_demod_passband()
 
         # Actualizar subtitulo
         device_str = "SIM" if (self._device and self._device.is_simulated) else self.driver.upper()
-        self.sub_title = f"{device_str} | {self.tuned_frequency / 1e6:.3f} MHz | {self.demod_mode.upper()}"
+        mode_upper = f"AUTO ({self.active_demod_mode.upper()})" if self.demod_mode == "auto" else self.demod_mode.upper()
+        self.sub_title = f"{device_str} | {self.tuned_frequency / 1e6:.3f} MHz | {mode_upper}"
 
         self._update_status()
 
@@ -2383,11 +2450,12 @@ class XyzSDRApp(App):
 
         try:
             device_str = "SIM" if (self._device and self._device.is_simulated) else self.driver
+            mode_str = f"AUTO ({self.active_demod_mode.upper()})" if self.demod_mode == "auto" else self.demod_mode
             self.query_one("#status", StatusBar).update_status(
                 freq=self.tuned_frequency,
                 gain=self.gain_value,
                 volume=self.volume_value,
-                mode=self.demod_mode,
+                mode=mode_str,
                 snr=self._last_snr,
                 step=self.scroll_step,
                 span=self.visible_span,
@@ -2411,6 +2479,50 @@ class XyzSDRApp(App):
             log.write_line(f"[{ts}] {msg}")
         except Exception:
             pass
+
+    def _load_bookmarks(self) -> list[tuple[str, float, str]]:
+        """Carga la lista de favoritos/presets desde var/bookmarks.toml o del fallback."""
+        bookmarks_path = self._project_root / "var" / "bookmarks.toml"
+        bookmarks_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not bookmarks_path.exists():
+            self._save_bookmarks_to_file(bookmarks_path, PRESETS)
+            return list(PRESETS)
+
+        try:
+            import sys
+            if sys.version_info >= (3, 11):
+                import tomllib
+            else:
+                import tomli as tomllib
+
+            with open(bookmarks_path, "rb") as f:
+                data = tomllib.load(f)
+            
+            bookmarks = []
+            for item in data.get("bookmarks", []):
+                name = item.get("name", "Favorito")
+                freq = float(item.get("freq_hz", 0.0))
+                mode = item.get("mode", "wbfm")
+                bookmarks.append((name, freq, mode))
+            return bookmarks
+        except Exception as e:
+            logger.error(f"Error cargando bookmarks: {e}")
+            return list(PRESETS)
+
+    def _save_bookmarks_to_file(self, path: Path, bookmarks: list[tuple[str, float, str]]) -> None:
+        """Guarda la lista de bookmarks al archivo en formato TOML."""
+        lines = ["# xyz-sdr | var/bookmarks.toml - Bookmarks de frecuencia", ""]
+        for name, freq, mode in bookmarks:
+            lines.append("[[bookmarks]]")
+            lines.append(f'name = "{name}"')
+            lines.append(f'freq_hz = {int(freq)}')
+            lines.append(f'mode = "{mode}"')
+            lines.append("")
+        try:
+            path.write_text("\n".join(lines), encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Error guardando bookmarks: {e}")
 
 
 # ─── Utilidades ──────────────────────────────────────────────────────────────

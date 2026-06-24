@@ -18,7 +18,7 @@ param(
     [string]$Driver,
     [double]$Freq,
     [double]$Gain,
-    [ValidateSet("wbfm", "nbfm", "am", "usb", "lsb")]
+    [ValidateSet("wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw", "auto")]
     [string]$Mode,
 
     [Parameter(ValueFromRemainingArguments = $true)]

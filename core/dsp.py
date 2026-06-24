@@ -714,6 +714,22 @@ def demod_ssb(
     return _normalize_audio(audio)
 
 
+def demod_raw(
+    samples: np.ndarray,
+    sample_rate: float = 2.048e6,
+    audio_rate: float = 48_000,
+    *,
+    frequency_offset_hz: float = 0.0,
+    fm_state: FmDemodState | None = None,
+) -> np.ndarray:
+    """Demodulador RAW — convierte la parte real de la señal IQ a audio real directamente."""
+    if frequency_offset_hz:
+        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate, fm_state)
+    audio = samples.real.astype(np.float64)
+    resampled = resample_audio_to_rate(audio, sample_rate, audio_rate)
+    return _normalize_audio(resampled)
+
+
 # ─── Router de demodulación ─────────────────────────────────────────────────
 
 def demodulate(
@@ -791,7 +807,38 @@ def demodulate(
             **offset_kw,
             **fm_kw,
         )
-    raise ValueError(f"Modo desconocido: {mode}. Opciones: wbfm, nbfm, am, usb, lsb")
+    if mode == "cw":
+        bw = passband_width_hz if passband_width_hz is not None else 800.0
+        bfo_offset = frequency_offset_hz + 800.0
+        return demod_ssb(
+            samples,
+            sample_rate,
+            audio_rate,
+            "usb",
+            bandwidth_hz=bw,
+            frequency_offset_hz=bfo_offset,
+            fm_state=fm_state,
+            profile=profile,
+        )
+    if mode == "dsb":
+        bw = passband_width_hz if passband_width_hz is not None else 6_000.0
+        return demod_am(
+            samples,
+            sample_rate,
+            audio_rate,
+            bandwidth_hz=bw,
+            **offset_kw,
+            **fm_kw,
+        )
+    if mode == "raw":
+        return demod_raw(
+            samples,
+            sample_rate,
+            audio_rate,
+            frequency_offset_hz=frequency_offset_hz,
+            fm_state=fm_state,
+        )
+    raise ValueError(f"Modo desconocido: {mode}. Opciones: wbfm, nbfm, am, usb, lsb, cw, dsb, raw")
 
 
 # ─── Métricas ───────────────────────────────────────────────────────────────
