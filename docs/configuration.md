@@ -38,8 +38,8 @@ Otras claves solo se editan a mano en el TOML.
 |-------|------|---------|-------------|
 | `driver` | string | `"sdrplay"` | `"auto"`, `sdrplay`, `rtlsdr`, `hackrf`, `airspy`, … |
 | `sample_rate` | int (Hz) | `500_000` | Bandwidth IQ / tasa de muestreo. Presets: 250k–8M — ver [bandwidth.md](bandwidth.md) |
-| `center_freq` | int (Hz) | `100_600_000` | Frecuencia central del SDR al conectar |
-| `gain` | float (dB) | `30.0` | Ganancia RF |
+| `center_freq` | int (Hz) | `97_780_487` | Frecuencia central del SDR al conectar |
+| `gain` | float (dB) | `40.0` | Ganancia RF |
 | `auto_gain` | bool | `false` | AGC hardware si el driver lo soporta |
 | `ppm_correction` | int | `0` | Corrección PPM del oscilador |
 
@@ -49,14 +49,14 @@ Otras claves solo se editan a mano en el TOML.
 
 | Clave | Tipo | Default | Descripción |
 |-------|------|---------|-------------|
-| `fft_size` | int | `8192` | Tamaño FFT base; escala con zoom — [architecture.md](architecture.md) |
+| `fft_size` | int | `2048` | Tamaño FFT base; escala con zoom — [architecture.md](architecture.md) |
 | `fft_overlap` | float | `0.5` | Solapamiento entre ventanas FFT (0–1) |
-| `fft_avg_windows` | int | `8` | Ventanas promediadas por iteración RX |
+| `fft_avg_windows` | int | `4` | Ventanas promediadas por iteración RX |
 | `band_cache_cols` | int | `1024` | Columnas de rejilla espectral base |
 | `display_fps` | int | `20` | Tope FPS espectro/cascada |
 | `demod_mode` | string | `"wbfm"` | `wbfm`, `nbfm`, `am`, `usb`, `lsb` |
 | `audio_rate` | int | `48_000` | Hz de salida de audio — [dsp.md](dsp.md) |
-| `wbfm_bandwidth` | int | `147_540` | Ancho PASS WBFM (Hz) |
+| `wbfm_bandwidth` | int | `80_000` | Ancho PASS WBFM (Hz) |
 | `nbfm_bandwidth` | int | `12_500` | Ancho PASS NBFM |
 | `am_bandwidth` | int | `15_000` | Ancho PASS AM |
 | `fm_deemphasis_us` | int | `50` | De-emphasis FM: `50` (EU) o `75` (US) µs |
@@ -88,7 +88,7 @@ Perfiles automáticos por preset IQ: `core/dsp_profiles.py` — [audio-presets-r
 | `column_ema_release` | float | `0.08` | EMA lenta |
 | `column_smooth_bins` | int | `3` | Suavizado lateral 1D |
 | `column_history_rows` | int | `32` | Filas waterfall para estimar suelo |
-| `freq_span_mhz` | float | `2.048` | Span inicial mostrado (MHz) |
+| `freq_span_mhz` | float | `0.5` | Span inicial mostrado (MHz); suele coincidir con `sample_rate`/1e6 |
 | `color_theme` | string | `"cyberpunk"` | Tema de color TUI |
 
 Detalle del pipeline visual: [display.md](display.md).

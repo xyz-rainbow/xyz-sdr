@@ -185,10 +185,8 @@ class SDRRecorder:
             return
 
         chunk = np.asarray(samples, dtype=np.complex64).ravel()
-        interleaved = np.empty(len(chunk) * 2, dtype=np.float32)
-        interleaved[0::2] = chunk.real
-        interleaved[1::2] = chunk.imag
-        data = interleaved.tobytes()
+        # Numpy complex64 en memoria ya está almacenado de forma contigua e intercalada de floats de 32 bits
+        data = chunk.view(np.float32).tobytes()
 
         with self._lock:
             if self._iq_file:

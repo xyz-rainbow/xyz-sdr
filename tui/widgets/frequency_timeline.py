@@ -67,7 +67,8 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
             self.post_message(self.ScrollRequest(direction=-1))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        self.hover_col = event.x
+        if self.hover_col != event.x:
+            self.hover_col = event.x
         PassbandDragMixin.on_mouse_move(self, event)
 
     def on_mouse_leave(self, event: events.MouseLeave) -> None:

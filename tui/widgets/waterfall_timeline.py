@@ -137,6 +137,8 @@ class WaterfallTimeline(Widget):
         self._rich_visual_cache_key: tuple | None = None
         self._row_text_cache: dict[tuple, Text] = {}
         self._visual_dirty = True
+        self._slice_ring: np.ndarray | None = None
+        self._slice_ring_height: int = 0
         self.waterfall_auto_level = waterfall_auto_level
 
     @property
@@ -157,8 +159,17 @@ class WaterfallTimeline(Widget):
         self._invalidate_rich_cache()
 
     def set_column_levels(self, floors: np.ndarray, ceilings: np.ndarray) -> None:
-        self._column_floors = np.asarray(floors, dtype=np.float64).reshape(-1).copy()
-        self._column_ceilings = np.asarray(ceilings, dtype=np.float64).reshape(-1).copy()
+        floors_arr = np.asarray(floors, dtype=np.float64).reshape(-1)
+        ceilings_arr = np.asarray(ceilings, dtype=np.float64).reshape(-1)
+        if (
+            self._column_floors is not None
+            and self._column_ceilings is not None
+            and np.array_equal(self._column_floors, floors_arr)
+            and np.array_equal(self._column_ceilings, ceilings_arr)
+        ):
+            return
+        self._column_floors = floors_arr.copy()
+        self._column_ceilings = ceilings_arr.copy()
         self._levels_from_app = True
         self._invalidate_rich_cache()
 
@@ -331,6 +342,62 @@ class WaterfallTimeline(Widget):
             self._history = deque(self._history, maxlen=maxlen)
         self._history_offset = min(self._history_offset, self._max_history_offset())
 
+    def add_viewport_row(self, cols: np.ndarray, frame: BandFrame | None = None) -> None:
+        """Agrega fila ya recortada al viewport (evita re-slice)."""
+        now = time.time()
+        interval = 1.0 / max(1, self.waterfall_speed)
+        if now - self._last_row_time < interval:
+            return
+
+        self._last_row_time = now
+        self._ensure_history_maxlen()
+        if frame is not None:
+            history_cols = compact_band_cols(frame.band_cols)
+            self._history.append(
+                _WaterfallRow(frame.center_hz, frame.sample_rate, history_cols),
+            )
+        self._history_offset = min(self._history_offset, self._max_history_offset())
+
+        width = self._view_width()
+        height = self._view_height()
+        new_row = np.asarray(cols, dtype=np.float64).reshape(1, -1)
+        if new_row.shape[1] != width:
+            new_row = np.pad(
+                new_row,
+                ((0, 0), (0, max(0, width - new_row.shape[1]))),
+                constant_values=np.nan,
+            )[:, :width]
+
+        if self._history_offset == 0:
+            self._prepend_viewport_row(new_row, height, width)
+        else:
+            self._rebuild_slice_cache()
+
+        self._sync_slice_cache()
+        if not self._levels_from_app:
+            self._update_normalization()
+        self._mark_visual_dirty()
+
+    def _prepend_viewport_row(self, new_row: np.ndarray, height: int, width: int) -> None:
+        if width < 5 or height < 1:
+            return
+        if (
+            self._slice_cache is not None
+            and self._slice_cache_width == width
+            and self._slice_cache.shape[1] == width
+        ):
+            if self._slice_ring is None or self._slice_ring_height != height:
+                self._slice_ring = np.full((height, width), np.nan, dtype=np.float64)
+                self._slice_ring_height = height
+            self._slice_ring[1:] = self._slice_cache[: height - 1]
+            self._slice_ring[0] = new_row[0]
+            self._slice_cache = self._slice_ring
+        else:
+            self._rebuild_slice_cache()
+            return
+        self._slice_cache_rows = self._slice_cache.shape[0]
+        self._slice_cache_width = width
+
     def add_band_row(self, frame: BandFrame) -> None:
         """Agrega fila desde BandFrame pre-proyectado (throttle por waterfall_speed)."""
         now = time.time()
@@ -382,8 +449,13 @@ class WaterfallTimeline(Widget):
             and self._slice_cache_width == width
             and self._slice_cache.shape[1] == width
         ):
-            combined = np.vstack([new_row, self._slice_cache])
-            self._slice_cache = combined[:height]
+            n = min(self._slice_cache.shape[0], height - 1)
+            if self._slice_ring is None or self._slice_ring_height != height:
+                self._slice_ring = np.full((height, width), np.nan, dtype=np.float64)
+                self._slice_ring_height = height
+            self._slice_ring[1 : 1 + n] = self._slice_cache[:n]
+            self._slice_ring[0] = new_row[0]
+            self._slice_cache = self._slice_ring[: 1 + n]
         else:
             self._rebuild_slice_cache()
             return
@@ -515,6 +587,8 @@ class WaterfallTimeline(Widget):
             return Text("...")
 
         if self._visual_dirty or self._slice_cache is None:
+            if self._slice_cache is None:
+                return Text("...", style="dim")
             self._sync_slice_cache()
 
         floors, ceilings = self._levels_for_width(width)
@@ -606,15 +680,35 @@ class WaterfallTimeline(Widget):
         passband_cols = self._passband_cols(width)
         line = Text()
         norms = normalize_per_column(col_values[:width], floors, ceilings)
+
+        current_style = None
+        current_text = []
+
         for col in range(width):
             in_band = passband_cols and passband_cols[0] <= col <= passband_cols[1]
             if col >= len(norms) or np.isnan(norms[col]):
                 bg = NO_DATA_COLOR if in_band else "#050508"
-                line.append("░", f"#1e1b4b on {bg}")
+                style = f"#1e1b4b on {bg}"
+                char = "░"
             else:
                 norm = float(norms[col])
                 bg = self._cell_background(norm, in_band=in_band)
-                line.append(" ", f"on {bg}")
+                style = f"on {bg}"
+                char = " "
+
+            if current_style is None:
+                current_style = style
+                current_text.append(char)
+            elif style == current_style:
+                current_text.append(char)
+            else:
+                line.append("".join(current_text), current_style)
+                current_style = style
+                current_text = [char]
+
+        if current_text:
+            line.append("".join(current_text), current_style)
+
         return line
 
     def watch_passband_center_hz(self, value: float) -> None:

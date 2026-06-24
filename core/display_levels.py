@@ -5,6 +5,8 @@ Auto-level por columna de frecuencia para espectro y waterfall.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 
@@ -65,6 +67,7 @@ class ColumnLevelTracker:
         self._fallback_ceiling = float(fallback_ceiling)
         self._span_ratio = 1.0
         self._initialized = False
+        self._update_stride = 0
         self.reconfigure(width, reset=True)
 
     @property
@@ -98,6 +101,10 @@ class ColumnLevelTracker:
         cols: np.ndarray,
         history_2d: np.ndarray | None = None,
     ) -> None:
+        self._update_stride = (self._update_stride + 1) % 2
+        if self._initialized and self._update_stride != 0:
+            return
+
         width = len(self._floor)
         if width <= 0:
             return
@@ -115,7 +122,6 @@ class ColumnLevelTracker:
 
         data = np.vstack(blocks)
 
-        import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             target_floor = np.nanpercentile(data, self._floor_pct, axis=0)

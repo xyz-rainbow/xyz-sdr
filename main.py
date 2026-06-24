@@ -218,7 +218,7 @@ def main():
             startup_logs=startup_logs,
         )
         app.run()
-        if app._graceful_shutdown:
+        if app._graceful_shutdown and not args.no_splash:
             print_shutdown_splash()
     except StartupHardwareError as exc:
         for line in exc.lines:
@@ -233,11 +233,12 @@ def main():
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Saliendo...")
-        try:
-            from tui.splash import print_shutdown_splash
-            print_shutdown_splash()
-        except Exception:
-            pass
+        if not args.no_splash:
+            try:
+                from tui.splash import print_shutdown_splash
+                print_shutdown_splash()
+            except Exception:
+                pass
     except Exception as e:
         logger.exception(f"Error fatal: {e}")
         sys.exit(1)

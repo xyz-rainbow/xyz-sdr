@@ -31,6 +31,7 @@ PIP_SOAPY_MAX = (3, 12)
 POTHOS_EMBEDDED_PY = (3, 9)
 
 REEXEC_ENV = "XYZ_SDR_REEXEC_DONE"
+_PYTHON_VERSION_CACHE: dict[str, tuple[int, int, int] | None] = {}
 VENV_DIRNAME = ".venv"
 PYTHON312_INSTALLER_URL = "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe"
 WINGET_ALREADY_INSTALLED = {-1978335189, 2316632107}
@@ -116,8 +117,7 @@ def is_current_soapy_compatible() -> bool:
     return is_version_soapy_compatible(current_version()[:2])
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+from core.runtime_paths import project_root
 
 
 def project_venv_python(root: Path | None = None) -> Path | None:
@@ -144,6 +144,10 @@ def ensure_project_venv_or_exit() -> Path:
 
 
 def _query_python_version(executable: str) -> tuple[int, int, int] | None:
+    norm = os.path.normcase(os.path.abspath(executable))
+    cached = _PYTHON_VERSION_CACHE.get(norm)
+    if cached is not None:
+        return cached
     try:
         res = subprocess.run(
             [executable, "-c", "import sys; print(sys.version_info[0], sys.version_info[1], sys.version_info[2])"],
@@ -153,12 +157,17 @@ def _query_python_version(executable: str) -> tuple[int, int, int] | None:
             check=False,
         )
         if res.returncode != 0:
+            _PYTHON_VERSION_CACHE[norm] = None
             return None
         parts = res.stdout.strip().split()
         if len(parts) != 3:
+            _PYTHON_VERSION_CACHE[norm] = None
             return None
-        return int(parts[0]), int(parts[1]), int(parts[2])
+        version = int(parts[0]), int(parts[1]), int(parts[2])
+        _PYTHON_VERSION_CACHE[norm] = version
+        return version
     except Exception:
+        _PYTHON_VERSION_CACHE[norm] = None
         return None
 
 
@@ -811,6 +820,32 @@ def install_requirements(
         )
     if use_pothos:
         configure_venv_pothos_bindings(python_exe)
+    _write_requirements_marker(root)
+
+
+def _requirements_marker_path(root: Path) -> Path:
+    return root / "var" / "requirements.sha256"
+
+
+def _requirements_hash(root: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256((root / "requirements.txt").read_bytes()).hexdigest()
+
+
+def _requirements_install_needed(root: Path) -> bool:
+    marker = _requirements_marker_path(root)
+    req = root / "requirements.txt"
+    if not req.is_file():
+        return False
+    digest = _requirements_hash(root)
+    return not marker.is_file() or marker.read_text(encoding="utf-8").strip() != digest
+
+
+def _write_requirements_marker(root: Path) -> None:
+    marker = _requirements_marker_path(root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_requirements_hash(root), encoding="utf-8")
 
 
 def ensure_project_venv_with_deps(root: Path | None = None) -> Path:
@@ -839,7 +874,8 @@ def ensure_project_venv_with_deps(root: Path | None = None) -> Path:
             existing = None
 
     if existing:
-        install_requirements(str(existing), root)
+        if _requirements_install_needed(root):
+            install_requirements(str(existing), root)
         if not _venv_soapy_import_ok(str(existing)):
             _remove_project_venv(root)
             raise RuntimeError("SoapySDR no importa tras reparar .venv")

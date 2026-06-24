@@ -2,8 +2,8 @@
 
 [device]
 driver       = "sdrplay"      # "auto" | "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
-sample_rate  = 500_000      # Muestras por segundo (2.048 MHz — óptimo WBFM)
-center_freq  = 97_780_487      # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
+sample_rate  = 500_000      # Muestras por segundo (Hz); presets hasta 2.048 MHz vía UI
+center_freq  = 97_780_487      # Frecuencia central Hz
 gain         = 40.0      # Ganancia en dB (0-60 típico)
 auto_gain    = false
 ppm_correction = 0            # Corrección PPM del oscilador
@@ -41,7 +41,7 @@ column_ema_attack = 0.35              # EMA rápida (attack)
 column_ema_release = 0.08             # EMA lenta (release)
 column_smooth_bins = 3                # Suavizado lateral 1D (columnas)
 column_history_rows = 32              # Filas waterfall para estimar suelo
-freq_span_mhz     = 2.048     # Span de frecuencias mostrado (= sample_rate)
+freq_span_mhz     = 0.5       # Span inicial mostrado (MHz); suele igualar sample_rate/1e6
 color_theme       = "cyberpunk"
 
 [recorder]

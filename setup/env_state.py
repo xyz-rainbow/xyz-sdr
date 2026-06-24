@@ -100,8 +100,7 @@ class EnvironmentState:
         return "pending"
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+from core.runtime_paths import project_root
 
 
 def path_contains_pothos(path_str: str) -> bool:

@@ -14,6 +14,7 @@ from core.passband import (
     col_to_freq,
     symmetric_width_from_drag,
 )
+from tui.widgets.display_palette import plot_content_width
 
 
 class PassbandPreview(Message):
@@ -52,7 +53,7 @@ class PassbandDragMixin:
         center, span = self._passband_viewport()
         return col_to_freq(
             float(x),
-            widget_width=max(self.size.width, 1),
+            widget_width=max(plot_content_width(self), 1),
             viewport_center_hz=center,
             visible_span_hz=span,
         )

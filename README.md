@@ -47,7 +47,7 @@ xyz-sdr/
 │   ├── dsp_profiles.py         # Perfiles DSP por preset IQ
 │   ├── audio_output.py         # Salida audio demodulado
 │   ├── passband.py             # Límites PASS
-│   └── scanner.py              # Escáner espectral (futuro)
+│   └── (scanner planificado — ver docs/roadmap.md)
 ├── tui/
 │   ├── app.py
 │   └── widgets/

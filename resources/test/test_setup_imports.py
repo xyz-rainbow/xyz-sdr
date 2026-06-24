@@ -21,6 +21,8 @@ SETUP_MODULES = (
     "setup.repo_update",
     "setup.windows_installers",
     "setup.check_env",
+    "setup.install_drivers",
+    "setup.capture_ui",
     "core.runtime_paths",
 )
 

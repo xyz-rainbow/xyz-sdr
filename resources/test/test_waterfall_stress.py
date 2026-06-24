@@ -7,11 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import PropertyMock, patch
 
 import numpy as np
+import pytest
 
 from core.band_buffer import BandFrame, compact_band_cols
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 
 
+@pytest.mark.slow
 @patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
 def test_waterfall_survives_full_history_low_span(mock_size, mock_region):

@@ -48,6 +48,9 @@ class AudioOutputQueue:
         out = np.zeros(frames, dtype=np.float32)
         pos = 0
 
+        with self._lock:
+            vol = self._volume
+
         while pos < frames:
             if len(self._pending) == 0:
                 try:
@@ -56,8 +59,6 @@ class AudioOutputQueue:
                     break
 
             take = min(frames - pos, len(self._pending))
-            with self._lock:
-                vol = self._volume
             out[pos : pos + take] = self._pending[:take] * vol
             self._pending = self._pending[take:]
             pos += take

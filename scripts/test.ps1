@@ -19,8 +19,13 @@ $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (Test-Path -LiteralPath $VenvPy) {
     & $VenvPy -c "from core.runtime_paths import install_venv_pycache_hook; install_venv_pycache_hook()" | Out-Null
-    & $VenvPy -m pytest $Root @args
+    Set-Location -LiteralPath $Root
+    & $VenvPy -m pytest @args
     exit $LASTEXITCODE
 }
 
-python -m pytest $Root @args
+Write-Host "`n[XX] Entorno .venv no encontrado." -ForegroundColor Red
+Write-Host "  1. .\setup\install_drivers.ps1  -> [1] Instalar o reparar todo" -ForegroundColor Yellow
+Write-Host "  2. .\scripts\test.ps1" -ForegroundColor Yellow
+Write-Host ""
+exit 1

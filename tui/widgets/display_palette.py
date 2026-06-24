@@ -82,11 +82,16 @@ def gradient_color(norm: float, *, gradient: tuple[str, ...] = THERMAL_GRADIENT)
     return lerp_rgb(gradient[idx_lo], gradient[idx_hi], idx_f - idx_lo)
 
 
+# Pre-computar tablas de búsqueda (LUT) de 256 colores para in-band y out-of-band
+_IN_BAND_LUT = [gradient_color(i / 255.0) for i in range(256)]
+_OUT_OF_BAND_LUT = [lerp_rgb(_OUT_OF_BAND_BG, color, _OUT_OF_BAND_MIX) for color in _IN_BAND_LUT]
+
+
 def cell_background(norm: float, *, in_band: bool) -> str:
-    color = gradient_color(norm)
-    if in_band:
-        return color
-    return lerp_rgb(_OUT_OF_BAND_BG, color, _OUT_OF_BAND_MIX)
+    """Retorna el color de fondo usando la tabla de búsqueda rápida (LUT)."""
+    idx = int(norm * 255.0)
+    idx = max(0, min(255, idx))
+    return _IN_BAND_LUT[idx] if in_band else _OUT_OF_BAND_LUT[idx]
 
 
 def compute_auto_levels(

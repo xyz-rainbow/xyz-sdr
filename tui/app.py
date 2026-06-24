@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 from typing import Optional
 
+from rich.text import Text
+
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, Container, VerticalGroup
 from textual.widgets import (
@@ -24,13 +26,8 @@ from textual import work, events
 
 from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
 from core.config_store import patch_device_section, patch_dsp_section, patch_display_section
-from core.band_buffer import BandFrameMailbox, make_band_frame, slice_band_to_viewport
+from core.band_buffer import BandFrameMailbox, slice_band_to_viewport
 from core.dsp import (
-    average_psd,
-    compute_effective_band_cols,
-    compute_effective_fft_size,
-    compute_rx_chunk_samples,
-    compute_audio_chunk_samples,
     apply_squelch_with_state,
     apply_fm_agc,
     estimate_snr_at_freq,
@@ -40,7 +37,6 @@ from core.dsp import (
 )
 from core.dsp_profiles import (
     profile_for_sample_rate,
-    effective_fft_avg,
     is_mode_recommended,
 )
 from core.audio_effects import AudioEffects
@@ -52,6 +48,8 @@ from core.passband import (
     clamp_passband_width,
     default_passband_width,
 )
+from tui.rx_worker import run_rx_iteration
+from tui.bandwidth import validate_sample_rate
 from tui.widgets.passband_messages import PassbandPreview, PassbandSelectRequest
 from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
@@ -103,7 +101,7 @@ ZOOM_SPAN_STEPS = [
 # Velocidades de cascada (FPS)
 WATERFALL_SPEEDS = [1, 2, 3, 5, 10, 25, 50]
 WATERFALL_SPD_BTN_HEIGHT = 3
-VIEWPORT_DEBOUNCE_S = 0.05  # Coalesce zoom/scroll antes de re-slicear waterfall
+from tui.viewport import VIEWPORT_DEBOUNCE_S
 
 # Limites de frecuencia del hardware
 FREQ_MIN_HZ = 0.0
@@ -125,6 +123,8 @@ PRESETS = [
 
 class StatusBar(Static):
     """Barra inferior unificada: metricas en tiempo real + atajos de teclado."""
+
+    _hints_text: Text | None = None
 
     DEFAULT_CSS = """
     StatusBar {
@@ -256,7 +256,10 @@ class StatusBar(Static):
         text.append("DEV ", "bold #38bdf8")
         text.append(f"{device.upper()}", "bold #ffffff")
 
-        self._append_key_hints(text)
+        if StatusBar._hints_text is None:
+            StatusBar._hints_text = Text()
+            StatusBar._append_key_hints(StatusBar._hints_text)
+        text.append_text(StatusBar._hints_text)
 
         self.update(text)
 
@@ -848,6 +851,7 @@ class XyzSDRApp(App):
             demod_mode, dsp_cfg_init
         )
         self._passband_preview_width: float | None = None
+        self._passband_preview_sync_at: float = 0.0
         self.fm_deemphasis_us: float = float(dsp_cfg_init.get("fm_deemphasis_us", 50))
         self.fm_agc_enabled: bool = bool(dsp_cfg_init.get("fm_agc_enabled", True))
         initial_rate = float(self.config.get("device", {}).get("sample_rate", 2_048_000))
@@ -1310,7 +1314,7 @@ class XyzSDRApp(App):
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
             spectrum.set_column_levels(floors, ceilings)
-            spectrum.set_band_frame(frame)
+            spectrum.set_viewport_cols(cols)
         except Exception:
             pass
 
@@ -1318,8 +1322,7 @@ class XyzSDRApp(App):
             if waterfall is None:
                 waterfall = self.query_one("#waterfall", WaterfallTimeline)
             waterfall.set_column_levels(floors, ceilings)
-            waterfall.add_band_row(frame)
-            waterfall.refresh()
+            waterfall.add_viewport_row(cols, frame)
         except Exception as exc:
             logger.exception("Error actualizando waterfall: %s", exc)
 
@@ -1987,11 +1990,9 @@ class XyzSDRApp(App):
         if abs(self.sample_rate - new_rate) < 1.0:
             return True
 
-        if not self._device.is_sample_rate_supported(new_rate):
-            supported = ", ".join(
-                _format_bandwidth_hz(rate) for rate in self._device.get_supported_sample_rates()
-            )
-            self._log(f"[ERR]  Bandwidth no soportado. Opciones: {supported}")
+        err = validate_sample_rate(self._device, new_rate, self.sample_rate)
+        if err:
+            self._log(f"[ERR]  {err}")
             return False
 
         self._bandwidth_changing = True
@@ -2169,6 +2170,10 @@ class XyzSDRApp(App):
 
     def on_passband_preview(self, message: PassbandPreview) -> None:
         self._passband_preview_width = message.width_hz
+        now = time.monotonic()
+        if now < self._passband_preview_sync_at:
+            return
+        self._passband_preview_sync_at = now + 0.04
         self._sync_passband_widgets()
 
     def on_passband_select_request(self, message: PassbandSelectRequest) -> None:
@@ -2211,165 +2216,10 @@ class XyzSDRApp(App):
     def _rx_worker(self) -> None:
         """Loop de recepcion en hilo separado."""
         logger.info("RX worker iniciado")
-
-        dsp_cfg = self.config.get("dsp", {})
-        base_fft = int(dsp_cfg.get("fft_size", 8192))
-        num_avg = int(dsp_cfg.get("fft_avg_windows", 8))
-        fft_overlap = float(dsp_cfg.get("fft_overlap", 0.5))
-        base_band_cols = int(dsp_cfg.get("band_cache_cols", 1024))
-
         try:
             while self._rx_active:
-                if self._bandwidth_changing:
-                    time.sleep(0.01)
-                    continue
-
-                capture_rate = float(self.sample_rate)
-                capture_freq = float(self.tuned_frequency)
-                capture_span = float(self.visible_span)
-                display_width = max(int(self._display_width), 40)
-                fft_size = compute_effective_fft_size(
-                    base_fft,
-                    capture_rate,
-                    capture_span,
-                    display_width=display_width,
-                )
-                band_cols = compute_effective_band_cols(
-                    base_band_cols,
-                    capture_rate,
-                    capture_span,
-                    display_width=display_width,
-                )
-                capture_mode = self.demod_mode
-                capture_squelch_enabled = self.squelch_enabled
-                capture_squelch_threshold = float(self.squelch_threshold)
-                capture_passband_center = float(self.passband_center_hz)
-                capture_passband_width = float(self.passband_width_hz)
-                capture_deemph = float(self.fm_deemphasis_us)
-                capture_fm_agc = bool(self.fm_agc_enabled)
-                audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
-                freq_offset = capture_passband_center - capture_freq
-                profile = profile_for_sample_rate(capture_rate)
-                avg_windows = effective_fft_avg(num_avg, profile)
-
-                num_samples = compute_rx_chunk_samples(
-                    fft_size=fft_size,
-                    sample_rate=capture_rate,
-                    num_avg=avg_windows,
-                    chunk_scale=profile.chunk_scale,
-                    low_rate_scale=profile.chunk_scale if capture_rate < 500_000 else None,
-                )
-                audio_iq_samples = compute_audio_chunk_samples(
-                    num_samples,
-                    capture_rate,
-                    audio_chunk_max=profile.audio_chunk_max,
-                    fft_size=fft_size,
-                )
-
                 try:
-                    samples = self._device.read_samples(num_samples)
-                    if not self._rx_active or self._bandwidth_changing:
-                        continue
-
-                    chunk_duration_ms = (len(samples) / capture_rate) * 1000.0 if capture_rate else 0.0
-                    audio_samples = (
-                        samples[-audio_iq_samples:]
-                        if len(samples) > audio_iq_samples
-                        else samples
-                    )
-
-                    proc_t0 = time.perf_counter()
-                    _, psd = average_psd(
-                        samples,
-                        fft_size=fft_size,
-                        sample_rate=capture_rate,
-                        num_avg=avg_windows,
-                        overlap=fft_overlap,
-                    )
-
-                    snr = estimate_snr_at_freq(
-                        psd,
-                        capture_freq,
-                        capture_rate,
-                        capture_passband_center,
-                        passband_width_hz=capture_passband_width,
-                    )
-                    self._squelch_gate.configure(threshold_db=capture_squelch_threshold)
-                    frame = make_band_frame(
-                        psd,
-                        capture_freq,
-                        capture_rate,
-                        band_cols=band_cols,
-                    )
-                    self._band_mailbox.publish(frame, snr)
-
-                    if self.debug_mode:
-                        proc_ms = (time.perf_counter() - proc_t0) * 1000.0
-                        with self._debug_lock:
-                            self._debug_rx_iter_count += 1
-                            self._debug_rx_proc_ms.append(proc_ms)
-                            self._debug_chunk_samples.append(len(samples))
-                            self._debug_chunk_duration_ms.append(chunk_duration_ms)
-                            if len(self._debug_rx_proc_ms) > 120:
-                                self._debug_rx_proc_ms.pop(0)
-                            if len(self._debug_chunk_samples) > 120:
-                                self._debug_chunk_samples.pop(0)
-                            if len(self._debug_chunk_duration_ms) > 120:
-                                self._debug_chunk_duration_ms.pop(0)
-
-                    if self._recorder and self._recorder.active and self._recorder.records_iq:
-                        self._recorder.write_iq(samples)
-
-                    if self._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
-                        from core.dsp import demodulate
-                        try:
-                            demod_t0 = time.perf_counter()
-                            audio = demodulate(
-                                audio_samples,
-                                mode=capture_mode,
-                                sample_rate=capture_rate,
-                                audio_rate=audio_rate,
-                                passband_width_hz=capture_passband_width,
-                                fm_deemphasis_us=capture_deemph,
-                                frequency_offset_hz=freq_offset,
-                                fm_state=self._fm_demod_state,
-                                profile=profile,
-                            )
-                            demod_elapsed = (time.perf_counter() - demod_t0) * 1000.0
-                            if capture_mode in ("wbfm", "nbfm"):
-                                audio = apply_fm_agc(
-                                    audio,
-                                    self._fm_agc,
-                                    enabled=capture_fm_agc,
-                                    sample_rate=audio_rate,
-                                )
-                            audio, squelch_open = apply_squelch_with_state(
-                                audio,
-                                snr,
-                                self._squelch_gate,
-                                enabled=capture_squelch_enabled,
-                            )
-                            self._squelch_open = (
-                                not capture_squelch_enabled or squelch_open
-                            )
-                            if self._recorder and self._recorder.active and self._recorder.records_audio:
-                                self._recorder.write_audio(audio)
-                            self._audio_output.enqueue(audio)
-                            if self.debug_mode:
-                                with self._debug_lock:
-                                    self._debug_demod_ms.append(demod_elapsed)
-                                    self._debug_audio_samples.append(len(audio))
-                                    if len(self._debug_demod_ms) > 120:
-                                        self._debug_demod_ms.pop(0)
-                                    if len(self._debug_audio_samples) > 120:
-                                        self._debug_audio_samples.pop(0)
-                        except Exception as ae:
-                            logger.error(f"Error en reproducción de audio: {ae}")
-                    elif capture_squelch_enabled:
-                        self._squelch_open = self._squelch_gate.is_open(snr)
-                    else:
-                        self._squelch_open = True
-
+                    run_rx_iteration(self)
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:
                         continue
@@ -2378,7 +2228,6 @@ class XyzSDRApp(App):
                     break
         finally:
             if self._rx_active:
-                # Worker salió por error (break), no por _stop_rx() — resetear estado
                 self._rx_active = False
                 self.call_from_thread(self._on_rx_worker_crashed)
             self._rx_stop_event.set()
@@ -2412,7 +2261,6 @@ class XyzSDRApp(App):
 
         # Sincronizar viewport
         self._sync_viewport()
-        self._update_mode_ui()
 
         # Actualizar subtitulo
         device_str = "SIM" if (self._device and self._device.is_simulated) else self.driver.upper()

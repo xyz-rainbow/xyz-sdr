@@ -404,13 +404,16 @@ class SDRDevice:
         chunk = min(num_samples, 65536)
         overflow_retries = 0
 
+        # Pre-asignar buffer temporal para reutilizar y evitar allocations en bucle
+        tmp = np.empty(chunk, dtype=np.complex64)
+
         while read < num_samples:
             to_read = min(chunk, num_samples - read)
-            tmp = np.zeros(to_read, dtype=np.complex64)
+            tmp_view = tmp[:to_read]
             with self._lock:
-                sr = self._sdr.readStream(self._stream, [tmp], to_read, timeoutUs=int(1e6))
+                sr = self._sdr.readStream(self._stream, [tmp_view], to_read, timeoutUs=int(1e6))
             if sr.ret > 0:
-                buff[read:read + sr.ret] = tmp[:sr.ret]
+                buff[read:read + sr.ret] = tmp_view[:sr.ret]
                 read += sr.ret
                 continue
             if sr.ret == 0:

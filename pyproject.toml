@@ -1,0 +1,28 @@
+[project]
+name = "xyz-sdr"
+version = "0.1.0"
+description = "Terminal SDR controller with spectrum and waterfall TUI"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+ai = ["faster-whisper>=0.10", "scikit-learn>=1.3"]
+
+[project.scripts]
+xyz-sdr = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["resources/test"]
+pythonpath = ["."]
+cache_dir = "var/pytest_cache"
+addopts = "--basetemp=var/pytest-tmp"
+markers = [
+    "slow: tests that take several seconds",
+    "integration: external services or timing-sensitive I/O",
+]
+
+[tool.coverage.run]
+source = ["core", "setup", "tui"]
+omit = ["resources/test/*"]

@@ -155,6 +155,24 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         self._band_frame = frame
         self._reslice_viewport()
 
+    def set_viewport_cols(self, cols: np.ndarray) -> None:
+        """Establece columnas ya recortadas al viewport (evita re-slice)."""
+        width = self._column_width()
+        viewport = np.asarray(cols, dtype=np.float64).reshape(-1)
+        if len(viewport) != width:
+            viewport = np.pad(
+                viewport,
+                (0, max(0, width - len(viewport))),
+                constant_values=np.nan,
+            )[:width]
+        self._viewport_cols = viewport
+        now = time.perf_counter()
+        if now - self._last_refresh_at < self._refresh_min_interval:
+            return
+        self._last_refresh_at = now
+        self._invalidate_cache()
+        self.refresh()
+
     def clear(self) -> None:
         self._band_frame = None
         self._viewport_cols = None
