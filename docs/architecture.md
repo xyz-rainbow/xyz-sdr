@@ -41,9 +41,8 @@ The RX worker **does not** call `call_from_thread()` for spectrum or waterfall. 
 On each display tick, `_flush_display_frames()`:
 
 1. `slice_band_to_viewport()` → `cols[width]` (dB).
-2. `waterfall.get_level_history()` for per-column statistics.
-3. `_compute_column_levels()` → `floor[]`, `ceiling[]` (`ColumnLevelTracker` or global `compute_auto_levels`).
-4. Same levels applied to spectrum and waterfall via `set_column_levels()`.
+2. `_compute_column_levels()` → updates `ColumnLevelTracker` (which tracks history internally) and retrieves `floor[]`, `ceiling[]` (or computes global `compute_auto_levels`).
+3. Same levels applied to spectrum and waterfall via `set_column_levels()`.
 
 Details: [display.md](display.md).
 

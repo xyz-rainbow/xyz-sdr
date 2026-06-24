@@ -44,7 +44,6 @@ flowchart TB
     IQ --> FFT --> BF --> MB
     MB --> SL
     SL --> CL
-    WF -.->|get_level_history| CL
     CL --> TR
     CL --> SP
     CL --> WF
@@ -92,8 +91,8 @@ Cada columna de frecuencia tiene su propio suelo y techo. Compensa **pendientes 
 
 **Entradas por frame:**
 
-- `cols` — slice actual del espectro (frame RX).
-- `history_2d` — últimas `column_history_rows` filas del `_slice_cache` del waterfall (`get_level_history()`).
+- `cols` — slice actual del espectro (frame RX), ingresado al tracker con `push_viewport_row(cols)`.
+- Historial interno — almacenado en el tracker en `_row_history` (que mantiene hasta `column_history_rows` filas del historial de viewport).
 
 **Algoritmo (vectorizado NumPy):**
 
@@ -146,7 +145,7 @@ Render: barras ASCII `▁▂▃▄▅▆▇█` + contorno `·`; normalización 
 
 ```python
 waterfall.set_column_levels(floors, ceilings)
-waterfall.get_level_history(max_rows=None)  # filas visibles para el tracker
+waterfall.get_level_history(max_rows=None)  # compatibilidad (ya no se usa para auto-level)
 waterfall.add_band_row(frame)
 ```
 
@@ -206,7 +205,7 @@ display_fps = 20   # en [dsp]; tope de _flush_display_frames
 | `tui/widgets/display_palette.py` | Gradiente, normalización, `plot_content_width` |
 | `tui/app.py` | `_flush_display_frames`, `_compute_column_levels`, layout CSS |
 | `tui/widgets/spectrum_graph.py` | Render espectro + `set_column_levels` |
-| `tui/widgets/waterfall_timeline.py` | Cascada, `get_level_history`, throttle FPS |
+| `tui/widgets/waterfall_timeline.py` | Cascada, renderizado RLE, throttle FPS |
 | `core/band_buffer.py` | `slice_band_to_viewport`, `BandFrame` |
 | `resources/test/test_display_levels.py` | Tests del tracker |
 | `resources/test/test_waterfall_history.py` | Tests cascada e historial |
