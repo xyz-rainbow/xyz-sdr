@@ -20,12 +20,16 @@ env.toml
 
 # IDEs
 .idea/
+.cursor
+.mavis
+.vscode
 .vscode/*
 !.vscode/settings.json
 *.swp
 *.swo
 
 # Project specific
+config/local.toml
 var/
 scratch/
 recordings/
@@ -36,3 +40,8 @@ recordings/
 *.raw
 *.bin
 *.log
+
+# Installation logs (produced by setup/install_drivers.ps1)
+var/log/
+var/log/*.log
+var/log/install-*.log
