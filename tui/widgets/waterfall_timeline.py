@@ -18,7 +18,12 @@ from textual.reactive import reactive
 from textual.message import Message
 from textual import events
 
-from core.band_buffer import BandFrame, slice_band_history_to_viewport, slice_band_to_viewport
+from core.band_buffer import (
+    BandFrame,
+    compact_band_cols,
+    slice_band_history_to_viewport,
+    slice_band_to_viewport,
+)
 from core.passband import freq_to_col
 from core.input_modifiers import is_shift_pressed
 from tui.widgets.display_palette import cell_background, compute_auto_levels, normalize_per_column, plot_content_width
@@ -26,6 +31,7 @@ from tui.widgets.display_palette import cell_background, compute_auto_levels, no
 
 NO_DATA_COLOR = "#08080f"
 _NORM_BLEND = 0.22  # EMA al actualizar rango dB (evita flash al cambiar zoom)
+_LEVEL_QUANT_DB = 0.5  # Cuantización para caché de filas (evita invalidar cada frame)
 
 
 class _WaterfallRow:
@@ -130,6 +136,7 @@ class WaterfallTimeline(Widget):
         self._rich_visual_cache: Text | None = None
         self._rich_visual_cache_key: tuple | None = None
         self._row_text_cache: dict[tuple, Text] = {}
+        self._visual_dirty = True
         self.waterfall_auto_level = waterfall_auto_level
 
     @property
@@ -288,6 +295,31 @@ class WaterfallTimeline(Widget):
         self._rich_visual_cache = None
         self._rich_visual_cache_key = None
         self._row_text_cache.clear()
+        self._visual_dirty = True
+
+    def _mark_visual_dirty(self) -> None:
+        self._visual_dirty = True
+        self._rich_visual_cache = None
+        self._rich_visual_cache_key = None
+
+    def _expected_slice_rows(self) -> int:
+        height = self._view_height()
+        available = max(0, len(self._history) - self._history_offset)
+        return min(available, height)
+
+    def _sync_slice_cache(self) -> None:
+        """Actualiza slice/normalización fuera de render() (Textual no tolera side-effects en paint)."""
+        width = self._view_width()
+        expected_rows = self._expected_slice_rows()
+        if (
+            self._slice_cache is None
+            or self._slice_cache_width != width
+            or self._slice_cache_rows != expected_rows
+        ):
+            self._rebuild_slice_cache()
+        if not self._levels_from_app:
+            self._update_normalization()
+        self._visual_dirty = False
 
     def _effective_max_history(self) -> int:
         """Tope de filas en memoria — usa waterfall_history del config para scroll."""
@@ -308,20 +340,26 @@ class WaterfallTimeline(Widget):
 
         self._last_row_time = now
         self._ensure_history_maxlen()
+        history_cols = compact_band_cols(frame.band_cols)
         self._history.append(
-            _WaterfallRow(frame.center_hz, frame.sample_rate, frame.band_cols),
+            _WaterfallRow(frame.center_hz, frame.sample_rate, history_cols),
         )
         self._history_offset = min(self._history_offset, self._max_history_offset())
 
+        history_frame = BandFrame(
+            frame.center_hz,
+            frame.sample_rate,
+            frame.timestamp,
+            history_cols,
+        )
         if self._history_offset == 0:
-            self._prepend_slice_row(frame)
+            self._prepend_slice_row(history_frame)
         else:
             self._rebuild_slice_cache()
 
         if not self._levels_from_app:
             self._update_normalization()
-        self._invalidate_rich_cache()
-        self.refresh()
+        self._mark_visual_dirty()
 
     def _prepend_slice_row(self, frame: BandFrame) -> None:
         """Actualiza caché slice en O(ancho); fila nueva al inicio (arriba en pantalla)."""
@@ -465,21 +503,19 @@ class WaterfallTimeline(Widget):
         self._invalidate_rich_cache()
 
     def render(self) -> Text:
+        try:
+            return self._render_visual()
+        except Exception:
+            return Text("…", style="dim #6366f1")
+
+    def _render_visual(self) -> Text:
         width = self._view_width()
         height = self._view_height()
         if width < 5 or height < 1:
             return Text("...")
 
-        expected_rows = min(max(0, len(self._history) - self._history_offset), height)
-        if (
-            self._slice_cache is None
-            or self._slice_cache_width != width
-            or self._slice_cache_rows != expected_rows
-        ):
-            self._rebuild_slice_cache()
-
-        if not self._levels_from_app:
-            self._update_normalization()
+        if self._visual_dirty or self._slice_cache is None:
+            self._sync_slice_cache()
 
         floors, ceilings = self._levels_for_width(width)
         cache_key = (
@@ -498,7 +534,7 @@ class WaterfallTimeline(Widget):
         if self._rich_visual_cache is not None and cache_key == self._rich_visual_cache_key:
             return self._rich_visual_cache
 
-        rows_to_show = self._slice_cache_rows
+        rows_to_show = self._slice_cache_rows if self._slice_cache is not None else 0
 
         result = Text()
         for row_idx in range(height):
@@ -516,6 +552,13 @@ class WaterfallTimeline(Widget):
         self._rich_visual_cache_key = cache_key
         return result
 
+    @staticmethod
+    def _quantize_levels(levels: np.ndarray) -> bytes:
+        if levels is None or len(levels) == 0:
+            return b""
+        q = np.round(np.asarray(levels, dtype=np.float64) / _LEVEL_QUANT_DB).astype(np.int16)
+        return q.tobytes()
+
     def _row_cache_key(
         self,
         col_values: np.ndarray,
@@ -524,7 +567,13 @@ class WaterfallTimeline(Widget):
         ceilings: np.ndarray,
     ) -> tuple:
         digest = col_values.tobytes() if col_values is not None else b""
-        return (digest, floors.tobytes(), ceilings.tobytes(), width, self.waterfall_auto_level)
+        return (
+            digest,
+            self._quantize_levels(floors),
+            self._quantize_levels(ceilings),
+            width,
+            self.waterfall_auto_level,
+        )
 
     def _render_row_cached(
         self,
@@ -539,7 +588,7 @@ class WaterfallTimeline(Widget):
             return cached
 
         line = self._render_row_from_cache(col_values, width, floors, ceilings)
-        if len(self._row_text_cache) > max(width, 64):
+        if len(self._row_text_cache) > max(width * 4, 48):
             self._row_text_cache.clear()
         self._row_text_cache[key] = line
         return line

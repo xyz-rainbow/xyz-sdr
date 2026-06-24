@@ -3,6 +3,15 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Pycache = Join-Path $Root "var\pycache"
 New-Item -ItemType Directory -Force -Path $Pycache | Out-Null
 $env:PYTHONPYCACHEPREFIX = $Pycache
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+    chcp 65001 | Out-Null
+} catch {
+    # Consola sin soporte UTF-8; splash usará fallback ASCII
+}
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $Main = Join-Path $Root "main.py"
 

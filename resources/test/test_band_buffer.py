@@ -10,6 +10,7 @@ import numpy as np
 from core.band_buffer import (
     BandFrame,
     BandFrameMailbox,
+    compact_band_cols,
     make_band_frame,
     project_psd_to_band,
     slice_band_history_to_viewport,
@@ -22,6 +23,20 @@ def test_project_psd_to_band_shape(synthetic_psd, center_hz, sample_rate):
     assert band.shape == (512,)
     assert band.dtype == np.float32
     assert np.isfinite(band).any()
+
+
+def test_compact_band_cols_max_pools_to_fixed_size():
+    src = np.linspace(-90.0, -10.0, 4096, dtype=np.float32)
+    out = compact_band_cols(src, target=512)
+    assert out.shape == (512,)
+    assert out.dtype == np.float32
+    assert float(np.max(out)) >= float(np.max(src)) - 1.0
+
+
+def test_compact_band_cols_short_input_copies():
+    src = np.array([-40.0, -30.0, -20.0], dtype=np.float32)
+    out = compact_band_cols(src, target=512)
+    assert np.array_equal(out, src)
 
 
 def test_slice_band_to_viewport_full_bandwidth(flat_band_cols, center_hz, sample_rate):

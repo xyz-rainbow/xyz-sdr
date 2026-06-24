@@ -114,8 +114,16 @@ class ColumnLevelTracker:
                 blocks.append(hist[-self._history_rows :])
 
         data = np.vstack(blocks)
-        target_floor = np.nanpercentile(data, self._floor_pct, axis=0)
-        target_ceil = np.nanpercentile(data, self._ceiling_pct, axis=0)
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            target_floor = np.nanpercentile(data, self._floor_pct, axis=0)
+            target_ceil = np.nanpercentile(data, self._ceiling_pct, axis=0)
+
+        # Sanitizar target contra columnas que contienen únicamente NaNs (fuera de banda al hacer scroll)
+        target_floor = np.where(np.isnan(target_floor), self._fallback_floor, target_floor)
+        target_ceil = np.where(np.isnan(target_ceil), self._fallback_ceiling, target_ceil)
 
         valid = ~np.isnan(cols)
         target_floor = np.where(valid, np.minimum(target_floor, cols), target_floor)
@@ -145,7 +153,13 @@ class ColumnLevelTracker:
             )
             self._ceiling = np.maximum(self._ceiling, self._floor + min_range)
 
+        # Prevenir cualquier propagación residual de NaN en los promedios
+        self._floor = np.where(np.isnan(self._floor), self._fallback_floor, self._floor)
+        self._ceiling = np.where(np.isnan(self._ceiling), self._fallback_ceiling, self._ceiling)
+        self._ceiling = np.maximum(self._ceiling, self._floor + min_range)
+
         if self._smooth_bins > 1:
             self._floor = _smooth_1d(self._floor, self._smooth_bins)
             self._ceiling = _smooth_1d(self._ceiling, self._smooth_bins)
             self._ceiling = np.maximum(self._ceiling, self._floor + min_range)
+

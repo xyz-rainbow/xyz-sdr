@@ -14,6 +14,26 @@ import numpy as np
 from core.dsp import map_psd_to_columns
 
 DEFAULT_BAND_CACHE_COLS = 512
+# Resolución fija del historial waterfall (independiente del zoom adaptativo).
+WATERFALL_HISTORY_BAND_COLS = 512
+
+
+def compact_band_cols(
+    band_cols: np.ndarray,
+    target: int = WATERFALL_HISTORY_BAND_COLS,
+) -> np.ndarray:
+    """Max-pool a rejilla fija para historial waterfall (menos RAM, geometría estable)."""
+    src = np.asarray(band_cols, dtype=np.float32).reshape(-1)
+    target = max(1, int(target))
+    if len(src) <= target:
+        return src.copy()
+
+    edges = np.linspace(0, len(src), target + 1, dtype=np.int32)
+    out = np.empty(target, dtype=np.float32)
+    for i in range(target):
+        segment = src[edges[i] : edges[i + 1]]
+        out[i] = float(np.max(segment)) if segment.size else float(src[min(edges[i], len(src) - 1)])
+    return out
 
 
 @dataclass(frozen=True)

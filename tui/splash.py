@@ -7,10 +7,27 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
+from collections.abc import Callable
+from typing import TypeVar
+
+from core.console_utf8 import configure_console_encoding
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+configure_console_encoding()
+
+BANNER_LINES_ASCII = [
+    "######   ##  ##  ##   ##  #######             ####### ######  ######  ######",
+    "##===    ### ##   ### ##   ===###  ######### ##===== ##==== ##==== ##=== ##",
+    "##        #####    ####     ###    ========= ####### ##  ## ######     ##",
+    "##        ## ##     ##      ###   ######### =====## ##  ## ##====     ##",
+    "######   ##  ##    ##      #######            ####### ###### ##  ## ######",
+    "=======  ==  ==    ==      =======            ======= ====== ==  == ======",
+    "-------------------------------------------------------------------------------",
+]
 
 BANNER_LINES = [
     "██████╗  ██╗  ██╗ ██╗   ██╗ ███████╗            ███████╗ ██████╗  ██████╗  ██████╗",
@@ -39,7 +56,31 @@ C_DIM = "\033[2m"
 C_HIDE = "\033[38;5;232m"
 
 SHUTDOWN_LABEL = " xyz-rainbow_technology xyz-rainbow 2026"
-SHUTDOWN_TM = f"{C_DIM}ᵗᵐ{C_RESET}"
+SHUTDOWN_TM = f"{C_DIM}tm{C_RESET}"
+
+_USE_UNICODE_SPLASH = True
+
+
+def _splash_lines() -> list[str]:
+    return BANNER_LINES if _USE_UNICODE_SPLASH else BANNER_LINES_ASCII
+
+
+def _progress_fill_chars() -> tuple[str, str]:
+    if _USE_UNICODE_SPLASH:
+        return "█", "░"
+    return "#", "."
+
+_T = TypeVar("_T")
+
+# FD de consola real; no se redirige con suppress_startup_output (dup2 solo toca fd 1/2).
+_CONSOLE_FD: int | None = None
+
+
+def _get_console_fd() -> int:
+    global _CONSOLE_FD
+    if _CONSOLE_FD is None:
+        _CONSOLE_FD = os.dup(1)
+    return _CONSOLE_FD
 
 
 def _term_size() -> tuple[int, int]:
@@ -50,20 +91,36 @@ def _term_size() -> tuple[int, int]:
         return 80, 24
 
 
+def _console_write(text: str) -> None:
+    """Escribe en la TTY real aunque fd 1/2 estén redirigidos durante el arranque."""
+    payload = text.encode("utf-8", errors="replace")
+    try:
+        os.write(_get_console_fd(), payload)
+    except OSError:
+        sys.__stdout__.write(text)
+        sys.__stdout__.flush()
+
+
+def _handoff_to_textual() -> None:
+    """Restaura stdout/stderr antes de que Textual tome el control."""
+    from core.console_utf8 import prepare_terminal_for_tui
+
+    prepare_terminal_for_tui()
+
+
 def _clear_screen() -> None:
-    sys.stdout.write("\033[40m\033[2J\033[H")
-    sys.stdout.flush()
+    _console_write("\033[2J\033[H")
 
 
 def _restore_terminal() -> None:
-    sys.stdout.write(C_RESET)
-    sys.stdout.flush()
+    _console_write("\033[0m\033[?25h")
 
 
 def _banner_layout(width: int, height: int) -> tuple[int, list[str]]:
-    v_padding = max(0, (height - len(BANNER_LINES) - 4) // 2)
+    lines = _splash_lines()
+    v_padding = max(0, (height - len(lines) - 4) // 2)
     centered: list[str] = []
-    for line in BANNER_LINES:
+    for line in lines:
         pad = max(0, (width - len(line)) // 2)
         centered.append(" " * pad + line)
     return v_padding, centered
@@ -76,10 +133,12 @@ def _render_banner_block(
     line_opacity: list[float] | None = None,
 ) -> str:
     if line_opacity is None:
-        line_opacity = [1.0] * len(BANNER_LINES)
+        line_opacity = [1.0] * len(_splash_lines())
 
+    lines = _splash_lines()
+    colors = BANNER_COLORS[: len(lines)]
     out: list[str] = ["\n" * v_padding]
-    for line, color, opacity in zip(centered_lines, BANNER_COLORS, line_opacity):
+    for line, color, opacity in zip(centered_lines, colors, line_opacity):
         if opacity <= 0.0:
             continue
         if opacity >= 1.0:
@@ -92,41 +151,91 @@ def _render_banner_block(
     return "\n".join(out)
 
 
-def print_startup_splash() -> None:
-    """Banner centrado y barra de progreso de arranque."""
+def _draw_progress_bar(width: int, percent: int, bar_width: int = 40) -> None:
+    bar_pad = max(0, (width - bar_width - 8) // 2)
+    filled = int((percent / 100) * bar_width)
+    empty = bar_width - filled
+    bar_color = C_CYAN if percent < 50 else C_LIME
+    fill_ch, empty_ch = _progress_fill_chars()
+    bar = fill_ch * filled + empty_ch * empty
+    _console_write(
+        "\r"
+        + " " * bar_pad
+        + f"{C_RESET}[{bar_color}{bar}{C_RESET}] {percent:3d}%"
+    )
+
+
+def run_startup_splash(
+    work: Callable[[], _T],
+    *,
+    min_duration_s: float = 1.0,
+    step_sleep_s: float = 0.06,
+) -> _T:
+    """
+    Muestra banner + barra de progreso mientras ``work()`` corre en segundo plano.
+    La salida de consola del trabajo debe suprimirse con ``suppress_startup_output``.
+    """
+    global _USE_UNICODE_SPLASH
+    _USE_UNICODE_SPLASH = configure_console_encoding()
+
     width, height = _term_size()
     v_padding, centered = _banner_layout(width, height)
 
+    result: list[_T] = []
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result.append(work())
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+
     _clear_screen()
-    sys.stdout.write(_render_banner_block(centered, v_padding))
-    sys.stdout.flush()
+    _console_write(_render_banner_block(centered, v_padding))
 
-    bar_width = 40
-    bar_pad = max(0, (width - bar_width - 8) // 2)
-    steps = 20
+    thread = threading.Thread(target=_runner, name="xyz-sdr-startup", daemon=True)
+    t0 = time.monotonic()
+    thread.start()
 
-    for i in range(steps + 1):
-        percent = int((i / steps) * 100)
-        filled = int((i / steps) * bar_width)
-        empty = bar_width - filled
-        bar_color = C_CYAN if percent < 50 else C_LIME
-        bar = "█" * filled + "░" * empty
-        sys.stdout.write(
-            "\r"
-            + " " * bar_pad
-            + f"{C_RESET}[{bar_color}{bar}{C_RESET}] {percent:3d}%"
-        )
-        sys.stdout.flush()
-        time.sleep(0.06)
+    percent = 0
+    while True:
+        elapsed = time.monotonic() - t0
+        time_progress = min(95, int((elapsed / max(min_duration_s, 0.1)) * 95))
+        if thread.is_alive():
+            percent = min(time_progress, 95)
+        else:
+            percent = 100
 
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-    time.sleep(0.2)
-    _restore_terminal()
+        _draw_progress_bar(width, percent)
+
+        if not thread.is_alive() and elapsed >= min_duration_s:
+            break
+        if not thread.is_alive() and percent >= 100:
+            break
+
+        time.sleep(step_sleep_s)
+
+    thread.join()
+    _draw_progress_bar(width, 100)
+    _console_write("\n")
+    time.sleep(0.15)
+    _handoff_to_textual()
+
+    if error:
+        raise error[0]
+    return result[0]
+
+
+def print_startup_splash() -> None:
+    """Banner centrado y barra de progreso de arranque (solo visual, sin trabajo)."""
+    run_startup_splash(lambda: None, min_duration_s=1.2)
 
 
 def print_shutdown_splash() -> None:
     """Transición a fondo negro, fade-in del banner y barra de cierre con branding."""
+    global _USE_UNICODE_SPLASH
+    _USE_UNICODE_SPLASH = configure_console_encoding()
+
     width, height = _term_size()
     v_padding, centered = _banner_layout(width, height)
 
@@ -136,12 +245,11 @@ def print_shutdown_splash() -> None:
     for step in range(1, fade_steps + 1):
         _clear_screen()
         opacities: list[float] = []
-        for i in range(len(BANNER_LINES)):
-            progress = (step - i * line_stagger) / (fade_steps - len(BANNER_LINES) * 0.4)
+        for i in range(len(_splash_lines())):
+            progress = (step - i * line_stagger) / (fade_steps - len(_splash_lines()) * 0.4)
             opacities.append(max(0.0, min(1.0, progress)))
 
-        sys.stdout.write(_render_banner_block(centered, v_padding, line_opacity=opacities))
-        sys.stdout.flush()
+        _console_write(_render_banner_block(centered, v_padding, line_opacity=opacities))
         time.sleep(0.045)
 
     label_visible = f"{SHUTDOWN_LABEL}{SHUTDOWN_TM}"
@@ -153,7 +261,7 @@ def print_shutdown_splash() -> None:
         reveal = int(progress * len(SHUTDOWN_LABEL))
         visible = SHUTDOWN_LABEL[:reveal]
         hidden = SHUTDOWN_LABEL[reveal:]
-        dim_hidden = "".join("░" if ch != " " else " " for ch in hidden)
+        dim_hidden = "".join(_progress_fill_chars()[1] if ch != " " else " " for ch in hidden)
 
         tm_suffix = SHUTDOWN_TM if reveal >= len(SHUTDOWN_LABEL) else ""
 
@@ -163,11 +271,9 @@ def print_shutdown_splash() -> None:
             f"{tm_suffix}{C_RESET}]"
         )
 
-        # Re-posicionar cursor bajo el banner para la barra de cierre
-        sys.stdout.write("\033[H")
-        sys.stdout.write(_render_banner_block(centered, v_padding))
-        sys.stdout.write(" " * bracket_pad + line + "\n")
-        sys.stdout.flush()
+        _console_write("\033[H")
+        _console_write(_render_banner_block(centered, v_padding))
+        _console_write(" " * bracket_pad + line + "\n")
         time.sleep(0.05)
 
     time.sleep(0.35)

@@ -1,7 +1,6 @@
-# Python
+# Python (cachés centralizados en var/ vía runtime_paths y scripts)
 __pycache__/
 .pytest_cache/
-resources/test/.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -21,7 +20,8 @@ env.toml
 
 # IDEs
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 

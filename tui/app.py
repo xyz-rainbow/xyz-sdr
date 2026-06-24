@@ -821,9 +821,11 @@ class XyzSDRApp(App):
         config: dict = None,
         config_path: str = "config/defaults.toml",
         debug_mode: bool = False,
+        startup_logs: list[str] | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self._startup_logs: list[str] = list(startup_logs or [])
         self.driver = driver
         self.demod_mode = demod_mode
         self.config = config or {}
@@ -1132,15 +1134,52 @@ class XyzSDRApp(App):
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        self._device = SDRDevice(driver=self.driver)
-        _hw_open_error: str | None = None
+        self._device = None
+
+        self._sync_viewport(immediate=True)
+        self._sync_passband_widgets()
+        self._update_mode_ui()
+        self._set_waterfall_speed(10)
+
+        log = self.query_one("#log_panel", Log)
+        for line in self._startup_logs:
+            if line.strip():
+                log.write_line(f"[BOOT] {line}")
+        log.write_line("[INFO] Abriendo dispositivo SDR...")
+
+        self._update_status()
+        self.call_after_refresh(self._update_display_width)
+
+        display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
+        self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
+        if self.debug_mode:
+            self.set_interval(3.0, self._report_debug_metrics)
+
+        self._init_hardware_async()
+
+    @work(thread=True)
+    def _init_hardware_async(self) -> None:
+        """Abre el SDR en segundo plano para no bloquear el primer frame de Textual."""
+        device = SDRDevice(driver=self.driver)
+        hw_open_error: str | None = None
         try:
-            self._device.open()
+            device.open()
         except HardwareInitializationError as exc:
-            _hw_open_error = str(exc)
-            self.driver = "simulated"
-            self._device = SDRDevice(driver="simulated")
-            self._device.open()
+            hw_open_error = str(exc)
+            device = SDRDevice(driver="simulated")
+            device.open()
+            self.call_from_thread(self._apply_simulated_fallback)
+        self.call_from_thread(self._on_hardware_ready, device, hw_open_error)
+
+    def _apply_simulated_fallback(self) -> None:
+        self.driver = "simulated"
+
+    def _on_hardware_ready(
+        self,
+        device: SDRDevice,
+        hw_open_error: str | None,
+    ) -> None:
+        self._device = device
         self._device.set_frequency(self.tuned_frequency)
         self._device.set_gain(self.gain_value)
         self.sample_rate = self._device.sample_rate
@@ -1162,15 +1201,9 @@ class XyzSDRApp(App):
         device_label = "SIMULACION" if self._device.is_simulated else self.driver.upper()
         self.sub_title = f"{device_label} | {self.tuned_frequency / 1e6:.3f} MHz"
 
-        # Inicializar viewport de widgets
-        self._sync_viewport(immediate=True)
-        self._sync_passband_widgets()
-        self._update_mode_ui()
-        self._set_waterfall_speed(10)  # Establecer velocidad inicial de cascada (10 fps)
-
         log = self.query_one("#log_panel", Log)
-        if _hw_open_error:
-            log.write_line(f"[ERR]  Hardware no disponible: {_hw_open_error}")
+        if hw_open_error:
+            log.write_line(f"[ERR]  Hardware no disponible: {hw_open_error}")
             log.write_line("[WARN] Modo SIMULACION activado (servicio SDRplay no responde o dispositivo ocupado)")
             log.write_line("[INFO] Para restaurar RX real: 1) Cierra SDRuno  2) Verifica servicio SDRplay  3) Reinicia la app")
         elif self._device.is_simulated:
@@ -1185,12 +1218,6 @@ class XyzSDRApp(App):
         if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
         self._update_status()
-        self.call_after_refresh(self._update_display_width)
-
-        display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
-        self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
-        if self.debug_mode:
-            self.set_interval(3.0, self._report_debug_metrics)
 
     def _invalidate_band_cache(self) -> None:
         """Limpia caché espectral al cambiar bandwidth o reiniciar RX."""
@@ -1241,9 +1268,22 @@ class XyzSDRApp(App):
         if not self._rx_active:
             return
 
-        frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
+        try:
+            frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
+        except Exception as exc:
+            logger.exception("Error leyendo frame espectral: %s", exc)
+            return
+
         if frame is None:
             return
+
+        try:
+            self._apply_display_frame(frame, snr, seq)
+        except Exception as exc:
+            logger.exception("Error actualizando espectro/cascada: %s", exc)
+
+    def _apply_display_frame(self, frame, snr: float, seq: int) -> None:
+        """Renderiza un frame en widgets de visualización (hilo principal)."""
 
         self._display_sequence = seq
         self._last_snr = snr
@@ -1279,8 +1319,9 @@ class XyzSDRApp(App):
                 waterfall = self.query_one("#waterfall", WaterfallTimeline)
             waterfall.set_column_levels(floors, ceilings)
             waterfall.add_band_row(frame)
-        except Exception:
-            pass
+            waterfall.refresh()
+        except Exception as exc:
+            logger.exception("Error actualizando waterfall: %s", exc)
 
         now = time.time()
         if now - self._status_last_update >= 0.2:
@@ -1595,6 +1636,20 @@ class XyzSDRApp(App):
         self._rx_stop_event.clear()
 
         try:
+            self._device.start_stream()
+        except Exception as e:
+            self._rx_active = False
+            self._rx_stop_event.set()
+            self._log(f"[ERROR] No se pudo iniciar stream RX: {e}")
+            try:
+                btn = self.query_one("#btn_rx", Button)
+                btn.label = ">> INICIAR RX"
+                btn.variant = "success"
+            except Exception:
+                pass
+            return
+
+        try:
             self._audio_output = AudioOutputQueue(sample_rate=self._audio_rate)
             self._audio_output.set_volume(self.volume_value / 100.0)
             self._audio_output.start()
@@ -1620,6 +1675,12 @@ class XyzSDRApp(App):
             return
 
         self._rx_active = False
+
+        if self._device and not self._device.is_simulated:
+            try:
+                self._device.stop_stream()
+            except Exception as exc:
+                logger.warning("Error deteniendo stream RX: %s", exc)
 
         # Detener salida de audio
         if self._audio_output:
@@ -2312,7 +2373,7 @@ class XyzSDRApp(App):
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:
                         continue
-                    logger.error(f"RX error: {e}")
+                    logger.exception("RX error: %s", e)
                     self.call_from_thread(self._log, f"[ERROR] RX: {e}")
                     break
         finally:

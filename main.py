@@ -7,21 +7,27 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
-_ROOT = __import__("pathlib").Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+_pycache = _ROOT / "var" / "pycache"
+_pycache.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("PYTHONPYCACHEPREFIX", str(_pycache))
 
 from core.runtime_paths import configure_pycache_prefix
 
 configure_pycache_prefix(_ROOT)
 
+from core.console_utf8 import configure_console_encoding, prepare_terminal_for_tui
+from core.logging_config import detach_console_logging
+
+configure_console_encoding()
+
 import argparse
 import logging
-
-# Forzar salida UTF-8 en Windows
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -30,6 +36,14 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("xyz-sdr")
+
+
+class StartupHardwareError(Exception):
+    """Sin hardware Soapy tras bootstrap; mensajes para consola."""
+
+    def __init__(self, lines: list[str]):
+        self.lines = lines
+        super().__init__("\n".join(lines))
 
 
 def parse_args():
@@ -48,6 +62,7 @@ def parse_args():
     parser.add_argument("--list-dev", action="store_true", help="Listar dispositivos y salir")
     parser.add_argument("--config",   default="config/defaults.toml", help="Ruta al archivo de configuración")
     parser.add_argument("--debug",    action="store_true", help="Activa logs de depuración e instrumentación en el panel")
+    parser.add_argument("--no-splash", action="store_true", help="Omitir pantalla de carga (depuración TUI)")
     return parser.parse_args()
 
 
@@ -130,41 +145,67 @@ def main():
     volume      = config.get("dsp", {}).get("volume", 75.0)
 
     # ── Verificación de hardware real y simulación ─────────────────────────
+    startup_logs: list[str] = []
+
     if args.sim:
         driver = "simulated"
-    else:
-        from core.soapy_runtime import bootstrap_soapy, format_hardware_help
-        from core.device import resolve_device
-
-        status = bootstrap_soapy()
-        has_hardware = status.import_ok and status.has_devices
-
-        if not has_hardware:
-            help_text = format_hardware_help(status)
-            if not status.import_ok:
-                print("SoapySDR no disponible en Python (bindings/DLL/PATH).")
-            else:
-                print("SoapySDR OK pero no se detectó ningún dispositivo SDR conectado.")
-            if help_text:
-                print(help_text)
-            print("\nConfigura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
-            print("Ejecuta la app: .\\scripts\\run.ps1")
-            print("Pruebas sin hardware (opcional): .\\scripts\\run.ps1 --sim")
-            sys.exit(1)
-        elif driver in ("auto", ""):
-            try:
-                kwargs = resolve_device("auto", status.devices)
-                driver = str(kwargs.get("driver", driver))
-            except Exception:
-                pass
-
-    logger.info(f"Iniciando xyz-sdr | driver={driver} freq={center_freq/1e6:.3f}MHz mode={demod_mode}")
 
     # ── Lanzar TUI ─────────────────────────────────────────────────────────
     try:
+        from core.startup_io import suppress_startup_output
         from tui.app import XyzSDRApp
-        from tui.splash import print_startup_splash, print_shutdown_splash
+        from tui.splash import print_shutdown_splash, run_startup_splash
         from core.device import HardwareInitializationError
+
+        def _startup_phase() -> None:
+            nonlocal driver
+            if not args.sim:
+                from core.soapy_runtime import bootstrap_soapy, format_hardware_help
+                from core.device import resolve_device
+
+                with suppress_startup_output(startup_logs):
+                    status = bootstrap_soapy()
+                has_hardware = status.import_ok and status.has_devices
+
+                if not has_hardware:
+                    lines: list[str] = []
+                    if not status.import_ok:
+                        lines.append("SoapySDR no disponible en Python (bindings/DLL/PATH).")
+                    else:
+                        lines.append("SoapySDR OK pero no se detectó ningún dispositivo SDR conectado.")
+                    help_text = format_hardware_help(status)
+                    if help_text:
+                        lines.append(help_text)
+                    lines.append("")
+                    lines.append("Configura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
+                    lines.append("Ejecuta la app: .\\scripts\\run.ps1")
+                    lines.append("Pruebas sin hardware (opcional): .\\scripts\\run.ps1 --sim")
+                    raise StartupHardwareError(lines)
+
+                if driver in ("auto", ""):
+                    try:
+                        with suppress_startup_output(startup_logs):
+                            kwargs = resolve_device("auto", status.devices)
+                        driver = str(kwargs.get("driver", driver))
+                    except Exception:
+                        pass
+
+            with suppress_startup_output(startup_logs):
+                logger.info(
+                    "Iniciando xyz-sdr | driver=%s freq=%.3fMHz mode=%s",
+                    driver,
+                    center_freq / 1e6,
+                    demod_mode,
+                )
+
+        if args.no_splash:
+            _startup_phase()
+        else:
+            run_startup_splash(_startup_phase)
+
+        prepare_terminal_for_tui()
+        detach_console_logging()
+
         app = XyzSDRApp(
             driver=driver,
             center_freq=center_freq,
@@ -174,11 +215,15 @@ def main():
             config=config,
             config_path=args.config,
             debug_mode=args.debug,
+            startup_logs=startup_logs,
         )
-        print_startup_splash()
         app.run()
         if app._graceful_shutdown:
             print_shutdown_splash()
+    except StartupHardwareError as exc:
+        for line in exc.lines:
+            print(line)
+        sys.exit(1)
     except HardwareInitializationError as e:
         logger.error(str(e))
         sys.exit(1)

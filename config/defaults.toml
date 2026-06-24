@@ -3,20 +3,20 @@
 [device]
 driver       = "sdrplay"      # "auto" | "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
 sample_rate  = 500_000      # Muestras por segundo (2.048 MHz — óptimo WBFM)
-center_freq  = 100_600_000      # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
-gain         = 30.0      # Ganancia en dB (0-60 típico)
+center_freq  = 97_780_487      # Frecuencia central Hz (100.6 MHz — ejemplo RNE)
+gain         = 40.0      # Ganancia en dB (0-60 típico)
 auto_gain    = false
 ppm_correction = 0            # Corrección PPM del oscilador
 
 [dsp]
-fft_size     = 8192           # FFT base; escala al zoom in (compute_effective_fft_size)
+fft_size     = 2048           # FFT base; escala al zoom in (compute_effective_fft_size)
 fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
-fft_avg_windows = 8           # Ventanas FFT promediadas por iteración RX
+fft_avg_windows = 4           # Ventanas FFT promediadas por iteración RX
 band_cache_cols = 1024        # Rejilla BW base; escala al zoom in (compute_effective_band_cols)
 display_fps  = 20             # Tope de refresco visual espectro/waterfall
 demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
 audio_rate   = 48_000         # Hz — tasa de audio de salida
-wbfm_bandwidth = 147_540      # Ancho audible WBFM (selección con ratón)
+wbfm_bandwidth = 80_000      # Ancho audible WBFM (selección con ratón)
 nbfm_bandwidth = 12_500      # Ancho audible NBFM
 am_bandwidth   = 15_000      # Ancho audible AM
 fm_deemphasis_us = 50      # De-emphasis FM (50 µs Europa, 75 µs América)

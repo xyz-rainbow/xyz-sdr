@@ -110,9 +110,10 @@ def test_history_memory_bounded(flat_band_cols):
 
     for _ in range(cap + 30):
         widget._ensure_history_maxlen()
-        widget._history.append(_WaterfallRow(center, rate, flat_band_cols))
+        widget._history.append(_WaterfallRow(center, rate, flat_band_cols.copy()))
 
     assert len(widget._history) <= cap
+    assert all(len(row.band_cols) == len(flat_band_cols) for row in widget._history)
 
 
 @patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)

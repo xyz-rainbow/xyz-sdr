@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _soapy_mod: Any | None = None
 SOAPY_SDR_RX: Any = None
 SOAPY_SDR_CF32: Any = None
+SOAPY_SDR_OVERFLOW: int = -3
 
 
 def _load_soapy() -> bool:
@@ -36,6 +37,12 @@ def _load_soapy() -> bool:
         _soapy_mod = mod
         SOAPY_SDR_RX = _rx
         SOAPY_SDR_CF32 = _cf32
+        try:
+            from SoapySDR import SOAPY_SDR_OVERFLOW as _overflow  # noqa: WPS433
+
+            SOAPY_SDR_OVERFLOW = int(_overflow)
+        except ImportError:
+            pass
         return True
     except ImportError:
         return False
@@ -205,7 +212,6 @@ class SDRDevice:
             self._sdr = _soapy_mod.Device(kwargs)
             self.driver = str(resolved_driver)
             self._apply_settings()
-            self._start_stream()
             logger.info("Dispositivo abierto: %s", kwargs)
             return True
         except HardwareInitializationError:
@@ -215,7 +221,13 @@ class SDRDevice:
 
     def close(self):
         with self._lock:
-            self._stop_stream()
+            if self._stream and soapysdr_available() and not isinstance(self._sdr, SimulatedSDR):
+                try:
+                    self._sdr.deactivateStream(self._stream)
+                    self._sdr.closeStream(self._stream)
+                except Exception as exc:
+                    logger.warning("Error cerrando stream en close: %s", exc)
+                self._stream = None
             if self._sdr:
                 try:
                     self._sdr.close() if hasattr(self._sdr, "close") else None
@@ -272,13 +284,23 @@ class SDRDevice:
                     had_stream = self._stream is not None
                     if had_stream:
                         self._stop_stream()
+                        try:
+                            self._sdr.closeStream(self._stream)
+                        except Exception:
+                            pass
+                        self._stream = None
                     self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
                     self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
                     self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
                     if not self.auto_gain:
                         self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
                     if had_stream:
-                        self._start_stream()
+                        try:
+                            self._activate_stream()
+                        except Exception as exc:
+                            raise SampleRateError(
+                                f"No se pudo reactivar stream tras cambio de bandwidth: {exc}"
+                            ) from exc
         except Exception as exc:
             self.sample_rate = previous_rate
             raise SampleRateError(
@@ -302,21 +324,58 @@ class SDRDevice:
 
     def _stop_stream(self) -> None:
         if not self._stream or not soapysdr_available() or isinstance(self._sdr, SimulatedSDR):
-            self._stream = None
             return
         try:
             self._sdr.deactivateStream(self._stream)
-            self._sdr.closeStream(self._stream)
         except Exception as exc:
-            logger.warning("Error cerrando stream RX: %s", exc)
-        finally:
-            self._stream = None
+            logger.warning("Error desactivando stream RX: %s", exc)
 
-    def _start_stream(self):
-        if not soapysdr_available() or isinstance(self._sdr, SimulatedSDR):
+    def _activate_stream(self) -> None:
+        """Activa stream; el caller debe tener _lock si hace falta exclusión."""
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
-        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        if self._stream is None:
+            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
         self._sdr.activateStream(self._stream)
+
+    def stop_stream(self) -> None:
+        """Detiene el stream RX (p. ej. al pulsar DETENER RX)."""
+        with self._lock:
+            self._stop_stream()
+
+    def start_stream(self) -> None:
+        """Activa el stream RX bajo demanda (no al abrir el dispositivo)."""
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return
+        with self._lock:
+            try:
+                self._activate_stream()
+            except Exception as exc:
+                try:
+                    if self._stream:
+                        self._sdr.closeStream(self._stream)
+                except Exception:
+                    pass
+                self._stream = None
+                raise RuntimeError(f"No se pudo activar stream RX: {exc}") from exc
+
+    def _recover_stream_unlocked(self) -> None:
+        """Reinicia stream; caller debe tener _lock."""
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return
+        logger.warning("Reiniciando stream RX tras error Soapy")
+        if self._stream:
+            try:
+                self._sdr.deactivateStream(self._stream)
+                self._sdr.closeStream(self._stream)
+            except Exception:
+                pass
+            self._stream = None
+        self._activate_stream()
+
+    @property
+    def stream_active(self) -> bool:
+        return self._stream is not None
 
     def set_frequency(self, freq_hz: float):
         self.center_freq = freq_hz
@@ -337,11 +396,13 @@ class SDRDevice:
             return self._sdr.read_samples(num_samples)
 
         if not self._stream:
+            logger.warning("read_samples llamado sin stream RX activo")
             return np.zeros(num_samples, dtype=np.complex64)
 
         buff = np.zeros(num_samples, dtype=np.complex64)
         read = 0
         chunk = min(num_samples, 65536)
+        overflow_retries = 0
 
         while read < num_samples:
             to_read = min(chunk, num_samples - read)
@@ -351,9 +412,21 @@ class SDRDevice:
             if sr.ret > 0:
                 buff[read:read + sr.ret] = tmp[:sr.ret]
                 read += sr.ret
-            elif sr.ret < 0:
-                logger.warning("readStream error: %s", sr.ret)
+                continue
+            if sr.ret == 0:
+                logger.debug("readStream timeout sin muestras (%d/%d)", read, num_samples)
                 break
+            logger.warning("readStream error: %s", sr.ret)
+            if sr.ret == SOAPY_SDR_OVERFLOW and overflow_retries < 2:
+                overflow_retries += 1
+                try:
+                    with self._lock:
+                        self._recover_stream_unlocked()
+                except Exception as exc:
+                    logger.warning("No se pudo recuperar stream: %s", exc)
+                    break
+                continue
+            break
 
         return buff
 

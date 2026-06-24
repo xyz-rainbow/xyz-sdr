@@ -843,6 +843,9 @@ def ensure_project_venv_with_deps(root: Path | None = None) -> Path:
         if not _venv_soapy_import_ok(str(existing)):
             _remove_project_venv(root)
             raise RuntimeError("SoapySDR no importa tras reparar .venv")
+        from core.runtime_paths import install_venv_pycache_hook
+
+        install_venv_pycache_hook(root, existing)
         return existing
 
     venv_python = create_project_venv(best.executable, root)
@@ -855,6 +858,9 @@ def ensure_project_venv_with_deps(root: Path | None = None) -> Path:
         if created_fresh:
             _remove_project_venv(root)
         raise
+    from core.runtime_paths import install_venv_pycache_hook
+
+    install_venv_pycache_hook(root, venv_python)
     return venv_python
 
 

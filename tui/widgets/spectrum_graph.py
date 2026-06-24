@@ -45,8 +45,8 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         self._column_ceilings: np.ndarray | None = None
         self._last_refresh_at: float = 0.0
         self._refresh_min_interval: float = 0.05
-        self._render_cache: Text | None = None
-        self._render_cache_key: tuple | None = None
+        self._paint_cache: Text | None = None
+        self._paint_cache_key: tuple | None = None
 
     def set_frequency_columns(self, width: int) -> None:
         """Fija el ancho de columnas espectrales (debe coincidir con el espectro)."""
@@ -80,8 +80,8 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         )
 
     def _invalidate_cache(self) -> None:
-        self._render_cache = None
-        self._render_cache_key = None
+        self._paint_cache = None
+        self._paint_cache_key = None
 
     def _default_levels(self, width: int) -> tuple[np.ndarray, np.ndarray]:
         return (
@@ -231,8 +231,8 @@ class SpectrumGraph(PassbandDragMixin, Widget):
             self.passband_width_hz,
             self.passband_preview_width_hz,
         )
-        if self._render_cache is not None and cache_key == self._render_cache_key:
-            return self._render_cache
+        if self._paint_cache is not None and cache_key == self._paint_cache_key:
+            return self._paint_cache
 
         norms = normalize_per_column(col_values, floors, ceilings)
         peak_rows = np.full(width, -1, dtype=np.int32)
@@ -269,8 +269,8 @@ class SpectrumGraph(PassbandDragMixin, Widget):
             if row > 0:
                 result.append("\n")
 
-        self._render_cache = result
-        self._render_cache_key = cache_key
+        self._paint_cache = result
+        self._paint_cache_key = cache_key
         return result
 
     def watch_passband_center_hz(self, value: float) -> None:
