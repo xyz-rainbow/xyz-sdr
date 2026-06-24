@@ -105,9 +105,7 @@ def map_psd_to_columns(
     width: int,
 ) -> np.ndarray:
     """
-    Mapea bins PSD a columnas de pantalla con agregación de picos (máximo).
-
-    Usado por espectro y waterfall para garantizar la misma resolución visual.
+    Mapea bins PSD a columnas de pantalla con agregación de picos (máximo) optimizada mediante NumPy.
     """
     width = max(width, 1)
     col_values = np.full(width, np.nan, dtype=np.float64)
@@ -122,20 +120,31 @@ def map_psd_to_columns(
     psd_len = len(psd)
     hz_per_bin = sample_rate / psd_len
 
-    for col in range(width):
-        f_start = left_hz + col * hz_per_col
-        f_end = left_hz + (col + 1) * hz_per_col
+    cols = np.arange(width)
+    f_starts = left_hz + cols * hz_per_col
+    f_ends = left_hz + (cols + 1) * hz_per_col
 
-        overlap_start = max(f_start, capture_left)
-        overlap_end = min(f_end, capture_right)
-        if overlap_start >= overlap_end:
-            continue
+    overlap_starts = np.maximum(f_starts, capture_left)
+    overlap_ends = np.minimum(f_ends, capture_right)
+    valid_overlap = overlap_starts < overlap_ends
 
-        bin_start = int((overlap_start - capture_left) / hz_per_bin)
-        bin_end = int((overlap_end - capture_left) / hz_per_bin)
-        bin_start = max(0, min(bin_start, psd_len - 1))
-        bin_end = max(bin_start + 1, min(bin_end, psd_len))
-        col_values[col] = float(np.max(psd[bin_start:bin_end]))
+    if not np.any(valid_overlap):
+        return col_values
+
+    bin_starts = ((overlap_starts - capture_left) / hz_per_bin).astype(np.int32)
+    bin_ends = ((overlap_ends - capture_left) / hz_per_bin).astype(np.int32)
+
+    bin_starts = np.clip(bin_starts, 0, psd_len - 1)
+    bin_ends = np.clip(bin_ends, bin_starts + 1, psd_len)
+
+    lengths = bin_ends - bin_starts
+    single_bin = (lengths == 1) & valid_overlap
+    col_values[single_bin] = psd[bin_starts[single_bin]]
+
+    multi_bin = (lengths > 1) & valid_overlap
+    valid_indices = np.where(multi_bin)[0]
+    for col in valid_indices:
+        col_values[col] = float(np.max(psd[bin_starts[col]:bin_ends[col]]))
 
     return col_values
 
@@ -314,24 +323,65 @@ def resample_audio_to_rate(
 _FIR_TAPS_CACHE: dict[tuple[float, float, int], np.ndarray] = {}
 
 
+def _fir_filter_key(cutoff_hz: float, sample_rate: float, order: int) -> tuple[float, float, int]:
+    return (float(cutoff_hz), float(sample_rate), int(order))
+
+
+def _fir_taps(cutoff_hz: float, sample_rate: float, order: int | None) -> tuple[np.ndarray, int]:
+    nyq = sample_rate / 2
+    if order is None:
+        order = _adaptive_fir_order(cutoff_hz, sample_rate)
+    key = _fir_filter_key(cutoff_hz, sample_rate, order)
+    taps = _FIR_TAPS_CACHE.get(key)
+    if taps is None:
+        taps = scipy_signal.firwin(order + 1, cutoff_hz / nyq)
+        _FIR_TAPS_CACHE[key] = taps
+    return taps, order
+
+
 def low_pass_filter(
     samples: np.ndarray,
     cutoff_hz: float,
     sample_rate: float,
     order: int | None = None,
-) -> np.ndarray:
+    *,
+    zi: np.ndarray | None = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Filtro paso bajo FIR (orden adaptativo si no se indica)."""
     nyq = sample_rate / 2
     if cutoff_hz >= nyq * 0.99:
+        if zi is not None:
+            return samples, zi
         return samples
-    if order is None:
-        order = _adaptive_fir_order(cutoff_hz, sample_rate)
-    key = (float(cutoff_hz), float(sample_rate), int(order))
-    taps = _FIR_TAPS_CACHE.get(key)
-    if taps is None:
-        taps = scipy_signal.firwin(order + 1, cutoff_hz / nyq)
-        _FIR_TAPS_CACHE[key] = taps
+    taps, _ = _fir_taps(cutoff_hz, sample_rate, order)
+    if zi is not None:
+        out, zf = scipy_signal.lfilter(taps, 1.0, samples, zi=zi)
+        return out, zf
     return scipy_signal.lfilter(taps, 1.0, samples)
+
+
+def low_pass_filter_with_state(
+    samples: np.ndarray,
+    cutoff_hz: float,
+    sample_rate: float,
+    state: FmDemodState | None,
+    order: int | None = None,
+) -> np.ndarray:
+    """Filtro paso bajo con continuidad entre chunks vía FmDemodState."""
+    nyq = sample_rate / 2
+    if cutoff_hz >= nyq * 0.99:
+        return samples
+    taps, order = _fir_taps(cutoff_hz, sample_rate, order)
+    key = _fir_filter_key(cutoff_hz, sample_rate, order)
+    zi = None
+    if state is not None:
+        zi = state.lp_zi.get(key)
+    if zi is None:
+        zi = np.zeros(len(taps) - 1, dtype=np.float64)
+    out, zf = scipy_signal.lfilter(taps, 1.0, samples, zi=zi)
+    if state is not None:
+        state.lp_zi[key] = zf
+    return out
 
 
 def decimate(samples: np.ndarray, factor: int) -> np.ndarray:
@@ -465,12 +515,14 @@ class FmDemodState:
     deemph_zi: np.ndarray = field(default_factory=lambda: np.zeros(1, dtype=np.float64))
     lo_phase: float = 0.0
     ssb_phase: float = 0.0
+    lp_zi: dict[tuple[float, float, int], np.ndarray] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.last_filtered = 0j
         self.deemph_zi = np.zeros(1, dtype=np.float64)
         self.lo_phase = 0.0
         self.ssb_phase = 0.0
+        self.lp_zi.clear()
 
 
 def _iq_demod_kwargs(
@@ -537,12 +589,12 @@ def demod_wbfm(
     Ideal para radio FM comercial (88-108 MHz).
     """
     if frequency_offset_hz:
-        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
+        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate, fm_state)
 
     bw = max(bandwidth_hz, 10_000.0)
     resample_kw = _iq_demod_kwargs(profile, bw, audio_rate)
     samples, sample_rate = resample_iq_for_demod(samples, sample_rate, bw, **resample_kw)
-    filtered = low_pass_filter(samples, bw / 2, sample_rate)
+    filtered = low_pass_filter_with_state(samples, bw / 2, sample_rate, fm_state)
 
     demod = _fm_discriminator(filtered, fm_state)
     audio = _audio_from_demod(demod, sample_rate, audio_rate)
@@ -573,13 +625,13 @@ def demod_nbfm(
     Ideal para comunicaciones de radioaficionados, PMR, etc.
     """
     if frequency_offset_hz:
-        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
+        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate, fm_state)
 
     bw = bandwidth_hz if bandwidth_hz is not None else deviation * 2.5
     bw = max(float(bw), 3_000.0)
     resample_kw = _iq_demod_kwargs(profile, bw, audio_rate)
     samples, sample_rate = resample_iq_for_demod(samples, sample_rate, bw, **resample_kw)
-    filtered = low_pass_filter(samples, bw / 2, sample_rate)
+    filtered = low_pass_filter_with_state(samples, bw / 2, sample_rate, fm_state)
 
     demod = _fm_discriminator(filtered, fm_state)
     demod = demod / (2 * np.pi * deviation / sample_rate)
@@ -620,7 +672,7 @@ def demod_am(
     envelope = np.abs(samples)
     envelope -= np.mean(envelope)
 
-    filtered = low_pass_filter(envelope, audio_bw / 2, sample_rate)
+    filtered = low_pass_filter_with_state(envelope, audio_bw / 2, sample_rate, fm_state)
     audio = _audio_from_demod(filtered.astype(np.float64), sample_rate, audio_rate)
     return _normalize_audio(audio)
 
@@ -657,7 +709,7 @@ def demod_ssb(
             phase = -2 * np.pi * bw * t
         samples = samples * np.exp(1j * phase)
 
-    filtered = low_pass_filter(samples, bw / 2, sample_rate)
+    filtered = low_pass_filter_with_state(samples, bw / 2, sample_rate, fm_state)
     audio = _audio_from_demod(filtered.real.astype(np.float64), sample_rate, audio_rate)
     return _normalize_audio(audio)
 

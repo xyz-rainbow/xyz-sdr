@@ -68,6 +68,7 @@ class ColumnLevelTracker:
         self._span_ratio = 1.0
         self._initialized = False
         self._update_stride = 0
+        self._row_history: list[np.ndarray] = []
         self.reconfigure(width, reset=True)
 
     @property
@@ -95,6 +96,19 @@ class ColumnLevelTracker:
         self._floor = np.full(width, self._fallback_floor, dtype=np.float64)
         self._ceiling = np.full(width, self._fallback_ceiling, dtype=np.float64)
         self._initialized = False
+        self._row_history.clear()
+
+    def push_viewport_row(self, cols: np.ndarray) -> None:
+        """Registra una fila del viewport para historial interno (sin depender del waterfall)."""
+        width = len(self._floor)
+        if width <= 0:
+            return
+        row = np.asarray(cols, dtype=np.float64).reshape(-1)
+        if len(row) < width:
+            row = np.pad(row, (0, width - len(row)), constant_values=np.nan)
+        self._row_history.append(row[:width].copy())
+        if len(self._row_history) > self._history_rows:
+            del self._row_history[: len(self._row_history) - self._history_rows]
 
     def update(
         self,
@@ -119,6 +133,8 @@ class ColumnLevelTracker:
             hist = np.asarray(history_2d, dtype=np.float64)
             if hist.ndim == 2 and hist.shape[1] == width and hist.shape[0] > 0:
                 blocks.append(hist[-self._history_rows :])
+        elif self._row_history:
+            blocks.append(np.vstack(self._row_history[-self._history_rows :]))
 
         data = np.vstack(blocks)
 

@@ -19,6 +19,30 @@ from tui.widgets.display_palette import cell_background, normalize_per_column, p
 from tui.widgets.passband_messages import PassbandDragMixin
 
 
+def _append_rle_runs(line: Text, chars: list[str], styles: list[str | None]) -> None:
+    """Agrupa caracteres consecutivos con el mismo estilo (run-length encoding)."""
+    if not chars:
+        return
+    run_char = chars[0]
+    run_style = styles[0]
+    count = 1
+    for idx in range(1, len(chars)):
+        if chars[idx] == run_char and styles[idx] == run_style:
+            count += 1
+            continue
+        if run_style:
+            line.append(run_char * count, run_style)
+        else:
+            line.append(run_char * count)
+        run_char = chars[idx]
+        run_style = styles[idx]
+        count = 1
+    if run_style:
+        line.append(run_char * count, run_style)
+    else:
+        line.append(run_char * count)
+
+
 class SpectrumGraph(PassbandDragMixin, Widget):
     """Grafico de espectro FFT con relleno termico alineado al waterfall."""
 
@@ -258,31 +282,41 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         if valid.any():
             peak_rows[valid] = (norms[valid] * max(height - 1, 1)).astype(np.int32)
 
+        col_in_band = np.zeros(width, dtype=bool)
+        if passband_cols:
+            col_in_band[passband_cols[0] : passband_cols[1] + 1] = True
+
         result = Text()
         for row in range(height - 1, -1, -1):
-            line = Text()
+            chars: list[str] = []
+            styles: list[str | None] = []
             for col in range(width):
-                in_band = passband_cols and passband_cols[0] <= col <= passband_cols[1]
+                in_band = bool(col_in_band[col])
                 if np.isnan(norms[col]):
                     if row == 0:
-                        ch = "░"
-                        color = "#14532d" if in_band else "#1e1b4b"
-                        line.append(ch, color)
+                        chars.append("░")
+                        styles.append("#14532d" if in_band else "#1e1b4b")
                     else:
-                        line.append(" ")
+                        chars.append(" ")
+                        styles.append(None)
                     continue
 
-                norm = float(norms[col])
                 peak = int(peak_rows[col])
                 if row <= peak:
-                    bg = cell_background(norm, in_band=in_band)
-                    line.append("█" if row == peak and in_band else " ", f"on {bg}")
+                    bg = cell_background(float(norms[col]), in_band=in_band)
+                    chars.append("█" if row == peak and in_band else " ")
+                    styles.append(f"on {bg}")
                 elif row == peak + 1 and in_band:
-                    line.append("·", "bold #ffffff")
+                    chars.append("·")
+                    styles.append("bold #ffffff")
                 elif in_band and row == 0:
-                    line.append("░", "#14532d")
+                    chars.append("░")
+                    styles.append("#14532d")
                 else:
-                    line.append(" ")
+                    chars.append(" ")
+                    styles.append(None)
+            line = Text()
+            _append_rle_runs(line, chars, styles)
             result.append(line)
             if row > 0:
                 result.append("\n")

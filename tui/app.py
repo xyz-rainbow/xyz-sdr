@@ -1240,7 +1240,6 @@ class XyzSDRApp(App):
         self,
         cols: np.ndarray,
         display_cfg: dict,
-        waterfall: WaterfallTimeline | None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Calcula suelo/techo por columna (per-column o global)."""
         width = len(cols)
@@ -1252,11 +1251,10 @@ class XyzSDRApp(App):
             return np.full(width, -80.0), np.full(width, -20.0)
 
         if self.display_level_mode == "per_column":
-            history = None
-            if waterfall is not None:
-                history_rows = int(display_cfg.get("column_history_rows", 32))
-                history = waterfall.get_level_history(max_rows=history_rows)
-            self._level_tracker.update(cols, history)
+            if self._level_tracker.width != width:
+                self._level_tracker.reconfigure(width, reset=True)
+            self._level_tracker.push_viewport_row(cols)
+            self._level_tracker.update(cols)
             return self._level_tracker.floors, self._level_tracker.ceilings
 
         level_min, level_max = compute_auto_levels(
@@ -1303,13 +1301,7 @@ class XyzSDRApp(App):
             self._display_width,
         )
 
-        waterfall = None
-        try:
-            waterfall = self.query_one("#waterfall", WaterfallTimeline)
-        except Exception:
-            pass
-
-        floors, ceilings = self._compute_column_levels(cols, display_cfg, waterfall)
+        floors, ceilings = self._compute_column_levels(cols, display_cfg)
 
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
@@ -1319,8 +1311,7 @@ class XyzSDRApp(App):
             pass
 
         try:
-            if waterfall is None:
-                waterfall = self.query_one("#waterfall", WaterfallTimeline)
+            waterfall = self.query_one("#waterfall", WaterfallTimeline)
             waterfall.set_column_levels(floors, ceilings)
             waterfall.add_viewport_row(cols, frame)
         except Exception as exc:

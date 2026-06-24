@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.dsp import _hann_window, average_psd, low_pass_filter
+from core.dsp import FmDemodState, _hann_window, average_psd, low_pass_filter, low_pass_filter_with_state
 
 
 def test_hann_window_cached():
@@ -26,3 +26,19 @@ def test_low_pass_filter_caches_taps():
     y1 = low_pass_filter(x, 10_000, 200_000)
     y2 = low_pass_filter(x, 10_000, 200_000)
     assert y1.shape == y2.shape
+
+
+def test_low_pass_filter_zi_chunk_continuity():
+    """Filtrado por chunks con estado zi debe coincidir con filtrado continuo."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(800).astype(np.float64)
+    cutoff, sr = 10_000.0, 200_000.0
+    y_full = low_pass_filter(x, cutoff, sr)
+
+    state = FmDemodState()
+    mid = 320
+    y_a = low_pass_filter_with_state(x[:mid], cutoff, sr, state)
+    y_b = low_pass_filter_with_state(x[mid:], cutoff, sr, state)
+    y_chunked = np.concatenate([y_a, y_b])
+
+    np.testing.assert_allclose(y_full, y_chunked, rtol=1e-5, atol=1e-4)

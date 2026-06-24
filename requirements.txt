@@ -22,9 +22,4 @@ tomli>=2.0; python_version < "3.11"   # TOML parser (Python < 3.11)
 # ─── Tests (dev) ─────────────────────────────────────────────────────────────
 pytest>=7.0
 
-# ─── IA — Transcripción (opcional) ──────────────────────────────────────────
-faster-whisper>=1.0    # Whisper optimizado para CPU/GPU
-
-# ─── IA — Clasificación de señales (opcional) ────────────────────────────────
-scikit-learn>=1.3      # ML para clasificación de modulaciones
-joblib>=1.3            # Serialización de modelos ML
+# Dependencias IA opcionales: requirements-ai.txt
