@@ -46,6 +46,8 @@ freq_end = 108_000_000
 freq_step = 200_000
 dwell_ms = 500
 min_snr_db = 10.0
+pause_on_signal = true
+pause_resume_snr_db = 7.0
 """
 
 
@@ -60,6 +62,8 @@ def test_patch_recorder_and_scanner_config(tmp_path: Path):
         freq_step=100_000,
         dwell_ms=1000,
         min_snr_db=15.5,
+        pause_on_signal=False,
+        pause_resume_snr_db=5.0,
     )
 
     text = path.read_text(encoding="utf-8")
@@ -70,6 +74,8 @@ def test_patch_recorder_and_scanner_config(tmp_path: Path):
     assert "freq_step = 100_000" in text
     assert "dwell_ms = 1_000" in text
     assert "min_snr_db = 15.5" in text
+    assert "pause_on_signal = false" in text
+    assert "pause_resume_snr_db = 5.0" in text
 
 
 def test_bookmarks_toml_roundtrip(tmp_path: Path):

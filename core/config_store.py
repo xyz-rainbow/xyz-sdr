@@ -213,6 +213,8 @@ def patch_scanner_section(
     freq_step: float | None = None,
     dwell_ms: float | None = None,
     min_snr_db: float | None = None,
+    pause_on_signal: bool | None = None,
+    pause_resume_snr_db: float | None = None,
 ) -> None:
     """Actualiza valores en la sección [scanner] del archivo TOML."""
     config_path = Path(path)
@@ -227,6 +229,8 @@ def patch_scanner_section(
         "freq_step": int(freq_step) if freq_step is not None else None,
         "dwell_ms": int(dwell_ms) if dwell_ms is not None else None,
         "min_snr_db": min_snr_db,
+        "pause_on_signal": pause_on_signal,
+        "pause_resume_snr_db": pause_resume_snr_db,
     }
 
     for key, value in updates.items():

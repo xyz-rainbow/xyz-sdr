@@ -70,3 +70,5 @@ freq_end    = 108_000_000    # 108 MHz
 freq_step   = 200_000        # 200 kHz
 dwell_ms    = 500            # Tiempo en cada frecuencia (ms)
 min_snr_db  = 10.0
+pause_on_signal = true      # Pausar al detectar señal >= min_snr_db
+pause_resume_snr_db = 7.0   # Auto-reanudar si SNR cae por debajo (histéresis)

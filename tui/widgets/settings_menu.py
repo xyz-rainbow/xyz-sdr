@@ -69,6 +69,9 @@ class SettingsScreen(ModalScreen):
     #page_scanner {
         display: none;
     }
+    #page_bookmarks {
+        display: none;
+    }
 
     SettingsScreen.show-hardware #page_main {
         display: none;
@@ -98,8 +101,16 @@ class SettingsScreen(ModalScreen):
         display: block;
     }
 
+    SettingsScreen.show-bookmarks #page_main {
+        display: none;
+    }
+    SettingsScreen.show-bookmarks #page_bookmarks {
+        display: block;
+    }
+
     #page_recording Label,
-    #page_scanner Label {
+    #page_scanner Label,
+    #page_bookmarks Label {
         width: 20;
     }
 
@@ -112,13 +123,21 @@ class SettingsScreen(ModalScreen):
     #set_scan_end,
     #set_scan_step,
     #set_scan_dwell,
-    #set_scan_snr {
+    #set_scan_snr,
+    #set_scan_pause_resume,
+    #set_bookmarks_export,
+    #set_bookmarks_import {
         width: 24;
         height: 3;
         background: #0b0f19;
         border: round #4338ca;
         color: #e0e7ff;
         padding: 0 1;
+    }
+
+    #sw_scan_pause,
+    #sw_bookmarks_merge {
+        margin-top: 1;
     }
 
     /* ── Estilos de los botones de navegación ── */
@@ -193,6 +212,7 @@ class SettingsScreen(ModalScreen):
         self.remove_class("show-noise")
         self.remove_class("show-recording")
         self.remove_class("show-scanner")
+        self.remove_class("show-bookmarks")
         if new_page == "hardware":
             self.add_class("show-hardware")
         elif new_page == "noise":
@@ -201,6 +221,15 @@ class SettingsScreen(ModalScreen):
             self.add_class("show-recording")
         elif new_page == "scanner":
             self.add_class("show-scanner")
+        elif new_page == "bookmarks":
+            self.add_class("show-bookmarks")
+
+    def _refresh_bookmarks_count_label(self) -> None:
+        try:
+            lbl = self.query_one("#lbl_bookmarks_count", Label)
+            lbl.update(f"Activos: {len(self.app._bookmarks)}")
+        except Exception:
+            pass
 
     def _squelch_select_value(self) -> int:
         opts = getattr(self.app, "SQUELCH_THRESHOLD_OPTIONS", [5, 10, 12, 15, 18, 20, 25, 30, 35, 40])
@@ -254,6 +283,7 @@ class SettingsScreen(ModalScreen):
                 yield Button("🔊 Audio FM / Noise", id="btn_go_noise", classes="nav-btn")
                 yield Button("💾 Ajustes de Grabación", id="btn_go_recording", classes="nav-btn")
                 yield Button("🔍 Ajustes del Escáner", id="btn_go_scanner", classes="nav-btn")
+                yield Button("📋 Bookmarks", id="btn_go_bookmarks", classes="nav-btn")
                 with Horizontal(classes="setting-row"):
                     yield Label("Efectos Sonido:")
                     yield Switch(value=self.app.audio_effects.enabled, id="sw_sound_effects")
@@ -373,14 +403,54 @@ class SettingsScreen(ModalScreen):
                         placeholder="dB",
                         id="set_scan_snr",
                     )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Pausa al detectar:")
+                    yield Switch(
+                        value=bool(scan_cfg.get("pause_on_signal", True)),
+                        id="sw_scan_pause",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Reanudar bajo SNR:")
+                    yield Input(
+                        value=f"{float(scan_cfg.get('pause_resume_snr_db', 7.0)):.1f}",
+                        placeholder="dB",
+                        id="set_scan_pause_resume",
+                    )
                 with Horizontal(classes="settings-actions"):
                     yield Button("Atrás", id="btn_back_to_main_scan")
                     yield Button("Aplicar", variant="success", id="btn_apply_scanner")
+
+            # ─── PÁGINA 6: BOOKMARKS ───
+            with Container(id="page_bookmarks"):
+                yield Label("📋 BOOKMARKS", id="settings_title")
+                yield Label(
+                    f"Activos: {len(self.app._bookmarks)}",
+                    id="lbl_bookmarks_count",
+                )
+                yield Label("Exportar a:")
+                yield Input(
+                    value="var/bookmarks_export.toml",
+                    id="set_bookmarks_export",
+                )
+                yield Button("Exportar", id="btn_export_bookmarks", variant="primary")
+                yield Label("Importar desde:")
+                yield Input(
+                    value="var/bookmarks_export.toml",
+                    id="set_bookmarks_import",
+                )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Fusionar:")
+                    yield Switch(value=True, id="sw_bookmarks_merge")
+                yield Button("Importar", id="btn_import_bookmarks", variant="success")
+                with Horizontal(classes="settings-actions"):
+                    yield Button("Atrás", id="btn_back_to_main_bm")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         # Efectos de sonido al pulsar botones
         if event.button.id in ("btn_apply_noise", "btn_apply_recording", "btn_apply_scanner"):
             self.app.audio_effects.play_chime()
+        elif event.button.id in ("btn_export_bookmarks", "btn_import_bookmarks"):
+            self.app.audio_effects.play_blip()
         elif event.button.id != "btn_apply_hardware":
             self.app.audio_effects.play_blip()
 
@@ -393,11 +463,15 @@ class SettingsScreen(ModalScreen):
             self.current_page = "recording"
         elif event.button.id == "btn_go_scanner":
             self.current_page = "scanner"
+        elif event.button.id == "btn_go_bookmarks":
+            self.current_page = "bookmarks"
+            self._refresh_bookmarks_count_label()
         elif event.button.id in (
             "btn_back_to_main_hw",
             "btn_back_to_main_noise",
             "btn_back_to_main_rec",
             "btn_back_to_main_scan",
+            "btn_back_to_main_bm",
         ):
             self.current_page = "main"
         elif event.button.id == "btn_close_settings":
@@ -421,6 +495,8 @@ class SettingsScreen(ModalScreen):
             step_str = self.query_one("#set_scan_step", Input).value
             dwell_str = self.query_one("#set_scan_dwell", Input).value
             snr_str = self.query_one("#set_scan_snr", Input).value
+            pause_val = self.query_one("#sw_scan_pause", Switch).value
+            pause_resume_str = self.query_one("#set_scan_pause_resume", Input).value
 
             try:
                 start_val = float(start_str) * 1e6
@@ -428,6 +504,7 @@ class SettingsScreen(ModalScreen):
                 step_val = float(step_str) * 1e3
                 dwell_val = float(dwell_str)
                 snr_val = float(snr_str)
+                pause_resume_val = float(pause_resume_str)
             except ValueError:
                 self.app.audio_effects.play_error()
                 self.app._log("[ERROR] Parámetros del escáner inválidos")
@@ -439,12 +516,28 @@ class SettingsScreen(ModalScreen):
                 freq_step=step_val,
                 dwell_ms=dwell_val,
                 min_snr_db=snr_val,
+                pause_on_signal=bool(pause_val),
+                pause_resume_snr_db=pause_resume_val,
             )
             self.app._log(
                 f"[OK]   Escáner: {start_str} a {end_str} MHz"
-                f" | Paso: {step_str} kHz | Dwell: {dwell_val:.0f} ms | Min SNR: {snr_val:.1f} dB"
+                f" | Paso: {step_str} kHz | Dwell: {dwell_val:.0f} ms"
+                f" | Min SNR: {snr_val:.1f} dB"
+                f" | Pausa: {'ON' if pause_val else 'OFF'}"
+                f" | Reanudar < {pause_resume_val:.1f} dB"
             )
             self.current_page = "main"
+
+        elif event.button.id == "btn_export_bookmarks":
+            export_path = self.query_one("#set_bookmarks_export", Input).value
+            if self.app.export_bookmarks_to_path(export_path):
+                self._refresh_bookmarks_count_label()
+
+        elif event.button.id == "btn_import_bookmarks":
+            import_path = self.query_one("#set_bookmarks_import", Input).value
+            merge_val = self.query_one("#sw_bookmarks_merge", Switch).value
+            if self.app.import_bookmarks_from_path(import_path, merge=bool(merge_val)):
+                self._refresh_bookmarks_count_label()
 
         # Acciones - Aplicar Hardware
         elif event.button.id == "btn_apply_hardware":

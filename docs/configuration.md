@@ -65,7 +65,7 @@ Otras claves solo se editan a mano en el TOML.
 
 ### Bookmarks de frecuencia (`var/bookmarks.toml`)
 
-Lista de emisoras/favoritos del selector **PRESETS** en la TUI. Se crea automáticamente desde los presets integrados la primera vez; el botón **Guardar Bookmark** añade la frecuencia y modo actuales. Gitignored (`var/`).
+Lista de emisoras/favoritos del selector **PRESETS** en la TUI. Se crea automáticamente desde los presets integrados la primera vez; el botón **Guardar Bookmark** añade la frecuencia y modo actuales. **Esc → Bookmarks** permite exportar/importar el archivo TOML (con opción de fusionar). Gitignored (`var/`).
 
 ---
 
@@ -170,10 +170,12 @@ Parámetros en `config/defaults.toml`; ajustables en **Esc → Ajustes del Escá
 | `freq_start` | int | `88_000_000` | Inicio barrido (Hz) |
 | `freq_end` | int | `108_000_000` | Fin barrido |
 | `freq_step` | int | `200_000` | Paso (Hz) |
-| `dwell_ms` | int | `500` | Tiempo mínimo por frecuencia sin señal |
+| `dwell_ms` | int | `500` | Tiempo mínimo por frecuencia sin señal (también usado para auto-reanudar tras pausa) |
 | `min_snr_db` | float | `10.0` | Umbral SNR en PASS para considerar señal |
+| `pause_on_signal` | bool | `true` | Pausar el barrido al detectar señal ≥ `min_snr_db` |
+| `pause_resume_snr_db` | float | `7.0` | Histéresis: reanudar si SNR cae por debajo durante `dwell_ms` |
 
-Persistencia: `patch_scanner_section()` desde ajustes o `_persist_scanner_config()` en la app.
+Con pausa activa, el botón del escáner pasa a **▶ CONTINUAR ESCANEO**; un clic reanuda manualmente.
 
 ---
 

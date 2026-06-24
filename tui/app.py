@@ -34,6 +34,13 @@ from core.config_store import (
     patch_scanner_section,
 )
 from core.auto_demod import resolve_auto_demod_mode
+from core.bookmarks import (
+    export_bookmarks,
+    import_bookmarks,
+    load_bookmarks,
+    merge_bookmarks,
+    save_bookmarks,
+)
 from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
 from core.stream_stats import StreamStats
 from core.dsp import (
@@ -861,6 +868,8 @@ class XyzSDRApp(App):
         self._recording = False
         self._recorder: Optional[SDRRecorder] = None
         self._scanning = False
+        self._scan_paused = False
+        self._scan_pause_below_since = 0.0
         self._scan_tuned_time = 0.0
         self._scan_last_signal_time = 0.0
         self._squelch_open = True
@@ -2055,6 +2064,8 @@ class XyzSDRApp(App):
         freq_step: float | None = None,
         dwell_ms: float | None = None,
         min_snr_db: float | None = None,
+        pause_on_signal: bool | None = None,
+        pause_resume_snr_db: float | None = None,
     ) -> None:
         """Guarda ajustes del escáner en el TOML de configuración."""
         try:
@@ -2065,6 +2076,8 @@ class XyzSDRApp(App):
                 freq_step=freq_step,
                 dwell_ms=dwell_ms,
                 min_snr_db=min_snr_db,
+                pause_on_signal=pause_on_signal,
+                pause_resume_snr_db=pause_resume_snr_db,
             )
             scan_cfg = self.config.setdefault("scanner", {})
             if freq_start is not None:
@@ -2077,15 +2090,92 @@ class XyzSDRApp(App):
                 scan_cfg["dwell_ms"] = int(dwell_ms)
             if min_snr_db is not None:
                 scan_cfg["min_snr_db"] = float(min_snr_db)
+            if pause_on_signal is not None:
+                scan_cfg["pause_on_signal"] = pause_on_signal
+            if pause_resume_snr_db is not None:
+                scan_cfg["pause_resume_snr_db"] = float(pause_resume_snr_db)
         except Exception as exc:
             self._log(f"[WARN] No se pudo guardar config de escaneo: {exc}")
 
+    def _bookmarks_path(self) -> Path:
+        return self._project_root / "var" / "bookmarks.toml"
+
+    def _resolve_bookmark_io_path(self, path_str: str) -> Path:
+        path = Path(path_str.strip())
+        if not path.is_absolute():
+            path = self._project_root / path
+        return path
+
+    def _refresh_preset_select(self) -> None:
+        try:
+            sel = self.query_one("#sel_preset", Select)
+            options = [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks]
+            sel.update(options)
+        except Exception as exc:
+            logger.debug("No se pudo actualizar sel_preset: %s", exc)
+
+    def export_bookmarks_to_path(self, path_str: str) -> bool:
+        """Exporta bookmarks actuales a un archivo TOML."""
+        dest = self._resolve_bookmark_io_path(path_str)
+        try:
+            export_bookmarks(self._bookmarks, dest)
+            self._log(f"[OK] Bookmarks exportados ({len(self._bookmarks)}) → {dest}")
+            self.audio_effects.play_chime()
+            return True
+        except Exception as exc:
+            self._log(f"[ERROR] Export bookmarks: {exc}")
+            self.audio_effects.play_error()
+            return False
+
+    def import_bookmarks_from_path(self, path_str: str, merge: bool) -> bool:
+        """Importa bookmarks desde TOML; opcionalmente fusiona con los actuales."""
+        src = self._resolve_bookmark_io_path(path_str)
+        try:
+            imported = import_bookmarks(src, PRESETS)
+            if merge:
+                self._bookmarks = merge_bookmarks(self._bookmarks, imported)
+            else:
+                self._bookmarks = list(imported)
+            save_bookmarks(self._bookmarks_path(), self._bookmarks)
+            self._refresh_preset_select()
+            self._log(
+                f"[OK] Bookmarks importados ({len(self._bookmarks)} entradas"
+                f"{' — fusionados' if merge else ''})"
+            )
+            self.audio_effects.play_chime()
+            return True
+        except FileNotFoundError:
+            self._log(f"[ERROR] No se encontró archivo: {src}")
+            self.audio_effects.play_error()
+            return False
+        except Exception as exc:
+            self._log(f"[ERROR] Import bookmarks: {exc}")
+            self.audio_effects.play_error()
+            return False
+
     def action_toggle_scan(self) -> None:
-        """Inicia o detiene el escáner de banda."""
-        if self._scanning:
+        """Inicia, pausa/reanuda o detiene el escáner de banda."""
+        if self._scanning and self._scan_paused:
+            self._resume_scanning()
+        elif self._scanning:
             self._stop_scanning()
         else:
             self._start_scanning()
+
+    def _update_scan_button_label(self) -> None:
+        try:
+            btn = self.query_one("#btn_scan", Button)
+            if not self._scanning:
+                btn.label = "🔍 ESCANEAR BANDA"
+                btn.variant = "primary"
+            elif self._scan_paused:
+                btn.label = "▶ CONTINUAR ESCANEO"
+                btn.variant = "warning"
+            else:
+                btn.label = "■ DETENER ESCANEO"
+                btn.variant = "error"
+        except Exception:
+            pass
 
     def _start_scanning(self) -> None:
         if not self._rx_active:
@@ -2100,14 +2190,13 @@ class XyzSDRApp(App):
         self._scan_step_hz = float(scan_cfg.get("freq_step", 200_000))
         self._scan_dwell_s = float(scan_cfg.get("dwell_ms", 500)) / 1000.0
         self._scan_min_snr = float(scan_cfg.get("min_snr_db", 10.0))
+        self._scan_pause_on_signal = bool(scan_cfg.get("pause_on_signal", True))
+        self._scan_pause_resume_snr = float(scan_cfg.get("pause_resume_snr_db", 7.0))
 
         self._scanning = True
-        try:
-            btn = self.query_one("#btn_scan", Button)
-            btn.label = "■ DETENER ESCANEO"
-            btn.variant = "error"
-        except Exception:
-            pass
+        self._scan_paused = False
+        self._scan_pause_below_since = 0.0
+        self._update_scan_button_label()
 
         self._log(
             f"[SCAN] Iniciando escaneo ({self._scan_start_hz / 1e6:.2f} - "
@@ -2131,13 +2220,32 @@ class XyzSDRApp(App):
         if not self._scanning:
             return
         self._scanning = False
-        try:
-            btn = self.query_one("#btn_scan", Button)
-            btn.label = "🔍 ESCANEAR BANDA"
-            btn.variant = "primary"
-        except Exception:
-            pass
+        self._scan_paused = False
+        self._scan_pause_below_since = 0.0
+        self._update_scan_button_label()
         self._log("[SCAN] Escaneo detenido")
+
+    def _pause_scan_on_signal(self, passband_snr: float) -> None:
+        if self._scan_paused:
+            return
+        self._scan_paused = True
+        self._scan_pause_below_since = 0.0
+        self.audio_effects.play_chime()
+        self._log(
+            f"[SCAN] Pausa — señal {passband_snr:.1f} dB en "
+            f"{self.tuned_frequency / 1e6:.4f} MHz"
+        )
+        self._update_scan_button_label()
+
+    def _resume_scanning(self) -> None:
+        if not self._scanning or not self._scan_paused:
+            return
+        self._scan_paused = False
+        self._scan_tuned_time = time.time()
+        self._scan_last_signal_time = 0.0
+        self._scan_pause_below_since = 0.0
+        self._log("[SCAN] Reanudando escaneo")
+        self._update_scan_button_label()
 
     def _step_scanner(self) -> None:
         next_freq = self.tuned_frequency + self._scan_step_hz
@@ -2190,13 +2298,33 @@ class XyzSDRApp(App):
             passband_snr = 0.0
 
         now = time.time()
-        # 3. Comprobar SNR
+
+        if self._scan_paused:
+            if passband_snr < self._scan_pause_resume_snr:
+                if self._scan_pause_below_since == 0.0:
+                    self._scan_pause_below_since = now
+                elif now - self._scan_pause_below_since >= self._scan_dwell_s:
+                    self._resume_scanning()
+            else:
+                self._scan_pause_below_since = 0.0
+            return
+
         if passband_snr >= self._scan_min_snr:
+            if self._scan_pause_on_signal:
+                self._pause_scan_on_signal(passband_snr)
+                return
             if self._scan_last_signal_time == 0.0:
-                self._log(f"[SCAN] Señal encontrada en {self.tuned_frequency / 1e6:.4f} MHz (SNR: {passband_snr:.1f} dB)")
+                self._log(
+                    f"[SCAN] Señal en {self.tuned_frequency / 1e6:.4f} MHz "
+                    f"(SNR: {passband_snr:.1f} dB)"
+                )
             self._scan_last_signal_time = now
         else:
-            ref_time = self._scan_last_signal_time if self._scan_last_signal_time > 0.0 else self._scan_tuned_time
+            ref_time = (
+                self._scan_last_signal_time
+                if self._scan_last_signal_time > 0.0
+                else self._scan_tuned_time
+            )
             if now - ref_time >= self._scan_dwell_s:
                 self._step_scanner()
 
@@ -2373,15 +2501,8 @@ class XyzSDRApp(App):
             return
 
         self._bookmarks.append((name, self.tuned_frequency, self.demod_mode))
-        bookmarks_path = self._project_root / "var" / "bookmarks.toml"
-        self._save_bookmarks_to_file(bookmarks_path, self._bookmarks)
-
-        try:
-            sel = self.query_one("#sel_preset", Select)
-            options = [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks]
-            sel.update(options)
-        except Exception as e:
-            logger.exception("Error actualizando presets Select: %s", e)
+        save_bookmarks(self._bookmarks_path(), self._bookmarks)
+        self._refresh_preset_select()
 
         self._log(f"[OK] Guardado bookmark: {name}")
 
@@ -2673,47 +2794,7 @@ class XyzSDRApp(App):
 
     def _load_bookmarks(self) -> list[tuple[str, float, str]]:
         """Carga la lista de favoritos/presets desde var/bookmarks.toml o del fallback."""
-        bookmarks_path = self._project_root / "var" / "bookmarks.toml"
-        bookmarks_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not bookmarks_path.exists():
-            self._save_bookmarks_to_file(bookmarks_path, PRESETS)
-            return list(PRESETS)
-
-        try:
-            import sys
-            if sys.version_info >= (3, 11):
-                import tomllib
-            else:
-                import tomli as tomllib
-
-            with open(bookmarks_path, "rb") as f:
-                data = tomllib.load(f)
-            
-            bookmarks = []
-            for item in data.get("bookmarks", []):
-                name = item.get("name", "Favorito")
-                freq = float(item.get("freq_hz", 0.0))
-                mode = item.get("mode", "wbfm")
-                bookmarks.append((name, freq, mode))
-            return bookmarks
-        except Exception as e:
-            logger.error(f"Error cargando bookmarks: {e}")
-            return list(PRESETS)
-
-    def _save_bookmarks_to_file(self, path: Path, bookmarks: list[tuple[str, float, str]]) -> None:
-        """Guarda la lista de bookmarks al archivo en formato TOML."""
-        lines = ["# xyz-sdr | var/bookmarks.toml - Bookmarks de frecuencia", ""]
-        for name, freq, mode in bookmarks:
-            lines.append("[[bookmarks]]")
-            lines.append(f'name = "{name}"')
-            lines.append(f'freq_hz = {int(freq)}')
-            lines.append(f'mode = "{mode}"')
-            lines.append("")
-        try:
-            path.write_text("\n".join(lines), encoding="utf-8")
-        except Exception as e:
-            logger.error(f"Error guardando bookmarks: {e}")
+        return load_bookmarks(self._bookmarks_path(), PRESETS)
 
 
 # ─── Utilidades ──────────────────────────────────────────────────────────────
