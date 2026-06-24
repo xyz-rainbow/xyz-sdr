@@ -94,3 +94,4 @@ def test_read_samples_recovers_from_overflow(monkeypatch):
     assert len(out) == 512
     assert fake.setup_calls >= 1
     assert np.count_nonzero(out) > 0
+    assert dev.stream_stats.overflows >= 1

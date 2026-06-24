@@ -12,9 +12,40 @@ Referencia de todas las claves del archivo TOML por defecto. La app carga el arc
 |--------|-------------|
 | Ruta por defecto | `config/defaults.toml` |
 | `--config PATH` | Archivo alternativo |
+| `--band NAME` | Carga y fusiona `config/bands/<NAME>.toml` sobre defaults |
 | `--driver`, `--freq`, `--gain`, `--mode` | Sobrescriben valores de `[device]` / `[dsp]` al lanzar |
 
 Los flags CLI tienen prioridad sobre el TOML en el arranque; los ajustes hechos en la TUI se escriben de vuelta al archivo.
+
+### Perfiles por banda (`config/bands/`)
+
+Archivos TOML parciales con las mismas secciones que `defaults.toml` (`[device]`, `[dsp]`, `[display]`). Se fusionan en profundidad al arrancar o al elegir un perfil en la TUI (selector **BANDA**).
+
+| Perfil | Uso |
+|--------|-----|
+| `fm_broadcast` | WBFM 88–108 MHz, 2.048 MHz IQ |
+| `airband` | NBFM aviación 118–137 MHz, 250 kHz IQ |
+| `pmr446` | NBFM 446 MHz |
+| `hf_lsb` | LSB HF <10 MHz |
+
+```powershell
+.\scripts\run.ps1 -Band fm_broadcast
+python main.py --band airband --freq 121.5
+```
+
+Opcional: bloque `[meta]` con `label` / `description` (solo documentación en UI).
+
+**Persistencia:** al elegir perfil en TUI o usar `--band`, `persist_band_profile()` escribe claves en `defaults.toml` y `[app] active_band_profile`. El próximo arranque carga el perfil guardado sin repetir `-Band`.
+
+Ver [dx-packaging.md](dx-packaging.md).
+
+---
+
+## `[app]` — preferencias de aplicación
+
+| Clave | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `active_band_profile` | string | `""` | ID del último perfil (`fm_broadcast`, `airband`, …). Vacío = ninguno |
 
 ---
 
@@ -26,7 +57,9 @@ Los flags CLI tienen prioridad sobre el TOML en el arranque; los ajustes hechos 
 |---------|---------|--------|
 | `patch_device_section` | `[device]` | `driver`, `sample_rate`, `center_freq`, `gain` |
 | `patch_dsp_section` | `[dsp]` | squelch, volumen, anchos PASS, de-emphasis, AGC FM |
-| `patch_display_section` | `[display]` | `waterfall_auto_level` |
+| `patch_display_section` | `[display]` | `waterfall_auto_level`, `display_level_mode`, `freq_span_mhz` |
+| `patch_app_section` | `[app]` | `active_band_profile` |
+| `persist_band_profile` | device + dsp + display + app | Tras aplicar perfil de banda |
 
 Otras claves solo se editan a mano en el TOML.
 
@@ -157,4 +190,4 @@ volume           = 75.0
 
 ## Depuración
 
-Con `--debug`, la TUI muestra métricas DSP (SR captura/demod, chunk audio, underruns). Ver [audio.md](audio.md) y [hardware.md](hardware.md).
+Con `--debug`, la TUI muestra métricas RX/UI, **`iq drop`** (overflows/timeouts del stream) y audio underruns. Indicador **`DROP`** en barra de estado con RX activo. Ver [observability.md](observability.md), [audio.md](audio.md) y [hardware.md](hardware.md).

@@ -1,0 +1,20 @@
+# PMR446 / FRS — radio ciudadana UHF
+
+[meta]
+label = "PMR446 (446 MHz)"
+description = "NBFM canal estrecho, 500 kHz IQ"
+
+[device]
+sample_rate = 500_000
+center_freq = 446_006_250
+gain = 42.0
+
+[dsp]
+demod_mode = "nbfm"
+nbfm_bandwidth = 12_500
+volume = 85.0
+squelch_enabled = true
+squelch_threshold = 12
+
+[display]
+freq_span_mhz = 0.5

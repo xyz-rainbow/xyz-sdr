@@ -8,6 +8,8 @@ from core.config_store import (
     patch_device_section,
     patch_display_section,
     patch_dsp_section,
+    patch_app_section,
+    persist_band_profile,
 )
 
 
@@ -26,11 +28,17 @@ gain         = 30.0
 
 [dsp]
 volume       = 75.0
+demod_mode   = "nbfm"
 squelch_enabled  = false
 wbfm_bandwidth = 147_540
 
 [display]
 waterfall_auto_level = true
+display_level_mode = "per_column"
+freq_span_mhz = 0.5
+
+[app]
+active_band_profile = ""
 """
 
 
@@ -82,3 +90,19 @@ def test_patch_missing_key_leaves_file_unchanged(tmp_path: Path):
 def test_patch_missing_file_is_noop(tmp_path: Path):
     missing = tmp_path / "missing.toml"
     patch_device_section(str(missing), driver="rtlsdr")
+
+
+def test_persist_band_profile_writes_app_and_sections(tmp_path: Path):
+    path = _write_toml(tmp_path, SAMPLE_TOML)
+    profile = {
+        "device": {"sample_rate": 2_048_000, "center_freq": 97_780_487, "gain": 40.0},
+        "dsp": {"demod_mode": "wbfm", "volume": 80.0, "wbfm_bandwidth": 180_000},
+        "display": {"display_level_mode": "per_column", "freq_span_mhz": 2.0},
+    }
+    persist_band_profile(str(path), "fm_broadcast", profile)
+    text = path.read_text(encoding="utf-8")
+    assert 'active_band_profile = "fm_broadcast"' in text
+    assert "sample_rate  = 2_048_000" in text
+    assert 'demod_mode   = "wbfm"' in text
+    assert "freq_span_mhz = 2.0" in text
+

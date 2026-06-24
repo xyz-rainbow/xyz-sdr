@@ -61,6 +61,8 @@ def parse_args():
     parser.add_argument("--check",    action="store_true", help="Verificar entorno y salir")
     parser.add_argument("--list-dev", action="store_true", help="Listar dispositivos y salir")
     parser.add_argument("--config",   default="config/defaults.toml", help="Ruta al archivo de configuración")
+    parser.add_argument("--band",     default=None,
+                        help="Perfil de banda (config/bands/<nombre>.toml, p. ej. fm_broadcast, airband)")
     parser.add_argument("--debug",    action="store_true", help="Activa logs de depuración e instrumentación en el panel")
     parser.add_argument("--no-splash", action="store_true", help="Omitir pantalla de carga (depuración TUI)")
     return parser.parse_args()
@@ -104,6 +106,28 @@ def main():
         logger.setLevel(logging.DEBUG)
 
     config = load_config(args.config)
+
+    active_band = args.band
+    if not active_band:
+        saved = config.get("app", {}).get("active_band_profile", "")
+        active_band = str(saved).strip() or None
+
+    if active_band:
+        from core.band_profiles import load_band_profile, merge_configs
+        from core.config_store import patch_app_section
+
+        try:
+            band_cfg = load_band_profile(active_band)
+            config = merge_configs(config, band_cfg)
+            logger.info("Perfil de banda activo: %s", active_band)
+            if args.band:
+                patch_app_section(args.config, active_band_profile=args.band)
+        except FileNotFoundError as exc:
+            logger.error("%s", exc)
+            sys.exit(1)
+        except Exception as exc:
+            logger.error("Error cargando perfil de banda %s: %s", active_band, exc)
+            sys.exit(1)
 
     # ── Modo check ──────────────────────────────────────────────────────────
     if args.check:
@@ -216,6 +240,7 @@ def main():
             config_path=args.config,
             debug_mode=args.debug,
             startup_logs=startup_logs,
+            band_profile=active_band,
         )
         app.run()
         if app._graceful_shutdown and not args.no_splash:

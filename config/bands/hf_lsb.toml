@@ -1,0 +1,19 @@
+# HF aficionados — LSB voz/data por debajo de 10 MHz
+
+[meta]
+label = "HF LSB (<10 MHz)"
+description = "LSB 3 kHz, 250 kHz IQ, tiempo atmosférico / radioaficionados"
+
+[device]
+sample_rate = 250_000
+center_freq = 7_100_000
+gain = 50.0
+
+[dsp]
+demod_mode = "lsb"
+volume = 80.0
+squelch_enabled = false
+
+[display]
+freq_span_mhz = 0.25
+display_level_mode = "global"

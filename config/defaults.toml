@@ -44,6 +44,9 @@ column_history_rows = 32              # Filas waterfall para estimar suelo
 freq_span_mhz     = 0.5       # Span inicial mostrado (MHz); suele igualar sample_rate/1e6
 color_theme       = "cyberpunk"
 
+[app]
+active_band_profile = ""      # fm_broadcast | airband | pmr446 | hf_lsb | vacío = ninguno
+
 [recorder]
 output_dir        = ""              # Vacío → ~/Music/xyz-sdr; relativa → respecto al proyecto
 record_iq         = true              # SigMF IQ (todos los modos)

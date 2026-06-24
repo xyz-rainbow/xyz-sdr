@@ -17,6 +17,29 @@ Index: [README.md](README.md) | Hardware: [hardware.md](hardware.md)
 | **[3] Diagnóstico rápido** | Summary + next step |
 | **[A] Avanzado** | Individual steps, verbose check, language |
 
+**Desktop shortcut (after install):**
+
+```powershell
+.\setup\install_app.ps1              # escritorio
+.\setup\install_app.ps1 -StartMenu   # menú inicio
+.\setup\install_app.ps1 -SimShortcut # incluye acceso directo --sim
+.\setup\install_app.ps1 -Uninstall
+```
+
+Launcher alternativo: `scripts\xyz-sdr.cmd` (doble clic sin abrir PowerShell manualmente).
+
+**Run shortcuts** (`scripts\run.ps1`):
+
+```powershell
+.\scripts\run.ps1 -Sim -Debug
+.\scripts\run.ps1 -Band fm_broadcast
+.\scripts\run.ps1 -Band airband -Freq 121.5
+.\scripts\run.ps1 -Check
+.\scripts\run.ps1 -ListDev
+```
+
+Perfiles de banda: `config/bands/*.toml` — ver [configuration.md](configuration.md).
+
 Headless:
 
 ```powershell
@@ -105,6 +128,7 @@ Close **SDRuno** and other SDR apps before testing.
 | `setup/check_env.py` | Human-readable diagnostic output |
 | `setup/install_i18n.py` | ES/EN strings |
 | `setup/install_log.py` | Session logging to `var/log/` |
+| `setup/install_app.ps1` | Desktop / Start Menu shortcuts to `scripts/run.ps1` |
 
 ---
 

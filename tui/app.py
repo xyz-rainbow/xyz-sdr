@@ -25,8 +25,15 @@ from textual.reactive import reactive
 from textual import work, events
 
 from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
-from core.config_store import patch_device_section, patch_dsp_section, patch_display_section
+from core.config_store import (
+    patch_device_section,
+    patch_dsp_section,
+    patch_display_section,
+    persist_band_profile,
+)
 from core.band_buffer import BandFrameMailbox, slice_band_to_viewport
+from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
+from core.stream_stats import StreamStats
 from core.dsp import (
     apply_squelch_with_state,
     apply_fm_agc,
@@ -196,6 +203,8 @@ class StatusBar(Static):
         squelch_enabled: bool = False,
         squelch_open: bool = True,
         recording: bool = False,
+        stream_drop_rate: float = 0.0,
+        stream_overflows: int = 0,
     ) -> None:
         step_str = _format_hz(step)
         span_str = _format_hz(span)
@@ -251,6 +260,13 @@ class StatusBar(Static):
         if recording:
             text.append("REC ", "bold #ef4444")
             text.append("●", "bold #ef4444")
+            text.append(" ┃ ", "#475569")
+
+        if stream_overflows > 0 or stream_drop_rate >= 0.005:
+            text.append("DROP ", "bold #f87171")
+            drop_pct = stream_drop_rate * 100.0
+            drop_label = f"{drop_pct:.1f}%" if stream_drop_rate >= 0.001 else f"ov{stream_overflows}"
+            text.append(drop_label, "bold #fca5a5")
             text.append(" ┃ ", "#475569")
         
         text.append("DEV ", "bold #38bdf8")
@@ -825,6 +841,7 @@ class XyzSDRApp(App):
         config_path: str = "config/defaults.toml",
         debug_mode: bool = False,
         startup_logs: list[str] | None = None,
+        band_profile: str | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -834,6 +851,7 @@ class XyzSDRApp(App):
         self.config = config or {}
         self.config_path = config_path
         self.debug_mode = debug_mode
+        self.band_profile = band_profile
         self._device: Optional[SDRDevice] = None
         self._rx_active = False
         self._recording = False
@@ -885,6 +903,7 @@ class XyzSDRApp(App):
         self._debug_demod_ms: list[float] = []
         self._debug_audio_samples: list[int] = []
         self._debug_report_window_start: float = time.time()
+        self._stream_stats_snapshot = StreamStats()
         self._viewport_debounce_timer = None
         self._status_last_update: float = 0.0
 
@@ -1107,9 +1126,20 @@ class XyzSDRApp(App):
                 yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
                     [(name, f"{freq}:{mode}") for name, freq, mode in PRESETS],
-                    prompt="Seleccionar...",
+                    prompt="Emisora...",
                     id="sel_preset",
                 )
+
+                band_options = list_band_profiles()
+                if band_options:
+                    yield Label("-- BANDA --", id="lbl_band_profiles")
+                    band_select_kwargs: dict = {
+                        "prompt": "Perfil de banda...",
+                        "id": "sel_band",
+                    }
+                    if band_profile and band_profile in dict(band_options):
+                        band_select_kwargs["value"] = band_profile
+                    yield Select(band_options, **band_select_kwargs)
 
             # Panel derecho — visualizacion
             with Vertical(id="display_area"):
@@ -1235,6 +1265,74 @@ class XyzSDRApp(App):
             self.query_one("#waterfall", WaterfallTimeline).clear_history()
         except Exception:
             pass
+
+    def _apply_band_profile(self, profile_id: str) -> None:
+        """Aplica un perfil TOML de config/bands/ (frecuencia, modo, BW IQ, display)."""
+        try:
+            profile = load_band_profile(profile_id)
+        except FileNotFoundError as exc:
+            self._log(f"[ERROR] {exc}")
+            self.audio_effects.play_error()
+            return
+
+        self.config = merge_configs(self.config, profile)
+        self.band_profile = profile_id
+        dev = profile.get("device", {})
+        dsp = profile.get("dsp", {})
+        display = profile.get("display", {})
+
+        if "center_freq" in dev:
+            freq = float(dev["center_freq"])
+            self.tuned_frequency = freq
+            self.viewport_center = freq
+            self.passband_center_hz = freq
+
+        if "gain" in dev:
+            self.gain_value = float(dev["gain"])
+            if self._device:
+                self._device.set_gain(self.gain_value)
+
+        if "demod_mode" in dsp:
+            self.demod_mode = str(dsp["demod_mode"])
+            self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode, dsp)
+            self._update_mode_ui()
+
+        if "volume" in dsp:
+            self.volume_value = float(dsp["volume"])
+
+        if dsp.get("squelch_enabled") is not None:
+            self.squelch_enabled = bool(dsp["squelch_enabled"])
+        if "squelch_threshold" in dsp:
+            val = int(float(dsp["squelch_threshold"]))
+            if val in self.SQUELCH_THRESHOLD_OPTIONS:
+                self.squelch_threshold = float(val)
+
+        if display.get("display_level_mode"):
+            self.display_level_mode = str(display["display_level_mode"])
+
+        if "freq_span_mhz" in display:
+            span_hz = float(display["freq_span_mhz"]) * 1_000_000
+            if 0 < span_hz <= self.sample_rate:
+                self.visible_span = span_hz
+                self.zoom_index = find_zoom_index(span_hz, self.visible_spans)
+
+        rate = float(dev.get("sample_rate", self.sample_rate))
+        if abs(rate - self.sample_rate) > 1.0:
+            self.change_bandwidth(rate)
+
+        if self._device:
+            self._device.set_frequency(self.tuned_frequency)
+
+        self._apply_tuning()
+        self._sync_bandwidth_select_value()
+        self._sync_passband_widgets()
+        self._update_status()
+        try:
+            persist_band_profile(self.config_path, profile_id, profile)
+        except Exception as exc:
+            logger.warning("No se pudo persistir perfil de banda: %s", exc)
+        self._log(f"[BAND] Perfil {profile_id} aplicado (guardado en {self.config_path})")
+        self.audio_effects.play_chime()
 
     def _compute_column_levels(
         self,
@@ -1397,6 +1495,16 @@ class XyzSDRApp(App):
             parts.append(f"audio {avg_audio} smp/iter")
         if underruns or dropped:
             parts.append(f"audio u/d {underruns}/{dropped}")
+
+        if self._device and not self._device.is_simulated:
+            current_stats = self._device.stream_stats
+            stream_delta = StreamStats.delta(self._stream_stats_snapshot, current_stats)
+            self._stream_stats_snapshot = current_stats
+            if stream_delta.samples_requested:
+                parts.append(
+                    f"iq drop {stream_delta.drop_rate * 100:.1f}%"
+                    f" ov {stream_delta.overflows} to {stream_delta.timeouts}"
+                )
 
         if len(parts) > 1:
             self._log(" | ".join(parts))
@@ -1659,6 +1767,7 @@ class XyzSDRApp(App):
         except Exception:
             pass
         self._log("RX iniciado")
+        self._stream_stats_snapshot = StreamStats()
         self._invalidate_band_cache()
         self._fm_demod_state.reset()
         self._fm_agc.reset()
@@ -2159,6 +2268,10 @@ class XyzSDRApp(App):
                     f" {self.demod_mode.upper()}"
                 )
 
+        elif event.select.id == "sel_band":
+            if event.value:
+                self._apply_band_profile(str(event.value))
+
     def on_passband_preview(self, message: PassbandPreview) -> None:
         self._passband_preview_width = message.width_hz
         now = time.monotonic()
@@ -2261,6 +2374,13 @@ class XyzSDRApp(App):
 
     def _update_status(self) -> None:
         """Actualiza la barra de estado con los valores actuales."""
+        stream_drop_rate = 0.0
+        stream_overflows = 0
+        if self._rx_active and self._device and not self._device.is_simulated:
+            stats = self._device.stream_stats
+            stream_drop_rate = stats.drop_rate
+            stream_overflows = stats.overflows
+
         try:
             device_str = "SIM" if (self._device and self._device.is_simulated) else self.driver
             self.query_one("#status", StatusBar).update_status(
@@ -2277,6 +2397,8 @@ class XyzSDRApp(App):
                 squelch_enabled=self.squelch_enabled,
                 squelch_open=self._squelch_open,
                 recording=self._recording,
+                stream_drop_rate=stream_drop_rate,
+                stream_overflows=stream_overflows,
             )
         except Exception:
             pass

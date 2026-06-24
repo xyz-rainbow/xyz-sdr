@@ -87,6 +87,8 @@ Expect at least one entry with `driver=sdrplay` (not only `simulated`).
 .\scripts\run.ps1 --sim                # optional, no hardware
 ```
 
+**Stream health:** with RX active, the status bar shows `DROP` when Soapy overflows or IQ reads are incomplete. With `--debug`, the log panel adds `iq drop X% ov N to M` (drop rate, overflows, timeouts over ~3 s).
+
 ### Prefer `run.ps1` over raw `python main.py`
 
 Commit **`e9da33e`** fixed venv re-exec so `main.py` and CLI flags (`--debug`, etc.) survive relaunch. Older sessions showed `unknown option --debug` or an interactive REPL when invoking `python main.py` outside `.venv`.

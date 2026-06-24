@@ -13,6 +13,7 @@ from typing import Any, Optional
 import numpy as np
 
 from core.soapy_runtime import bootstrap_soapy, get_soapy_module
+from core.stream_stats import StreamStats
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,16 @@ class SDRDevice:
         self.sample_rate = 2_048_000.0
         self.gain = 40.0
         self.auto_gain = False
+        self._stream_stats = StreamStats()
+
+    def reset_stream_stats(self) -> None:
+        with self._lock:
+            self._stream_stats = StreamStats()
+
+    @property
+    def stream_stats(self) -> StreamStats:
+        with self._lock:
+            return self._stream_stats.copy()
 
     def open(self) -> bool:
         if self.driver in ("simulated", "sim"):
@@ -348,6 +359,7 @@ class SDRDevice:
         if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
         with self._lock:
+            self._stream_stats = StreamStats()
             try:
                 self._activate_stream()
             except Exception as exc:
@@ -364,6 +376,7 @@ class SDRDevice:
         if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
         logger.warning("Reiniciando stream RX tras error Soapy")
+        self._stream_stats.recoveries += 1
         if self._stream:
             try:
                 self._sdr.deactivateStream(self._stream)
@@ -393,11 +406,21 @@ class SDRDevice:
 
     def read_samples(self, num_samples: int = 256 * 1024) -> np.ndarray:
         if isinstance(self._sdr, SimulatedSDR):
-            return self._sdr.read_samples(num_samples)
+            with self._lock:
+                self._stream_stats.read_calls += 1
+                self._stream_stats.samples_requested += num_samples
+            out = self._sdr.read_samples(num_samples)
+            with self._lock:
+                self._stream_stats.samples_received += len(out)
+            return out
 
         if not self._stream:
             logger.warning("read_samples llamado sin stream RX activo")
             return np.zeros(num_samples, dtype=np.complex64)
+
+        with self._lock:
+            self._stream_stats.read_calls += 1
+            self._stream_stats.samples_requested += num_samples
 
         buff = np.zeros(num_samples, dtype=np.complex64)
         read = 0
@@ -415,12 +438,20 @@ class SDRDevice:
             if sr.ret > 0:
                 buff[read:read + sr.ret] = tmp_view[:sr.ret]
                 read += sr.ret
+                with self._lock:
+                    self._stream_stats.samples_received += sr.ret
                 continue
             if sr.ret == 0:
+                with self._lock:
+                    self._stream_stats.timeouts += 1
                 logger.debug("readStream timeout sin muestras (%d/%d)", read, num_samples)
                 break
             logger.warning("readStream error: %s", sr.ret)
+            with self._lock:
+                self._stream_stats.read_errors += 1
             if sr.ret == SOAPY_SDR_OVERFLOW and overflow_retries < 2:
+                with self._lock:
+                    self._stream_stats.overflows += 1
                 overflow_retries += 1
                 try:
                     with self._lock:
