@@ -11,7 +11,10 @@
 * **Visualización Espectral Alineada en 3 Capas**:
   * **`FrequencyTimeline`**: Regla horizontal con ticks adaptativos automáticos y cursor de sintonización. Ofrece un readout digital dinámico que muestra la frecuencia exacta sintonizada (en rojo) o la frecuencia bajo el ratón en hover (en celeste).
   * **`SpectrumGraph`**: Gráfico FFT interactivo en tiempo real con barras de graduación de altura basadas en decibelios.
-  * **`WaterfallTimeline`**: Espectrograma en cascada con alineación de frecuencia física e histórica, permitiendo scroll y zoom sin deformar ni perder la trayectoria de las señales.
+  * **`WaterfallTimeline`**: Espectrograma en cascada con alineación de frecuencia física e histórica, auto-level por columna y paleta térmica compartida con el espectro.
+* **Auto-level por frecuencia** (`display_level_mode = per_column`):
+  * Suelo y techo dinámicos por columna para compensar pendientes de ruido en bandas anchas.
+  * Modo `global` alternativo (un solo min/max). Ver [docs/display.md](docs/display.md).
 * **Control de Bandwidth IQ (Sample Rate)**:
   * Selector **BANDWIDTH** bajo la frecuencia (250 kHz – 8 MHz según hardware).
   * Al cambiar: pausa RX, reconfigura el SDR, adapta el zoom sin mover la sintonía y guarda en `config/defaults.toml`.
@@ -20,9 +23,9 @@
   * **Navegación por Teclado**: Scroll de sintonía con `← / →`, ajuste de pasos (`1k … 5M`) con `↑ / ↓`, zoom con `Ctrl + ← / →` (o `+ / -`), centrado con `Space`.
   * **Control total con Ratón**: Clic en la **timeline** o el **espectro** fija el centro de la banda audible; **arrastra** simétricamente para definir el ancho (overlay verde + métrica `PASS` en la barra de estado). Clic corto sin arrastre = sintonía + ancho por defecto del modo. Rueda del ratón en timeline/espectro/cascada para desplazarte; `Ctrl + Scroll` para zoom.
 * **Motor Visual Cyberpunk & Neon de Alta Resolución**:
-  * **Gradiente de Intensidad de 32 pasos**: Representación visual de señales débiles que se desvanecen gradualmente a negro absoluto (simulando opacidad por decibelios), transitando por cian, verde, amarillo, naranja, rojo vivo y blanco puro para señales en saturación máxima.
-  * **Señalización de Rango Inactivo**: Las zonas fuera de la tasa de muestreo del hardware o sin datos históricos se renderizan con un elegante patrón de sombreado (`░`) para denotar inactividad de forma intuitiva.
-  * **Barra de Velocidad Vertical Integrada**: Barra lateral derecha ultradelgada para cambiar los FPS de la cascada (`1, 2, 3, 5, 10, 25, 50`) con realce visual verde esmeralda para la opción activa.
+  * **Gradiente térmico compartido** (`THERMAL_GRADIENT`, 32 paradas): espectro y cascada usan la misma escala de color.
+  * **Señalización de Rango Inactivo**: Zonas sin datos históricos con patrón `░`.
+  * **Barra de velocidad horizontal**: Fila entre espectro y cascada con FPS `1, 2, 3, 5, 10, 25, 50`.
 
 ---
 
@@ -36,24 +39,38 @@ xyz-sdr/
 ├── config/
 │   └── defaults.toml           # Configuración inicial por defecto (FFT, sample rate, etc.)
 ├── core/
-│   ├── device.py               # Abstracción e interfaz del hardware SDR (SoapySDR)
-│   ├── config_store.py         # Persistencia parcial de ajustes en TOML
-│   ├── dsp.py                  # Procesamiento de señal: FFT, filtros, demodulación (FM/AM/SSB)
-│   ├── audio_output.py         # Salida de audio demodulado (callback + cola)
-│   └── scanner.py              # Escáner espectral automatizado
+│   ├── device.py               # Abstracción hardware SDR (SoapySDR)
+│   ├── config_store.py         # Persistencia TOML
+│   ├── band_buffer.py          # BandFrame, viewport slice, mailbox
+│   ├── display_levels.py       # ColumnLevelTracker (auto-level por frecuencia)
+│   ├── dsp.py                  # FFT, filtros, demodulación
+│   ├── dsp_profiles.py         # Perfiles DSP por preset IQ
+│   ├── audio_output.py         # Salida audio demodulado
+│   ├── passband.py             # Límites PASS
+│   └── scanner.py              # Escáner espectral (futuro)
 ├── tui/
-│   ├── app.py                  # Orquestador del layout y bindings de la TUI Textual
+│   ├── app.py
 │   └── widgets/
-│       ├── __init__.py         # Exports de componentes
-│       ├── frequency_timeline.py # Regla y cursor de frecuencia
-│       ├── spectrum_graph.py   # Gráfico FFT interactivo
-│       └── waterfall_timeline.py # Cascada (waterfall) re-alineada por frecuencia
+│       ├── display_palette.py  # Gradiente térmico compartido
+│       ├── frequency_timeline.py
+│       ├── spectrum_graph.py
+│       ├── waterfall_timeline.py
+│       └── settings_menu.py
 ├── docs/                       # Documentación detallada de desarrollo
+│   ├── README.md               # Índice de documentación
+│   ├── installer.md            # Wizard Express, drivers, Python 3.9
+│   ├── hardware.md             # SDR real vs sim, QA, troubleshooting
 │   ├── architecture.md         # Flujo de datos y arquitectura interna
-│   ├── bandwidth.md            # Selector de bandwidth IQ, zoom dinámico, persistencia
-│   ├── widgets.md              # Documentación técnica de los componentes visuales
-│   └── customization.md        # Guía para personalizar estilos, colores y lógica
-└── roadmap.md                  # Plan de ruta y fases del proyecto
+│   ├── dsp.md                  # Pipeline IQ→audio, demod, perfiles
+│   ├── audio.md                # Audio demod + efectos UI
+│   ├── bandwidth.md            # Presets IQ, zoom, perfiles DSP
+│   ├── passband.md             # Banda audible PASS
+│   ├── audio-presets-research.md # Matriz presets, validación
+│   ├── display.md              # Paleta, auto-level, barra FPS
+│   ├── widgets.md              # Componentes visuales
+│   ├── configuration.md        # Referencia config/defaults.toml
+│   ├── customization.md        # Temas, tuning DSP
+│   └── roadmap.md              # Plan de ruta y fases
 ```
 
 ---
@@ -133,14 +150,23 @@ xyz-sdr/
 
 ## 📖 Documentación Completa
 
-Para profundizar en el diseño e implementación del proyecto, consulta los documentos de desarrollo en el directorio `/docs`:
-- [Hardware real vs simulación](docs/hardware.md)
-- [Arquitectura Interna](docs/architecture.md)
-- [Audio (demod + UI effects)](docs/audio.md)
-- [Bandwidth IQ (Sample Rate)](docs/bandwidth.md)
-- [Banda audible (PASS)](docs/passband.md)
-- [Funcionamiento de Widgets](docs/widgets.md)
-- [Guía de Modificación y Estilos](docs/customization.md)
+Índice maestro: **[docs/README.md](docs/README.md)**
+
+| Tema | Documento |
+|------|-----------|
+| Instalador Windows | [docs/installer.md](docs/installer.md) |
+| Hardware real vs simulación | [docs/hardware.md](docs/hardware.md) |
+| Arquitectura interna | [docs/architecture.md](docs/architecture.md) |
+| DSP (IQ → audio) | [docs/dsp.md](docs/dsp.md) |
+| Audio demod + efectos UI | [docs/audio.md](docs/audio.md) |
+| Bandwidth IQ (presets) | [docs/bandwidth.md](docs/bandwidth.md) |
+| Banda audible (PASS) | [docs/passband.md](docs/passband.md) |
+| Presets — calidad y QA | [docs/audio-presets-research.md](docs/audio-presets-research.md) |
+| Visualización (paleta, niveles) | [docs/display.md](docs/display.md) |
+| Widgets (timeline, FFT, cascada) | [docs/widgets.md](docs/widgets.md) |
+| Configuración TOML | [docs/configuration.md](docs/configuration.md) |
+| Personalización y temas | [docs/customization.md](docs/customization.md) |
+| Roadmap | [docs/roadmap.md](docs/roadmap.md) |
 
 ### Bandwidth IQ — resumen rápido
 

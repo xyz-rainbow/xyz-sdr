@@ -1,76 +1,125 @@
-# Audio presets research — xyz-sdr
+# Audio presets — implementation reference
 
-Baseline and design notes for IQ **BANDWIDTH** presets (250 kHz – 8 MHz) on SDRplay RSP1 + xyz-sdr DSP.
+Per-preset DSP targets, validation, and operational guidance for **BANDWIDTH** presets (250 kHz – 8 MHz).
+
+Index: [README.md](README.md) | [dsp.md](dsp.md) | [bandwidth.md](bandwidth.md) | [hardware.md](hardware.md)
 
 ---
 
-## Architecture (target)
+## Design goal
+
+All six IQ presets must deliver **equivalent FM audio quality** when PASS and de-emphasis are equal — higher presets widen spectrum view without injecting wideband noise into the demod chain.
+
+---
+
+## Target signal chain
 
 ```
 IQ @ SR_capture
   → profile_for_sample_rate()
-  → resample_iq_for_demod → SR_demod (per preset)
-  → LPF @ PASS/2 (adaptive FIR)
-  → demod (FM/AM/SSB) + FmDemodState
-  → resample_audio_to_rate → exactly 48_000 Hz
+  → resample_iq_for_demod → SR_demod (capped per preset)
+  → shift_to_baseband + LPF @ PASS/2
+  → demod + FmDemodState
+  → resample_audio_to_rate → 48_000 Hz exact
   → de-emphasis (IIR) / AGC / squelch
   → AudioOutputQueue
 ```
 
-Spectrum path uses the full IQ chunk; audio path uses the **tail** (`audio_samples = samples[-audio_iq_samples:]`) to reduce latency on low presets.
+---
+
+## Preset profiles (implemented)
+
+Source: `core/dsp_profiles.py`
+
+| Preset | SR_demod max | min_rate | oversample | chunk_scale | fft_avg cap | audio_chunk_max |
+|--------|--------------|----------|------------|-------------|-------------|-----------------|
+| 250 kHz | 160 kHz | 80 kHz | 2.5 | 0.25 | 8 | 8192 |
+| 500 kHz | 250 kHz | 100 kHz | 2.5 | 0.5 | 8 | 16384 |
+| 1 MHz | 560 kHz | 250 kHz | 2.8 | 0.75 | 8 | 32768 |
+| 2.048 MHz | 560 kHz | 250 kHz | 2.8 | 1.0 | — | 65536 |
+| 4 MHz | 768 kHz | 250 kHz | 2.8 | 1.0 | 4 | 65536 |
+| 8 MHz | 768 kHz | 250 kHz | 2.8 | 1.0 | 4 | 65536 |
 
 ---
 
-## Preset profiles
+## Recommended use
 
-Implemented in [`core/dsp_profiles.py`](../core/dsp_profiles.py).
-
-| Preset | SR_demod target | min_rate | chunk_scale | fft_avg cap | Recommended modes |
-|--------|-----------------|----------|-------------|-------------|-------------------|
-| 250 kHz | ≤160 kHz | 80 kHz | 0.25 | 8 | nbfm, am, usb, lsb |
-| 500 kHz | ≤250 kHz | 100 kHz | 0.5 | 8 | am, nbfm, usb, lsb |
-| 1 MHz | ~560 kHz | 250 kHz | 0.75 | 8 | wbfm, nbfm, am |
-| 2.048 MHz | ~560 kHz | 250 kHz | 1.0 | — | wbfm (reference) |
-| 4 MHz | ≤768 kHz | 250 kHz | 1.0 | 4 | wbfm, spectrum |
-| 8 MHz | ≤768 kHz | 250 kHz | 1.0 | 4 | wbfm, max span |
-
-**WBFM broadcast:** use **1–2 MHz** IQ for best CPU/audio balance. Higher presets improve **spectrum view** only; demod SR is capped at 768 kHz.
+| Preset | Primary use | FM broadcast |
+|--------|-------------|--------------|
+| 250 kHz | NBFM, AM narrow, SSB | Not recommended (PASS max = Nyquist) |
+| 500 kHz | AM, voice | Marginal WBFM |
+| **1 MHz** | **Daily WBFM** | Recommended |
+| 2.048 MHz | WBFM reference / design default | Excellent |
+| 4 / 8 MHz | Wide spectrum scouting | Audio ≈ 1–2 MHz (internal decimation) |
 
 ---
 
 ## External references
 
-| Source | Typical WBFM IQ rate | Notes |
-|--------|---------------------|-------|
-| SDR++ / SDR# | 1.024–2.4 MHz | FM broadcast demod on decimated IQ |
-| GNU Radio `wbfm_rcv` | `quadrature_rate` >> audio_rate | Rational resampler to 48 kHz |
-| ITU-R FM | 200 kHz channel | De-emphasis 50 µs (EU) / 75 µs (US) |
-| SDRplay RSP1 | Soapy `getSampleRateRange()` | Presets filtered in `SDRDevice.get_supported_sample_rates()` |
+| Source | WBFM IQ rate | Notes |
+|--------|--------------|-------|
+| SDR++ / SDR# | 1.024–2.4 MHz | FM demod on decimated stream |
+| GNU Radio `wbfm_rcv` | `quadrature_rate` >> audio | Rational resampler |
+| ITU-R FM | 200 kHz channel | De-emphasis 50/75 µs |
+| SDRplay RSP1 | Soapy range | Filtered in `get_supported_sample_rates()` |
 
 ---
 
-## Debug metrics (`--debug`)
+## Debug instrumentation
 
-Log panel reports every ~3 s (with RX active):
+Launch with `--debug`. Log fields (see [audio.md](audio.md)):
 
-- RX iter/s, proc ms, p95
-- UI fps, frame latency
-- IQ chunk samples + duration ms
-- Demod ms, audio samples/iter
-- Audio underruns / dropped chunks
+- `iq N smp`, duration ms
+- `demod Xms`
+- `audio N smp/iter`
+- `audio u/d` — underruns / dropped chunks
+
+Healthy setup: `u/d` near `0/0` at 1–2 MHz WBFM.
 
 ---
 
-## Validation
+## Automated validation
 
-Automated: `resources/test/test_bandwidth_presets.py` — parametrized over all `BANDWIDTH_PRESETS`.
+```powershell
+python -m pytest resources/test/test_bandwidth_presets.py -q
+python -m pytest resources/test -q
+```
 
-Manual (hardware): see [hardware.md](hardware.md) P0 FM checklist @ 100.6 MHz per preset.
+Golden test: WBFM RMS at 2.048 MHz vs 8 MHz within ~9 dB on synthetic FM (regression guard).
+
+---
+
+## Manual QA matrix
+
+| BANDWIDTH | Mode | PASS | Pass criteria |
+|-----------|------|------|---------------|
+| 250 kHz | nbfm | 12.5 kHz | Low latency, clean narrow audio |
+| 500 kHz | am | 10 kHz | Intelligible voice |
+| 1 MHz | wbfm | 200 kHz | Reference FM quality |
+| 2.048 MHz | wbfm | 200 kHz | Same as 1 MHz |
+| 4 / 8 MHz | wbfm | 200 kHz | Audio matches 1–2 MHz; wider spectrum |
+
+Full hardware checklist: [hardware.md](hardware.md) (P0 @ 100.6 MHz).
 
 ---
 
 ## Known limits
 
-- Modos UI `cw`, `dsb`, `raw`, `auto` — sin ruta audio.
-- 250 kHz + WBFM: PASS max 250 kHz = Nyquist limit; UI warns on bandwidth change.
-- Stereo WBFM / RDS — not implemented (mono discriminator only).
+- Mono WBFM only (no stereo pilot decode)
+- UI modes `cw`, `dsb`, `raw`, `auto` — no audio path
+- 250 kHz + WBFM — Nyquist constraint on 250 kHz PASS max
+
+---
+
+## Implementation history
+
+| Change | Module |
+|--------|--------|
+| IQ decimation before demod | `resample_iq_for_demod()` |
+| Exact 48 kHz output | `resample_audio_to_rate()` |
+| Preset profiles | `core/dsp_profiles.py` |
+| Spectrum/audio decouple | `compute_audio_chunk_samples()` |
+| FM chunk continuity | `FmDemodState` |
+| SSB PASS support | `demod_ssb()` |
+| Fixed de-emphasis (was no-op) | IIR `fm_deemphasis()` |
+| SDRplay plugin false positive fix | `check_sdrplay_plugin()` |

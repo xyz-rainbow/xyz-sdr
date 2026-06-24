@@ -2,6 +2,8 @@
 
 Esta guía explica cómo modificar la estética, los temas visuales, el comportamiento de sintonía y los algoritmos del software `xyz-sdr`.
 
+Referencia TOML completa: [configuration.md](configuration.md) | Índice: [README.md](README.md)
+
 ---
 
 ## 1. Modificar Estilos y Temas (CSS/TCSS)
@@ -23,35 +25,31 @@ border: double #10b981;
 
 ---
 
-## 2. Personalizar el Gradiente de Colores del Espectrograma
+## 2. Personalizar el Gradiente de Colores (espectro + cascada)
 
-El espectrograma (cascada) renderiza la fuerza de la señal indexando los valores normalizados en la lista `WATERFALL_GRADIENT` definida en `tui/widgets/waterfall_timeline.py`.
+Espectro y waterfall comparten **`THERMAL_GRADIENT`** en `tui/widgets/display_palette.py`. Ambos widgets normalizan con `normalize_per_column()` y colorean con `gradient_color()` / `cell_background()`.
 
-Puedes cambiar completamente el esquema de colores redefiniendo esta lista. Aquí tienes algunas paletas de ejemplo:
+Ver [display.md](display.md) para auto-level y [configuration.md](configuration.md) para claves `[display]`.
 
-### Paleta Térmica Clásica (Actual)
-Transita de negro absoluto para ruido débil, pasando por azules, cian, verde, amarillo, naranja y rojo/blanco para picos:
+Puedes redefinir la tupla `THERMAL_GRADIENT` (32 paradas recomendadas). Ejemplo — paleta térmica actual:
 ```python
-WATERFALL_GRADIENT = [
+THERMAL_GRADIENT = (
     "#000000", "#01010b", "#020216", "#040422", "#060630",
-    "#080840", "#0a0a52", "#0d0d66", "#10107c", "#111193",
-    "#0d36a8", "#0a5dbd", "#0683d1", "#00aeff", "#00c2db",
-    "#00d6b0", "#00eb82", "#00ff4c", "#5dfc30", "#a3f915",
-    "#e2f600", "#ffff00", "#ffd000", "#ffa000", "#ff6a00",
-    "#ff3700", "#ff0000", "#e6004c", "#cc007c", "#d900b3",
-    "#ff00ff", "#ffffff"
-]
+    # … ver display_palette.py para la lista completa …
+    "#ff00ff", "#ffffff",
+)
 ```
 
 ### Paleta Monocromática (Fósforo Verde / Militar)
-Ideal para emular pantallas de osciloscopio retro:
 ```python
-WATERFALL_GRADIENT = [
+THERMAL_GRADIENT = (
     "#000000", "#001100", "#002200", "#004400", "#006600",
     "#008800", "#00aa00", "#00cc00", "#00ee00", "#33ff33",
-    "#66ff66", "#99ff99", "#cceecc", "#ffffff"
-]
+    "#66ff66", "#99ff99", "#cceecc", "#ffffff",
+)
 ```
+
+> **Nota:** Ya no uses `WATERFALL_GRADIENT` en `waterfall_timeline.py` (obsoleto); un solo gradiente mantiene colores alineados entre espectro y cascada.
 
 ---
 
@@ -179,4 +177,56 @@ El **bandwidth de captura** equivale al `sample_rate` del SDR (`device.sample_ra
 
 ### Atajo
 - Tecla **`B`**: enfoca `#sel_bandwidth` (mismo patrón que `G`/`V` para gain/volumen).
+
+Documentación completa: [bandwidth.md](bandwidth.md), [dsp.md](dsp.md).
+
+---
+
+## 7. Ajuste DSP y calidad de audio
+
+Parámetros en `config/defaults.toml` → sección `[dsp]`. Ver [dsp.md](dsp.md).
+
+### Rendimiento vs calidad espectral
+
+Si hay lag o audio entrecortado en hardware real:
+
+```toml
+[dsp]
+fft_size = 4096          # default 8192
+band_cache_cols = 512    # default 1024
+fft_avg_windows = 4      # default 8
+display_fps = 15         # default 20
+```
+
+### Audio FM
+
+```toml
+[dsp]
+fm_deemphasis_us = 50    # 50 EU / 75 US
+fm_agc_enabled = true
+audio_rate = 48_000
+wbfm_bandwidth = 200_000 # PASS audible WBFM
+```
+
+UI alternativa: **Esc → Audio FM / Noise**.
+
+### Preset IQ recomendado
+
+| Uso | `device.sample_rate` |
+|-----|----------------------|
+| FM broadcast diario | 1_000_000 – 2_048_000 |
+| NBFM / AM estrecho | 250_000 – 500_000 |
+| Exploración espectro | 4_000_000 – 8_000_000 |
+
+Perfiles automáticos: `core/dsp_profiles.py` — [audio-presets-research.md](audio-presets-research.md).
+
+### Perfiles DSP (avanzado)
+
+Para modificar comportamiento por preset, edita `_PRESET_TABLE` en `core/dsp_profiles.py`:
+
+- `iq_demod_max_hz` — techo SR antes de demod
+- `chunk_scale` — tamaño lectura IQ (latencia)
+- `fft_avg_cap` — límite promediado FFT en SR altos
+
+Tras cambios, ejecuta: `python -m pytest resources/test/test_bandwidth_presets.py -q`
 

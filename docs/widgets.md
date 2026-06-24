@@ -2,6 +2,8 @@
 
 Este documento detalla el funcionamiento interno de los tres componentes visuales interactivos de la aplicación.
 
+Index: [README.md](README.md) | PASS: [passband.md](passband.md) | Display: [display.md](display.md) | Viewport: [architecture.md](architecture.md)
+
 ---
 
 ## 1. `FrequencyTimeline` (Regla de Frecuencias)
@@ -33,6 +35,12 @@ Muestra los picos de potencia de la señal en tiempo real mediante barras vertic
 Al renderizar spans muy anchos de frecuencia en una terminal con pocas columnas, múltiples bins de la FFT caen dentro del rango representado por un único carácter. El widget usa agregación **máximo** vía `slice_band_to_viewport` en `core/band_buffer.py`. Con zoom activo, el worker RX escala `fft_size` y `band_cache_cols` (`compute_effective_fft_size` / `compute_effective_band_cols`) para mantener detalle espectral.
 
 Un contorno de pico (`·`) marca la curva de la señal encima del relleno de barras ASCII (`▁▂▃▄▅▆▇█`).
+
+### Niveles por columna
+
+El espectro no calcula sus propios min/max: recibe `floor[]` y `ceiling[]` desde `XyzSDRApp._flush_display_frames()` vía `set_column_levels()`. La normalización usa `normalize_per_column()` de `display_palette.py`.
+
+Detalle del algoritmo y configuración: [display.md](display.md).
 
 ---
 
@@ -101,4 +109,6 @@ La barra de estado muestra **PASS** (ancho audible) separado de **ZOOM** (span v
 Timeline, espectro y cascada comparten:
 * **`on_mouse_scroll_up` / `on_mouse_scroll_down`**:
   * Desplazamiento normal: `ScrollRequest` (cambia frecuencia sintonizada).
-  * `Ctrl + Rueda`: `ZoomRequest` (span visible).
+* **`Shift + Rueda`** en cascada: desplazar historial vertical (filas antiguas).
+
+Documentación ampliada: [display.md](display.md).

@@ -2,6 +2,8 @@
 
 En xyz-sdr, el **bandwidth de captura** es el `sample_rate` del SDR: define cuánto espectro IQ recibe el dispositivo alrededor de la frecuencia central.
 
+Índice: [README.md](README.md) | DSP: [dsp.md](dsp.md) | Perfiles: [audio-presets-research.md](audio-presets-research.md) | Config: [configuration.md](configuration.md)
+
 ---
 
 ## Interfaz de usuario
@@ -30,6 +32,36 @@ Definidos en `core/device.py` → `BANDWIDTH_PRESETS`:
 > **Audio WBFM:** un bandwidth IQ alto mejora el espectro visible pero **no** hace falta para escuchar FM comercial (~200 kHz PASS). El demodulador reduce la tasa IQ antes de filtrar (`resample_iq_for_demod` en `core/dsp.py`). Para la mejor relación calidad/CPU en FM, usa **1–2 MHz**.
 
 SoapySDR filtra los presets según el rango soportado por el hardware. En **modo simulado** están todos disponibles.
+
+---
+
+## Perfiles DSP por preset
+
+Implementados en `core/dsp_profiles.py`. El worker RX selecciona perfil automáticamente.
+
+| Preset | SR demod máx | SR demod mín | chunk_scale | Modos recomendados |
+|--------|--------------|--------------|-------------|-------------------|
+| 250 kHz | 160 kHz | 80 kHz | 0.25 | nbfm, am, usb, lsb |
+| 500 kHz | 250 kHz | 100 kHz | 0.5 | am, nbfm |
+| 1 MHz | 560 kHz | 250 kHz | 0.75 | **wbfm**, nbfm |
+| 2.048 MHz | 560 kHz | 250 kHz | 1.0 | wbfm (referencia) |
+| 4 MHz | 768 kHz | 250 kHz | 1.0 | wbfm, espectro |
+| 8 MHz | 768 kHz | 250 kHz | 1.0 | wbfm, máximo span |
+
+Documentación completa: [dsp.md](dsp.md), [audio-presets-research.md](audio-presets-research.md).
+
+---
+
+## Desacople espectro / audio
+
+Un solo `read_samples(N)` alimenta ambas rutas:
+
+| Ruta | Muestras IQ | Propósito |
+|------|-------------|-----------|
+| Espectro / cascada | Chunk completo `N` | FFT, SNR, máxima resolución |
+| Audio demod | Cola `samples[-audio_iq_samples:]` | Menor latencia en presets bajos |
+
+`compute_audio_chunk_samples()` limita la cola según preset (p. ej. 8k @ 250 kHz vs 65k @ 8 MHz).
 
 ---
 
@@ -111,7 +143,7 @@ Al arrancar, si `sample_rate` del TOML difiere del default del dispositivo y es 
 | `tui/app.py` | `change_bandwidth()`, zoom dinámico, worker RX |
 | `tui/widgets/settings_menu.py` | Cambio de driver con rollback |
 
-Ver también [audio-presets-research.md](audio-presets-research.md) para la matriz completa por preset.
+Ver también [audio-presets-research.md](audio-presets-research.md) para la matriz completa por preset y [configuration.md](configuration.md) para claves TOML.
 
 ---
 

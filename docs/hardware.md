@@ -2,6 +2,8 @@
 
 This guide covers running xyz-sdr with a real SDR (without `--sim`): environment readiness, launch paths, verification, and troubleshooting on Windows with SDRplay.
 
+**Install first:** [installer.md](installer.md) | **Index:** [README.md](README.md)
+
 ---
 
 ## Simulation vs real hardware
@@ -107,7 +109,7 @@ After launch **without** `--sim`:
 2. **Log panel** — `[OK] Dispositivo abierto: driver=sdrplay` (or your driver).
 3. **`S` — INICIAR RX** — spectrum shows **live** signals (not the sim’s fixed 98 / 100.6 / 104.3 MHz pattern).
 4. **Zoom** — `Ctrl+←/→` or `+/-`; narrow spans increase FFT detail (adaptive sizing; see [widgets.md](widgets.md)).
-5. **Waterfall** — new rows appear at the **bottom**; empty area above until history fills.
+5. **Waterfall** — new rows appear at the **top**; empty rows below until history fills the widget height.
 6. **Audio** — adjust volume with `V`; demod follows mode (`M`). PASS band via mouse drag (see [passband.md](passband.md)).
 7. **Optional** — `.\scripts\run.ps1 --debug` for FPS / RX latency in the log.
 
@@ -185,8 +187,14 @@ Only change defaults when you observe problems — no tuning is required for a h
 
 ## Related docs
 
-- [architecture.md](architecture.md) — threading, `BandFrameMailbox`, re-exec
-- [bandwidth.md](bandwidth.md) — IQ sample rate and hardware presets
-- [passband.md](passband.md) — audible passband (PASS) selection
-- [widgets.md](widgets.md) — spectrum, waterfall, adaptive FFT
-- [audio.md](audio.md) — demodulated audio vs UI sound effects
+- [README.md](README.md) — documentation index
+- [architecture.md](architecture.md) — threading, mailbox, RX worker
+- [installer.md](installer.md) — Express wizard
+- [bandwidth.md](bandwidth.md) — IQ sample rate and presets
+- [passband.md](passband.md) — audible passband (PASS)
+- [dsp.md](dsp.md) — demod pipeline
+- [audio.md](audio.md) — demodulated audio vs UI effects
+- [audio-presets-research.md](audio-presets-research.md) — preset matrix
+- [display.md](display.md) — per-column auto-level, thermal palette, speed bar
+- [configuration.md](configuration.md) — full TOML reference
+- [customization.md](customization.md) — TOML tuning

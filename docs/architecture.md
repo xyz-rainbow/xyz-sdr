@@ -1,6 +1,8 @@
 # System architecture — xyz-sdr
 
-This document describes the internal architecture, data flow, and concurrency model of the xyz-sdr application.
+Internal architecture, data flow, and concurrency model.
+
+Index: [README.md](README.md) | Related: [dsp.md](dsp.md), [display.md](display.md), [hardware.md](hardware.md), [installer.md](installer.md)
 
 ---
 
@@ -11,57 +13,75 @@ The design separates hardware (SDR), digital signal processing (DSP), and the te
 ```mermaid
 sequenceDiagram
     participant HW as Hardware SDR
-    participant Worker as RX Thread (Background Worker)
-    participant DSP as DSP Engine (dsp.py)
+    participant Worker as RX Thread
+    participant DSP as DSP Engine
     participant Mailbox as BandFrameMailbox
-    participant App as TUI App (Main Thread)
-    participant UI as Spectrum / Waterfall
+    participant Audio as AudioOutputQueue
+    participant App as TUI Main Thread
+    participant UI as Spectrum Waterfall
 
-    HW->>Worker: IQ samples (read_samples / readStream)
+    HW->>Worker: IQ samples read_samples
     loop RX loop
-        Worker->>DSP: IQ chunk
-        DSP->>Worker: PSD + SNR
-        Worker->>Mailbox: publish(latest frame) — coalesced
-        Note over App: set_interval(display_fps)
-        App->>Mailbox: consume_if_new()
-        Mailbox->>App: newest BandFrame only
-        App->>UI: set_band_frame / add_band_row
+        Worker->>DSP: full chunk FFT PSD
+        Worker->>Mailbox: publish BandFrame
+        Worker->>DSP: tail chunk demodulate
+        Worker->>Audio: enqueue non-blocking
+        Note over App: set_interval display_fps
+        App->>Mailbox: consume_if_new
+        Mailbox->>App: newest frame
+        App->>UI: set_column_levels set_band_frame add_band_row
+        Audio->>App: sounddevice callback
     end
 ```
 
-The RX worker **does not** call `call_from_thread()` for spectrum or waterfall updates. It publishes into a **`BandFrameMailbox`** (`core/band_buffer.py`); the main thread drains the latest frame on a timer (`_flush_display_frames` in `tui/app.py`).
+The RX worker **does not** call `call_from_thread()` for spectrum or waterfall. It publishes into **`BandFrameMailbox`** (`core/band_buffer.py`); the main thread drains the latest frame on a timer (`_flush_display_frames`).
+
+### Display level pipeline
+
+On each display tick, `_flush_display_frames()`:
+
+1. `slice_band_to_viewport()` → `cols[width]` (dB).
+2. `waterfall.get_level_history()` for per-column statistics.
+3. `_compute_column_levels()` → `floor[]`, `ceiling[]` (`ColumnLevelTracker` or global `compute_auto_levels`).
+4. Same levels applied to spectrum and waterfall via `set_column_levels()`.
+
+Details: [display.md](display.md).
 
 ---
 
 ## Concurrency model
 
-Two execution contexts keep the TUI responsive:
-
-1. **Main thread (Textual event loop)**
-   - Renders widgets and handles keyboard/mouse.
-   - Owns viewport state (`viewport_center`, `visible_span`, etc.).
-   - Periodically calls `_flush_display_frames()` at `display_fps` from config.
-2. **Background RX worker** (`@work(thread=True)`, `_rx_worker`)
-   - Blocking reads via `SDRDevice.read_samples()`.
-   - FFT / PSD averaging (`average_psd`), SNR estimation, band projection (`make_band_frame`).
-   - Publishes to `BandFrameMailbox` (drops intermediate frames if the UI is slow).
-   - Demodulates audio and **non-blocking** enqueues to `AudioOutputQueue` (see [audio.md](audio.md)).
+| Thread | Responsibilities |
+|--------|------------------|
+| **Main (Textual)** | Widgets, keyboard/mouse, viewport state, display timer |
+| **RX worker** | `read_samples`, FFT, demod, audio enqueue, recorder IQ |
 
 ### BandFrameMailbox coalescing
 
-```python
-# Worker (RX thread)
-frame = make_band_frame(psd, center_freq, sample_rate, band_cols=band_cols)
-self._band_mailbox.publish(frame, snr)
+If the worker outruns `display_fps`, only the **newest** frame is shown — no cross-thread widget updates from the worker.
 
-# Main thread (timer callback)
-frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
-if frame is not None:
-    spectrum.set_band_frame(frame)
-    waterfall.add_band_row(frame)
-```
+### Audio path isolation
 
-If the worker runs faster than `display_fps`, only the **most recent** frame is applied — avoiding Textual cross-thread calls and reducing UI backlog.
+Demodulated audio uses `AudioOutputQueue` (`core/audio_output.py`):
+
+- Bounded queue (~8 chunks)
+- `sounddevice` callback on separate thread
+- Drops oldest chunk on overflow; tracks underruns for `--debug`
+
+---
+
+## RX worker internals
+
+Per iteration (`tui/app.py` → `_rx_worker`):
+
+1. Resolve `profile = profile_for_sample_rate(sample_rate)`
+2. Compute `fft_size`, `band_cols`, `num_samples`, `audio_iq_samples`
+3. `read_samples(num_samples)`
+4. **Display:** `average_psd` → `make_band_frame` → mailbox
+5. **Audio:** `demodulate(samples[-audio_iq_samples:], profile=profile, fm_state=...)`
+6. AGC → squelch → `enqueue`
+
+State reset on RX start: `FmDemodState`, `AudioAgc`.
 
 ---
 
@@ -69,60 +89,85 @@ If the worker runs faster than `display_fps`, only the **most recent** frame is 
 
 ### `try_reexec_for_soapy()` (`core/python_runtime.py`)
 
-On entry, `main.py` calls `try_reexec_for_soapy()` unless `XYZ_SDR_REEXEC_DONE` is set. When the current interpreter is not the project `.venv` or a Soapy-compatible Python, the process **re-launches** itself with the correct executable, preserving **`main.py` and all CLI arguments** (fixed in commit `e9da33e`).
+Re-launches process in project `.venv` when current Python lacks Soapy bindings. Preserves `main.py` and all CLI args.
 
-Always prefer:
-
-```powershell
-.\scripts\run.ps1 [--flags]
-```
-
-over bare `python main.py` from an arbitrary shell.
+Prefer: `.\scripts\run.ps1 [--flags]`
 
 ### `--sim` gate (`main.py`)
 
 | Flag | Behavior |
 |------|----------|
-| `--sim` | `driver = "simulated"`; no hardware check |
-| *(none)* | `bootstrap_soapy()`; exit 1 if import fails or `has_devices` is false |
+| `--sim` | `driver = simulated` |
+| *(none)* | `bootstrap_soapy()`; exit 1 if no devices |
 
-The installer wizard may add `--sim` automatically when launching without hardware; **`scripts/run.ps1` does not.**
-
-Readiness properties live in `setup/env_state.py`: `env_ready` (sim-capable) vs `hardware_ready` (real RX). See [hardware.md](hardware.md).
+Readiness: `setup/env_state.py` — [hardware.md](hardware.md), [installer.md](installer.md).
 
 ---
 
-## Centralized viewport state
-
-`XyzSDRApp` holds shared tuning and zoom state:
+## Viewport state
 
 | Variable | Purpose |
 |----------|---------|
-| `tuned_frequency` | Absolute demod frequency (Hz) |
-| `viewport_center` | Screen center frequency (Hz) |
-| `visible_span` | Visible bandwidth / zoom (≤ `sample_rate`) |
+| `tuned_frequency` | RF center / demod reference (Hz) |
+| `passband_center_hz` | Audible PASS center (Hz) |
+| `passband_width_hz` | Audible PASS width (Hz) |
+| `viewport_center` | Screen center (Hz) |
+| `visible_span` | Zoom span (≤ `sample_rate`) |
 | `sample_rate` | IQ capture bandwidth (Hz) |
-| `scroll_step` | Hz per `←` / `→` key press |
 
-`_sync_viewport()` propagates these values to `FrequencyTimeline`, `SpectrumGraph`, and `WaterfallTimeline` so all three layers stay aligned.
+`_sync_viewport()` keeps timeline, spectrum, and waterfall aligned.
 
 ---
 
 ## IQ bandwidth changes
 
-See [bandwidth.md](bandwidth.md). Summary of `change_bandwidth()`:
+See [bandwidth.md](bandwidth.md). `change_bandwidth()`:
 
-1. Validate rate (`SDRDevice.is_sample_rate_supported`).
-2. Stop RX and wait for the worker (`_rx_stop_event`).
-3. Apply `set_sample_rate()` on hardware.
-4. Rebuild zoom levels (`build_visible_spans`) without moving tuned frequency.
-5. Persist via `config_store.patch_device_section`.
-6. Resume RX if it was active.
-
-Zoom levels are derived from the active `sample_rate`, not fixed presets.
+1. Validate rate
+2. Stop RX, wait for worker
+3. `set_sample_rate()`
+4. Rebuild zoom spans (tuned freq unchanged)
+5. Persist TOML, resume RX
+6. Log preset hints (WBFM @ 250 kHz, recommended modes)
 
 ---
 
-## Adaptive DSP at zoom
+## DSP integration
 
-`compute_effective_fft_size()` and `compute_effective_band_cols()` (`core/dsp.py`) scale FFT size and band cache columns when the visible span narrows. This applies equally in simulation and on hardware; real devices add USB/CPU load at high zoom. Tune `config/defaults.toml` if needed ([hardware.md](hardware.md)).
+| Module | Role |
+|--------|------|
+| `core/dsp.py` | FFT, demod, filters, resamplers, squelch |
+| `core/dsp_profiles.py` | Per-preset SR_demod, chunk scale |
+| `core/passband.py` | PASS limits and UI mapping |
+
+Full reference: [dsp.md](dsp.md).
+
+---
+
+## Adaptive display DSP
+
+`compute_effective_fft_size()` and `compute_effective_band_cols()` scale with zoom. At narrow spans, FFT grows up to 65k — tune `config/defaults.toml` if CPU/USB limits hit on real hardware.
+
+Per-column display AGC, thermal palette, speed bar: [display.md](display.md). TOML keys: [configuration.md](configuration.md).
+
+---
+
+## Settings and persistence
+
+| Area | Storage | API |
+|------|---------|-----|
+| Device (driver, SR, freq, gain) | TOML `[device]` | `patch_device_section` |
+| DSP (PASS, squelch, FM) | TOML `[dsp]` | `patch_dsp_section` |
+| Display (auto-level, waterfall) | TOML `[display]` | `patch_display_section` |
+
+Display algorithm: [display.md](display.md). Full key list: [configuration.md](configuration.md).
+
+Settings UI: Esc → modal (`tui/widgets/settings_menu.py`).
+
+---
+
+## Installer architecture
+
+Express wizard modules under `setup/` — see [installer.md](installer.md).
+
+Environment probe shared between installer and `check_env.py`.
