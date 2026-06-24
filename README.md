@@ -17,6 +17,10 @@
 
 ---
 
+![Demo de xyz-sdr](https://github.com/user-attachments/assets/XXXXXXX.mp4)
+
+---
+
 ## Instalación y ejecución rápida
 
 ### 1. Entorno (primera vez)
