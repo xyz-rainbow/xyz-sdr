@@ -34,7 +34,8 @@ Barra de estado: métrica **PASS** junto a ZOOM y BW.
 Definidos en `core/passband.py`. Persistencia en `[dsp]` de `config/defaults.toml`:
 
 - `wbfm_bandwidth`, `nbfm_bandwidth`, `am_bandwidth`
-- `fm_deemphasis_us` (75 µs por defecto)
+- `fm_deemphasis_us` (50 µs EU por defecto, 75 µs US)
+- `fm_agc_enabled` (AGC post-demod FM, default `true`)
 
 ---
 

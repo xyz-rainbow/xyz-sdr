@@ -38,7 +38,30 @@ Un contorno de pico (`·`) marca la curva de la señal encima del relleno de bar
 
 ## 3. `WaterfallTimeline` (Espectrograma en Cascada)
 
-Muestra la actividad del espectro a lo largo del tiempo. Las filas nuevas se añaden **abajo**; el historial sube cuando la pantalla está llena (estilo SDR clásico). Cada fila temporal ocupa exactamente una línea de terminal — el zoom horizontal solo afecta el eje de frecuencia, no la densidad temporal.
+Muestra la actividad del espectro a lo largo del tiempo. Las filas nuevas se añaden **arriba**; el historial baja cuando la pantalla está llena. Cada fila temporal ocupa exactamente una línea de terminal — el zoom horizontal solo afecta el eje de frecuencia, no la densidad temporal.
+
+### Auto-level de paleta
+
+Con `waterfall_auto_level = true` en `[display]` del TOML, el rango dB de la paleta se ajusta automáticamente. Hay dos modos (`display_level_mode`):
+
+| Modo | Clave TOML | Comportamiento |
+|------|------------|----------------|
+| **Por columna** (recomendado) | `per_column` | Cada bin de frecuencia tiene su propio suelo/techo estimado con percentiles + EMA asimétrica sobre el frame actual y las últimas filas del waterfall (`column_history_rows`). Compensa pendientes de ruido izquierda→derecha. |
+| **Global** | `global` | Un solo min/max para todo el viewport (percentiles P5–P99 sobre `cols`). |
+
+Parámetros relevantes en `[display]`:
+- `column_floor_pct` / `column_ceiling_pct` — percentiles por columna (por defecto 10 / 99).
+- `column_ema_attack` / `column_ema_release` — suavizado temporal (suelo baja rápido, sube lento).
+- `column_smooth_bins` — media móvil lateral para evitar rayas verticales entre columnas.
+- `waterfall_min_range_db` — rango mínimo por columna; escala ligeramente con el zoom (`visible_span / sample_rate`).
+
+Desactiva el modo auto desde **Ajustes → Waterfall auto** para usar un rango fijo (`-80` / `-20` dB). Los colores interpolan linealmente entre paradas del gradiente `THERMAL_GRADIENT` en `tui/widgets/display_palette.py` — **el mismo gradiente y los mismos niveles dB** se aplican al espectro y al waterfall para que pico y cascada coincidan en color y posición horizontal.
+
+El ancho de columnas espectrales lo fija el espectro (`plot_content_width`); espectro y waterfall comparten el mismo ancho al 100%.
+
+### Barra de velocidad
+
+Entre el espectro y la cascada hay una fila horizontal (`#waterfall_speed_row`) con botones `1 2 3 5 10 25 50` (FPS de la cascada). Ya no se superpone con `dock: right` sobre el waterfall.
 
 ### Alineación Dinámica Histórica
 A diferencia de los waterfalls clásicos que asumen una frecuencia fija, `WaterfallTimeline` admite que el usuario cambie el zoom y el centro del viewport en cualquier momento.

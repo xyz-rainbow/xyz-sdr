@@ -179,8 +179,12 @@ def run_check(*, verbose: bool = True, lang: str = "es") -> int:
     if state.sdrplay_plugin_ok:
         ok("SoapySDRUtil --find=driver=sdrplay OK")
     else:
+        from core.soapy_runtime import check_sdrplay_service_running
+
         warn("Plugin sdrplay no visible vía SoapySDRUtil.")
-        warn("Comprueba PATH (PothosSDR\\bin) y reinicia la terminal.")
+        if state.sdrplay_ok and not check_sdrplay_service_running():
+            warn("Servicio SDRplayAPIService detenido — inícialo o reinícialo.")
+        warn("Comprueba PATH (PothosSDR\\bin), USB y que SDRuno esté cerrado.")
 
     step("Librerías Python")
     if state.python_libs_ok:

@@ -21,42 +21,8 @@ from textual import events
 from core.band_buffer import BandFrame, slice_band_history_to_viewport, slice_band_to_viewport
 from core.passband import freq_to_col
 from core.input_modifiers import is_shift_pressed
+from tui.widgets.display_palette import cell_background, compute_auto_levels, normalize_per_column, plot_content_width
 
-
-WATERFALL_GRADIENT = [
-    "#000000",
-    "#01010b",
-    "#020216",
-    "#040422",
-    "#060630",
-    "#080840",
-    "#0a0a52",
-    "#0d0d66",
-    "#10107c",
-    "#111193",
-    "#0d36a8",
-    "#0a5dbd",
-    "#0683d1",
-    "#00aeff",
-    "#00c2db",
-    "#00d6b0",
-    "#00eb82",
-    "#00ff4c",
-    "#5dfc30",
-    "#a3f915",
-    "#e2f600",
-    "#ffff00",
-    "#ffd000",
-    "#ffa000",
-    "#ff6a00",
-    "#ff3700",
-    "#ff0000",
-    "#e6004c",
-    "#cc007c",
-    "#d900b3",
-    "#ff00ff",
-    "#ffffff",
-]
 
 NO_DATA_COLOR = "#08080f"
 _NORM_BLEND = 0.22  # EMA al actualizar rango dB (evita flash al cambiar zoom)
@@ -89,6 +55,7 @@ class WaterfallTimeline(Widget):
     passband_width_hz: reactive[float] = reactive(200_000.0)
     passband_preview_width_hz: reactive[float | None] = reactive(None)
     waterfall_speed: reactive[int] = reactive(10)
+    waterfall_auto_level: reactive[bool] = reactive(True)
 
     def _effective_passband_width(self) -> float | None:
         preview = self.passband_preview_width_hz
@@ -129,6 +96,13 @@ class WaterfallTimeline(Widget):
         self,
         max_history: int = 100,
         history_buffer_ratio: float = 2 / 3,
+        *,
+        waterfall_auto_level: bool = True,
+        level_low_pct: float = 5.0,
+        level_high_pct: float = 99.0,
+        min_range_db: float = 6.0,
+        manual_norm_min: float = -80.0,
+        manual_norm_max: float = -20.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -140,15 +114,23 @@ class WaterfallTimeline(Widget):
         self._visible_span_hz: float = 2_048_000.0
         self._history_offset: int = 0
         self._last_row_time: float = 0.0
-        self._norm_min: float = -80.0
-        self._norm_max: float = -20.0
+        self._level_low_pct = float(level_low_pct)
+        self._level_high_pct = float(level_high_pct)
+        self._min_range_db = float(min_range_db)
+        self._manual_norm_min = float(manual_norm_min)
+        self._manual_norm_max = float(manual_norm_max)
+        self._column_floors: np.ndarray | None = None
+        self._column_ceilings: np.ndarray | None = None
         self._norm_last_update: float = 0.0
+        self._frequency_columns: int = 0
+        self._levels_from_app: bool = False
         self._slice_cache: np.ndarray | None = None
         self._slice_cache_rows: int = 0
         self._slice_cache_width: int = 0
         self._rich_visual_cache: Text | None = None
         self._rich_visual_cache_key: tuple | None = None
         self._row_text_cache: dict[tuple, Text] = {}
+        self.waterfall_auto_level = waterfall_auto_level
 
     @property
     def allow_vertical_scroll(self) -> bool:
@@ -159,14 +141,57 @@ class WaterfallTimeline(Widget):
     def allow_horizontal_scroll(self) -> bool:
         return False
 
+    def set_frequency_columns(self, width: int) -> None:
+        width = max(int(width), 1)
+        if width == self._frequency_columns:
+            return
+        self._frequency_columns = width
+        self._rebuild_slice_cache()
+        self._invalidate_rich_cache()
+
+    def set_column_levels(self, floors: np.ndarray, ceilings: np.ndarray) -> None:
+        self._column_floors = np.asarray(floors, dtype=np.float64).reshape(-1).copy()
+        self._column_ceilings = np.asarray(ceilings, dtype=np.float64).reshape(-1).copy()
+        self._levels_from_app = True
+        self._invalidate_rich_cache()
+
+    def set_level_range(self, level_min: float, level_max: float) -> None:
+        width = self._column_width()
+        self.set_column_levels(
+            np.full(width, float(level_min)),
+            np.full(width, float(level_max)),
+        )
+
+    def get_level_history(self, max_rows: int | None = None) -> np.ndarray | None:
+        """Filas visibles del slice_cache para estimar suelo/techo por columna."""
+        if self._slice_cache is None or self._slice_cache.size == 0:
+            return None
+        rows = self._slice_cache
+        if max_rows is not None and rows.shape[0] > max_rows:
+            rows = rows[:max_rows]
+        return rows
+
+    def _levels_for_width(self, width: int) -> tuple[np.ndarray, np.ndarray]:
+        if self._column_floors is not None and self._column_ceilings is not None:
+            floors = np.asarray(self._column_floors, dtype=np.float64).reshape(-1)
+            ceilings = np.asarray(self._column_ceilings, dtype=np.float64).reshape(-1)
+            if len(floors) < width:
+                floors = np.pad(floors, (0, width - len(floors)), constant_values=self._manual_norm_min)
+            if len(ceilings) < width:
+                ceilings = np.pad(ceilings, (0, width - len(ceilings)), constant_values=self._manual_norm_max)
+            return floors[:width], ceilings[:width]
+        return (
+            np.full(width, self._manual_norm_min, dtype=np.float64),
+            np.full(width, self._manual_norm_max, dtype=np.float64),
+        )
+
+    def _column_width(self) -> int:
+        if self._frequency_columns > 0:
+            return self._frequency_columns
+        return plot_content_width(self)
+
     def _view_width(self) -> int:
-        try:
-            width = int(self.content_region.width)
-            if width > 0:
-                return width
-        except Exception:
-            pass
-        return max(int(self.size.width) - 2, 1)
+        return self._column_width()
 
     def _view_height(self) -> int:
         try:
@@ -287,18 +312,19 @@ class WaterfallTimeline(Widget):
             _WaterfallRow(frame.center_hz, frame.sample_rate, frame.band_cols),
         )
         self._history_offset = min(self._history_offset, self._max_history_offset())
-        self._update_normalization()
 
         if self._history_offset == 0:
-            self._append_slice_row(frame)
+            self._prepend_slice_row(frame)
         else:
             self._rebuild_slice_cache()
 
+        if not self._levels_from_app:
+            self._update_normalization()
         self._invalidate_rich_cache()
         self.refresh()
 
-    def _append_slice_row(self, frame: BandFrame) -> None:
-        """Actualiza caché slice en O(ancho); fila nueva al final (abajo en pantalla)."""
+    def _prepend_slice_row(self, frame: BandFrame) -> None:
+        """Actualiza caché slice en O(ancho); fila nueva al inicio (arriba en pantalla)."""
         width = self._view_width()
         height = self._view_height()
         if width < 5 or height < 1:
@@ -318,8 +344,8 @@ class WaterfallTimeline(Widget):
             and self._slice_cache_width == width
             and self._slice_cache.shape[1] == width
         ):
-            combined = np.vstack([self._slice_cache, new_row])
-            self._slice_cache = combined[-height:]
+            combined = np.vstack([new_row, self._slice_cache])
+            self._slice_cache = combined[:height]
         else:
             self._rebuild_slice_cache()
             return
@@ -348,7 +374,8 @@ class WaterfallTimeline(Widget):
         self._viewport_center_hz = center_hz
         self._visible_span_hz = span_hz
         self._rebuild_slice_cache()
-        self._update_normalization(force=True)
+        if not self._levels_from_app:
+            self._update_normalization(force=True)
         self._invalidate_rich_cache()
         self.refresh()
 
@@ -372,14 +399,70 @@ class WaterfallTimeline(Widget):
 
         visible_rows = self._history_rows_for_viewport(rows_to_show)
         row_tuples = [(r.center_hz, r.sample_rate, r.band_cols) for r in visible_rows]
-        self._slice_cache = slice_band_history_to_viewport(
+        sliced = slice_band_history_to_viewport(
             row_tuples,
             self._viewport_center_hz,
             self._visible_span_hz,
             width,
         )
+        if sliced is None:
+            self._slice_cache = None
+            self._slice_cache_rows = 0
+            self._slice_cache_width = 0
+            return
+
+        # Índice 0 = fila más reciente (top-down en pantalla).
+        self._slice_cache = sliced[::-1]
         self._slice_cache_rows = rows_to_show
         self._slice_cache_width = width
+
+    def _normalization_values(self) -> np.ndarray | None:
+        if self._slice_cache is not None and self._slice_cache.size > 0:
+            return self._slice_cache.ravel()
+        return None
+
+    def _compute_auto_levels(self, values: np.ndarray) -> tuple[float, float]:
+        return compute_auto_levels(
+            values,
+            low_pct=self._level_low_pct,
+            high_pct=self._level_high_pct,
+            min_range_db=self._min_range_db,
+            fallback=(self._manual_norm_min, self._manual_norm_max),
+        )
+
+    def _update_normalization(self, *, force: bool = False) -> None:
+        if not self.waterfall_auto_level:
+            width = self._column_width()
+            self.set_column_levels(
+                np.full(width, self._manual_norm_min),
+                np.full(width, self._manual_norm_max),
+            )
+            return
+
+        now = time.time()
+        if not force and now - self._norm_last_update < 0.5:
+            return
+
+        values = self._normalization_values()
+        if values is None:
+            return
+
+        new_min, new_max = self._compute_auto_levels(values)
+        width = self._column_width()
+        floors, ceilings = self._levels_for_width(width)
+
+        if self._norm_last_update <= 0.0:
+            floors = np.full(width, new_min)
+            ceilings = np.full(width, new_max)
+        else:
+            blend = _NORM_BLEND if force else _NORM_BLEND * 0.5
+            floors = (1.0 - blend) * floors + blend * new_min
+            ceilings = (1.0 - blend) * ceilings + blend * new_max
+
+        self.set_column_levels(floors, ceilings)
+        self._levels_from_app = False
+        self._norm_last_update = now
+        self._invalidate_rich_cache()
 
     def render(self) -> Text:
         width = self._view_width()
@@ -395,10 +478,14 @@ class WaterfallTimeline(Widget):
         ):
             self._rebuild_slice_cache()
 
+        if not self._levels_from_app:
+            self._update_normalization()
+
+        floors, ceilings = self._levels_for_width(width)
         cache_key = (
             id(self._slice_cache),
-            self._norm_min,
-            self._norm_max,
+            floors.tobytes(),
+            ceilings.tobytes(),
             width,
             height,
             self._slice_cache_rows,
@@ -406,22 +493,18 @@ class WaterfallTimeline(Widget):
             self.passband_center_hz,
             self.passband_width_hz,
             self.passband_preview_width_hz,
+            self.waterfall_auto_level,
         )
         if self._rich_visual_cache is not None and cache_key == self._rich_visual_cache_key:
             return self._rich_visual_cache
 
         rows_to_show = self._slice_cache_rows
-        rng = self._norm_max - self._norm_min
-        if rng <= 0:
-            rng = 1.0
 
-        empty_rows = height - rows_to_show
         result = Text()
         for row_idx in range(height):
-            data_idx = row_idx - empty_rows
-            if data_idx >= 0 and self._slice_cache is not None:
-                row_data = self._slice_cache[data_idx]
-                line = self._render_row_cached(row_data, width, rng)
+            if row_idx < rows_to_show and self._slice_cache is not None:
+                row_data = self._slice_cache[row_idx]
+                line = self._render_row_cached(row_data, width, floors, ceilings)
             else:
                 line = Text("░" * width, f"#1e1b4b on {NO_DATA_COLOR}")
 
@@ -433,45 +516,56 @@ class WaterfallTimeline(Widget):
         self._rich_visual_cache_key = cache_key
         return result
 
-    def _row_cache_key(self, col_values: np.ndarray, width: int, rng: float) -> tuple:
+    def _row_cache_key(
+        self,
+        col_values: np.ndarray,
+        width: int,
+        floors: np.ndarray,
+        ceilings: np.ndarray,
+    ) -> tuple:
         digest = col_values.tobytes() if col_values is not None else b""
-        return (digest, self._norm_min, self._norm_max, width, rng)
+        return (digest, floors.tobytes(), ceilings.tobytes(), width, self.waterfall_auto_level)
 
-    def _render_row_cached(self, col_values: np.ndarray, width: int, rng: float) -> Text:
-        key = self._row_cache_key(col_values, width, rng)
+    def _render_row_cached(
+        self,
+        col_values: np.ndarray,
+        width: int,
+        floors: np.ndarray,
+        ceilings: np.ndarray,
+    ) -> Text:
+        key = self._row_cache_key(col_values, width, floors, ceilings)
         cached = self._row_text_cache.get(key)
         if cached is not None:
             return cached
 
-        line = self._render_row_from_cache(col_values, width, rng)
+        line = self._render_row_from_cache(col_values, width, floors, ceilings)
         if len(self._row_text_cache) > max(width, 64):
             self._row_text_cache.clear()
         self._row_text_cache[key] = line
         return line
 
-    def _render_row_from_cache(self, col_values: np.ndarray, width: int, rng: float) -> Text:
+    def _cell_background(self, norm: float, *, in_band: bool) -> str:
+        return cell_background(norm, in_band=in_band)
+
+    def _render_row_from_cache(
+        self,
+        col_values: np.ndarray,
+        width: int,
+        floors: np.ndarray,
+        ceilings: np.ndarray,
+    ) -> Text:
         passband_cols = self._passband_cols(width)
         line = Text()
+        norms = normalize_per_column(col_values[:width], floors, ceilings)
         for col in range(width):
             in_band = passband_cols and passband_cols[0] <= col <= passband_cols[1]
-            val = col_values[col] if col < len(col_values) else np.nan
-            if np.isnan(val):
+            if col >= len(norms) or np.isnan(norms[col]):
                 bg = NO_DATA_COLOR if in_band else "#050508"
                 line.append("░", f"#1e1b4b on {bg}")
             else:
-                norm = max(0.0, min(1.0, (val - self._norm_min) / rng))
-                if in_band:
-                    color_idx = min(
-                        int(norm * (len(WATERFALL_GRADIENT) - 1)),
-                        len(WATERFALL_GRADIENT) - 1,
-                    )
-                    line.append(" ", f"on {WATERFALL_GRADIENT[color_idx]}")
-                else:
-                    color_idx = min(
-                        int(norm * (len(WATERFALL_GRADIENT) - 1)),
-                        len(WATERFALL_GRADIENT) - 1,
-                    )
-                    line.append(" ", f"on #0a0a12")
+                norm = float(norms[col])
+                bg = self._cell_background(norm, in_band=in_band)
+                line.append(" ", f"on {bg}")
         return line
 
     def watch_passband_center_hz(self, value: float) -> None:
@@ -486,27 +580,8 @@ class WaterfallTimeline(Widget):
         self._invalidate_rich_cache()
         self.refresh()
 
-    def _update_normalization(self, *, force: bool = False) -> None:
-        now = time.time()
-        if not force and now - self._norm_last_update < 0.5:
-            return
-
-        height = max(self._layout_height, self._view_height(), 1)
-        visible = self._history_rows_for_viewport(min(len(self._history), height))
-        if not visible:
-            return
-
-        all_vals = np.concatenate([r.band_cols for r in visible])
-        new_min = float(np.percentile(all_vals, 5))
-        new_max = float(np.percentile(all_vals, 99))
-
-        if self._norm_last_update <= 0.0:
-            self._norm_min = new_min
-            self._norm_max = new_max
-        else:
-            blend = _NORM_BLEND if force else _NORM_BLEND * 0.5
-            self._norm_min = (1.0 - blend) * self._norm_min + blend * new_min
-            self._norm_max = (1.0 - blend) * self._norm_max + blend * new_max
-
-        self._norm_last_update = now
+    def watch_waterfall_auto_level(self, value: bool) -> None:
+        self._norm_last_update = 0.0
+        self._update_normalization(force=True)
         self._invalidate_rich_cache()
+        self.refresh()

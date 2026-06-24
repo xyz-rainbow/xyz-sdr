@@ -15,11 +15,12 @@ from textual.reactive import reactive
 
 from core.band_buffer import BandFrame, slice_band_to_viewport
 from core.passband import freq_to_col
+from tui.widgets.display_palette import cell_background, normalize_per_column, plot_content_width
 from tui.widgets.passband_messages import PassbandDragMixin
 
 
 class SpectrumGraph(PassbandDragMixin, Widget):
-    """Grafico de espectro FFT con barras ASCII alineadas al viewport."""
+    """Grafico de espectro FFT con relleno termico alineado al waterfall."""
 
     DEFAULT_CSS = """
     SpectrumGraph {
@@ -28,8 +29,6 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         border: solid #10b981;
     }
     """
-
-    BARS = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 
     passband_center_hz: reactive[float] = reactive(100_600_000.0)
     passband_width_hz: reactive[float] = reactive(200_000.0)
@@ -41,8 +40,70 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         self._viewport_cols: np.ndarray | None = None
         self._viewport_center_hz: float = 100_600_000.0
         self._visible_span_hz: float = 2_048_000.0
+        self._frequency_columns: int = 0
+        self._column_floors: np.ndarray | None = None
+        self._column_ceilings: np.ndarray | None = None
         self._last_refresh_at: float = 0.0
         self._refresh_min_interval: float = 0.05
+        self._render_cache: Text | None = None
+        self._render_cache_key: tuple | None = None
+
+    def set_frequency_columns(self, width: int) -> None:
+        """Fija el ancho de columnas espectrales (debe coincidir con el espectro)."""
+        width = max(int(width), 1)
+        if width == self._frequency_columns:
+            return
+        self._frequency_columns = width
+        self._invalidate_cache()
+        self._reslice_viewport(force=True)
+
+    def set_column_levels(self, floors: np.ndarray, ceilings: np.ndarray) -> None:
+        floors = np.asarray(floors, dtype=np.float64).reshape(-1)
+        ceilings = np.asarray(ceilings, dtype=np.float64).reshape(-1)
+        if (
+            self._column_floors is not None
+            and np.array_equal(self._column_floors, floors)
+            and self._column_ceilings is not None
+            and np.array_equal(self._column_ceilings, ceilings)
+        ):
+            return
+        self._column_floors = floors
+        self._column_ceilings = ceilings
+        self._invalidate_cache()
+
+    def set_level_range(self, level_min: float, level_max: float) -> None:
+        """Compatibilidad modo global: mismo suelo/techo en todas las columnas."""
+        width = self._column_width()
+        self.set_column_levels(
+            np.full(width, float(level_min)),
+            np.full(width, float(level_max)),
+        )
+
+    def _invalidate_cache(self) -> None:
+        self._render_cache = None
+        self._render_cache_key = None
+
+    def _default_levels(self, width: int) -> tuple[np.ndarray, np.ndarray]:
+        return (
+            np.full(width, -80.0, dtype=np.float64),
+            np.full(width, -20.0, dtype=np.float64),
+        )
+
+    def _levels_for_width(self, width: int) -> tuple[np.ndarray, np.ndarray]:
+        if self._column_floors is None or self._column_ceilings is None:
+            return self._default_levels(width)
+        floors = np.asarray(self._column_floors, dtype=np.float64).reshape(-1)
+        ceilings = np.asarray(self._column_ceilings, dtype=np.float64).reshape(-1)
+        if len(floors) < width:
+            floors = np.pad(floors, (0, width - len(floors)), constant_values=-80.0)
+        if len(ceilings) < width:
+            ceilings = np.pad(ceilings, (0, width - len(ceilings)), constant_values=-20.0)
+        return floors[:width], ceilings[:width]
+
+    def _column_width(self) -> int:
+        if self._frequency_columns > 0:
+            return self._frequency_columns
+        return plot_content_width(self)
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         event.stop()
@@ -97,6 +158,7 @@ class SpectrumGraph(PassbandDragMixin, Widget):
     def clear(self) -> None:
         self._band_frame = None
         self._viewport_cols = None
+        self._invalidate_cache()
         self.refresh()
 
     def set_viewport(self, center_hz: float, span_hz: float) -> None:
@@ -105,9 +167,10 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         self._reslice_viewport(force=True)
 
     def _reslice_viewport(self, *, force: bool = False) -> None:
-        width = max(self.size.width, 1)
+        width = self._column_width()
         if self._band_frame is None:
             self._viewport_cols = None
+            self._invalidate_cache()
             self.refresh()
             return
 
@@ -125,11 +188,12 @@ class SpectrumGraph(PassbandDragMixin, Widget):
             return
 
         self._last_refresh_at = now
+        self._invalidate_cache()
         self.refresh()
 
     def render(self) -> Text:
-        width = self.size.width
-        height = self.size.height
+        width = self._column_width()
+        height = max(int(self.size.height), 2)
         if width < 5 or height < 2:
             return Text("...")
 
@@ -149,43 +213,39 @@ class SpectrumGraph(PassbandDragMixin, Widget):
             return result
 
         col_values = self._viewport_cols
+        if len(col_values) != width:
+            col_values = np.pad(
+                col_values,
+                (0, max(0, width - len(col_values))),
+                constant_values=np.nan,
+            )[:width]
 
-        valid_mask = ~np.isnan(col_values)
-        valid = col_values[valid_mask]
-        if len(valid) == 0:
-            result = Text()
-            for row in range(height):
-                if row == 0:
-                    result.append("░" * width, "#1e1b4b")
-                else:
-                    result.append(" " * width)
-                if row < height - 1:
-                    result.append("\n")
-            return result
+        floors, ceilings = self._levels_for_width(width)
+        cache_key = (
+            col_values.tobytes(),
+            floors.tobytes(),
+            ceilings.tobytes(),
+            width,
+            height,
+            self.passband_center_hz,
+            self.passband_width_hz,
+            self.passband_preview_width_hz,
+        )
+        if self._render_cache is not None and cache_key == self._render_cache_key:
+            return self._render_cache
 
-        psd_min = float(np.percentile(valid, 5))
-        psd_max = float(np.percentile(valid, 99))
-        rng = psd_max - psd_min if psd_max != psd_min else 1.0
-
-        norms = np.full(width, np.nan, dtype=np.float64)
-        for col in range(width):
-            val = col_values[col]
-            if not np.isnan(val):
-                norms[col] = max(0.0, min(1.0, (val - psd_min) / rng))
-
+        norms = normalize_per_column(col_values, floors, ceilings)
         peak_rows = np.full(width, -1, dtype=np.int32)
-        for col in range(width):
-            if not np.isnan(norms[col]):
-                peak_rows[col] = int(norms[col] * max(height - 1, 1))
+        valid = ~np.isnan(norms)
+        if valid.any():
+            peak_rows[valid] = (norms[valid] * max(height - 1, 1)).astype(np.int32)
 
         result = Text()
         for row in range(height - 1, -1, -1):
-            threshold = row / max(height - 1, 1)
             line = Text()
             for col in range(width):
                 in_band = passband_cols and passband_cols[0] <= col <= passband_cols[1]
-                val = col_values[col]
-                if np.isnan(val):
+                if np.isnan(norms[col]):
                     if row == 0:
                         ch = "░"
                         color = "#14532d" if in_band else "#1e1b4b"
@@ -194,16 +254,13 @@ class SpectrumGraph(PassbandDragMixin, Widget):
                         line.append(" ")
                     continue
 
-                norm = norms[col]
-                is_peak = peak_rows[col] == row
-                if is_peak and in_band:
-                    line.append("·", self._peak_color(norm))
-                elif norm >= threshold:
-                    excess = (norm - threshold) * max(height - 1, 1)
-                    bar_idx = min(int(excess * 2), len(self.BARS) - 1)
-                    ch = self.BARS[bar_idx]
-                    color = self._intensity_color(norm) if in_band else "#1e3a2f"
-                    line.append(ch, color)
+                norm = float(norms[col])
+                peak = int(peak_rows[col])
+                if row <= peak:
+                    bg = cell_background(norm, in_band=in_band)
+                    line.append("█" if row == peak and in_band else " ", f"on {bg}")
+                elif row == peak + 1 and in_band:
+                    line.append("·", "bold #ffffff")
                 elif in_band and row == 0:
                     line.append("░", "#14532d")
                 else:
@@ -212,36 +269,18 @@ class SpectrumGraph(PassbandDragMixin, Widget):
             if row > 0:
                 result.append("\n")
 
+        self._render_cache = result
+        self._render_cache_key = cache_key
         return result
 
-    @staticmethod
-    def _peak_color(norm: float) -> str:
-        """Color del contorno de pico en la curva espectral."""
-        if norm > 0.85:
-            return "bold #ff6666"
-        if norm > 0.7:
-            return "bold #ffaa66"
-        if norm > 0.5:
-            return "bold #ffff66"
-        return "bold #66ff99"
-
-    @staticmethod
-    def _intensity_color(norm: float) -> str:
-        if norm > 0.85:
-            return "bold #ff4444"
-        if norm > 0.7:
-            return "#ff8844"
-        if norm > 0.5:
-            return "#ffcc00"
-        if norm > 0.3:
-            return "#44ff44"
-        return "#34d399"
-
     def watch_passband_center_hz(self, value: float) -> None:
+        self._invalidate_cache()
         self.refresh()
 
     def watch_passband_width_hz(self, value: float) -> None:
+        self._invalidate_cache()
         self.refresh()
 
     def watch_passband_preview_width_hz(self, value: float | None) -> None:
+        self._invalidate_cache()
         self.refresh()

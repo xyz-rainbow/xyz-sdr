@@ -12,6 +12,8 @@ from textual.containers import Vertical, Horizontal, Container
 from textual.widgets import Label, Select, Button, Switch
 from textual.reactive import reactive
 
+from tui.widgets.waterfall_timeline import WaterfallTimeline
+
 
 def _valid_select_value(value) -> bool:
     if value is None:
@@ -124,6 +126,11 @@ class SettingsScreen(ModalScreen):
         margin-top: 1;
     }
 
+    #set_fm_deemphasis,
+    #set_fm_agc_enabled {
+        width: 29;
+    }
+
     .settings-actions {
         layout: horizontal;
         margin-top: 2;
@@ -150,6 +157,11 @@ class SettingsScreen(ModalScreen):
         opts = getattr(self.app, "SQUELCH_THRESHOLD_OPTIONS", [5, 10, 12, 15, 18, 20, 25, 30, 35, 40])
         thr = int(getattr(self.app, "squelch_threshold", 15))
         return thr if thr in opts else 15
+
+    def _deemphasis_select_value(self) -> int:
+        opts = getattr(self.app, "FM_DEEMPHASIS_OPTIONS", [50, 75])
+        us = int(getattr(self.app, "fm_deemphasis_us", 50))
+        return us if us in opts else 50
 
     def compose(self) -> ComposeResult:
         # 1. Obtener lista de dispositivos SDR disponibles para página Hardware
@@ -190,10 +202,16 @@ class SettingsScreen(ModalScreen):
             with Container(id="page_main"):
                 yield Label("⚙️ AJUSTES GENERALES", id="settings_title")
                 yield Button("📡 Hardware SDR", id="btn_go_hardware", classes="nav-btn")
-                yield Button("🔊 Eliminación de Ruido [Noise Removal]", id="btn_go_noise", classes="nav-btn")
+                yield Button("🔊 Audio FM / Noise", id="btn_go_noise", classes="nav-btn")
                 with Horizontal(classes="setting-row"):
                     yield Label("Efectos Sonido:")
                     yield Switch(value=self.app.audio_effects.enabled, id="sw_sound_effects")
+                with Horizontal(classes="setting-row"):
+                    yield Label("Waterfall auto:")
+                    yield Switch(
+                        value=getattr(self.app, "waterfall_auto_level", True),
+                        id="sw_waterfall_auto_level",
+                    )
                 with Horizontal(classes="settings-actions"):
                     yield Button("Cerrar", id="btn_close_settings")
 
@@ -212,7 +230,23 @@ class SettingsScreen(ModalScreen):
 
             # ─── PÁGINA 3: ELIMINACIÓN DE RUIDO ───
             with Container(id="page_noise"):
-                yield Label("🔊 NOISE REMOVAL", id="settings_title")
+                yield Label("🔊 AUDIO FM / NOISE", id="settings_title")
+                with Horizontal(classes="setting-row"):
+                    yield Label("De-emphasis:")
+                    yield Select(
+                        [
+                            ("50 µs (EU)", 50),
+                            ("75 µs (US)", 75),
+                        ],
+                        value=self._deemphasis_select_value(),
+                        id="set_fm_deemphasis",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("AGC FM:")
+                    yield Switch(
+                        value=getattr(self.app, "fm_agc_enabled", True),
+                        id="set_fm_agc_enabled",
+                    )
                 with Horizontal(classes="setting-row"):
                     yield Label("Squelch:")
                     yield Switch(
@@ -284,9 +318,14 @@ class SettingsScreen(ModalScreen):
 
         # Acciones - Aplicar Noise Removal
         elif event.button.id == "btn_apply_noise":
+            deemph_val = self.query_one("#set_fm_deemphasis", Select).value
+            agc_val = self.query_one("#set_fm_agc_enabled", Switch).value
             squelch_val = self.query_one("#set_squelch_enabled", Switch).value
             threshold_val = self.query_one("#set_squelch_threshold", Select).value
 
+            if deemph_val is not None and _valid_select_value(deemph_val):
+                self.app.fm_deemphasis_us = float(deemph_val)
+            self.app.fm_agc_enabled = bool(agc_val)
             self.app.squelch_enabled = squelch_val
             if threshold_val is not None and _valid_select_value(threshold_val):
                 self.app.squelch_threshold = float(threshold_val)
@@ -294,15 +333,20 @@ class SettingsScreen(ModalScreen):
             self.app._persist_dsp_config(
                 squelch_enabled=squelch_val,
                 squelch_threshold=self.app.squelch_threshold,
+                fm_deemphasis_us=self.app.fm_deemphasis_us,
+                fm_agc_enabled=self.app.fm_agc_enabled,
             )
+            self.app._fm_agc.reset()
             self.app._squelch_gate.configure(
                 threshold_db=self.app.squelch_threshold,
                 hang_ms=self.app.squelch_hang_ms,
             )
             self.app.audio_effects.play_chime()
             self.app._log(
-                f"[OK]   Squelch {'ACTIVADO' if squelch_val else 'DESACTIVADO'}"
-                f" | Umbral: {self.app.squelch_threshold:.0f} dB"
+                f"[OK]   FM de-emphasis {self.app.fm_deemphasis_us:.0f} µs"
+                f" | AGC {'ON' if self.app.fm_agc_enabled else 'OFF'}"
+                f" | Squelch {'ON' if squelch_val else 'OFF'}"
+                f" ({self.app.squelch_threshold:.0f} dB)"
             )
             self.app._update_status()
 
@@ -314,3 +358,14 @@ class SettingsScreen(ModalScreen):
             self.app._log(f"[OK]   Efectos de sonido {'ACTIVADOS' if event.value else 'DESACTIVADOS'}")
             if event.value:
                 self.app.audio_effects.play_blip()
+        elif event.switch.id == "sw_waterfall_auto_level":
+            self.app.waterfall_auto_level = bool(event.value)
+            try:
+                waterfall = self.app.query_one("#waterfall", WaterfallTimeline)
+                waterfall.waterfall_auto_level = bool(event.value)
+            except Exception:
+                pass
+            self.app._persist_display_config(waterfall_auto_level=bool(event.value))
+            self.app._log(
+                f"[OK]   Waterfall auto-level {'ON' if event.value else 'OFF'}"
+            )

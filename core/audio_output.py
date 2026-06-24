@@ -32,6 +32,8 @@ class AudioOutputQueue:
         self._lock = threading.Lock()
         self._pending = np.zeros(0, dtype=np.float32)
         self._stream: Optional[sd.OutputStream] = None
+        self.underrun_count = 0
+        self.dropped_chunks = 0
 
     def set_volume(self, level: float) -> None:
         with self._lock:
@@ -39,6 +41,8 @@ class AudioOutputQueue:
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         if status:
+            if status.output_underflow:
+                self.underrun_count += 1
             logger.debug("Audio callback status: %s", status)
 
         out = np.zeros(frames, dtype=np.float32)
@@ -67,6 +71,7 @@ class AudioOutputQueue:
         try:
             self._queue.put_nowait(chunk)
         except queue.Full:
+            self.dropped_chunks += 1
             try:
                 self._queue.get_nowait()
             except queue.Empty:
@@ -74,7 +79,7 @@ class AudioOutputQueue:
             try:
                 self._queue.put_nowait(chunk)
             except queue.Full:
-                pass
+                self.dropped_chunks += 1
 
     def _drain_queue(self) -> None:
         while not self._queue.empty():
@@ -83,9 +88,14 @@ class AudioOutputQueue:
             except queue.Empty:
                 break
 
+    def reset_stats(self) -> None:
+        self.underrun_count = 0
+        self.dropped_chunks = 0
+
     def start(self) -> None:
         self._pending = np.zeros(0, dtype=np.float32)
         self._drain_queue()
+        self.reset_stats()
         self._stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,

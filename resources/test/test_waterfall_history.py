@@ -9,6 +9,7 @@ from unittest.mock import PropertyMock, patch
 import numpy as np
 
 from core.band_buffer import BandFrame, slice_band_to_viewport
+from tui.widgets.display_palette import gradient_color
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 
 
@@ -54,7 +55,7 @@ def _patch_geometry(mock_size, mock_region, fake_size):
 
 @patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_append_slice_row_updates_cache_shape(mock_size, mock_region, flat_band_cols):
+def test_prepend_slice_row_updates_cache_shape(mock_size, mock_region, flat_band_cols):
     from tui.widgets.waterfall_timeline import _WaterfallRow
 
     widget, fake_size = _widget_with_size()
@@ -67,7 +68,7 @@ def test_append_slice_row_updates_cache_shape(mock_size, mock_region, flat_band_
     assert widget._slice_cache is not None
 
     frame = BandFrame(100e6, 500e3, time.time(), flat_band_cols + 3.0)
-    widget._append_slice_row(frame)
+    widget._prepend_slice_row(frame)
 
     assert widget._slice_cache is not None
     assert widget._slice_cache.shape[1] == 120
@@ -76,7 +77,7 @@ def test_append_slice_row_updates_cache_shape(mock_size, mock_region, flat_band_
 
 @patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_append_slice_row_shift_preserves_width(mock_size, mock_region, flat_band_cols):
+def test_prepend_slice_row_shift_preserves_width(mock_size, mock_region, flat_band_cols):
     widget, fake_size = _widget_with_size(height=8)
     _patch_geometry(mock_size, mock_region, fake_size)
     widget._viewport_center_hz = 100e6
@@ -91,7 +92,7 @@ def test_append_slice_row_shift_preserves_width(mock_size, mock_region, flat_ban
     widget._slice_cache_width = width
 
     frame = BandFrame(100e6, 500e3, time.time(), flat_band_cols + 5.0)
-    widget._append_slice_row(frame)
+    widget._prepend_slice_row(frame)
 
     assert widget._slice_cache.shape[1] == width
     assert widget._slice_cache_rows <= 8
@@ -166,8 +167,8 @@ def test_handle_wheel_shift_scrolls_history(mock_shift, flat_band_cols):
 
 @patch.object(WaterfallTimeline, "content_region", new_callable=PropertyMock)
 @patch.object(WaterfallTimeline, "size", new_callable=PropertyMock)
-def test_render_anchors_data_at_bottom(mock_size, mock_region, flat_band_cols):
-    """Filas vacías arriba; datos anclados abajo (estilo SDR clásico)."""
+def test_render_anchors_data_at_top(mock_size, mock_region, flat_band_cols):
+    """Filas vacías abajo; datos anclados arriba (top-down)."""
     from tui.widgets.waterfall_timeline import _WaterfallRow
 
     widget, fake_size = _widget_with_size(height=6, width=20)
@@ -178,15 +179,49 @@ def test_render_anchors_data_at_bottom(mock_size, mock_region, flat_band_cols):
     widget._history.append(_WaterfallRow(100e6, 500e3, flat_band_cols))
     widget._history.append(_WaterfallRow(100e6, 500e3, flat_band_cols + 1.0))
     widget._rebuild_slice_cache()
-    widget._norm_min = -90.0
-    widget._norm_max = -30.0
+    widget.set_column_levels(
+        np.full(20, -90.0),
+        np.full(20, -30.0),
+    )
     widget._norm_last_update = time.time()
 
     text = widget.render()
     lines = str(text).split("\n")
     assert len(lines) == 6
-    assert "░" in lines[0]
-    assert "░" not in lines[-1]
+    assert "░" in lines[-1]
+    assert "░" not in lines[0]
+
+
+def test_auto_level_from_slice_cache(flat_band_cols):
+    widget = WaterfallTimeline(waterfall_auto_level=True, min_range_db=6.0)
+    widget._slice_cache = np.array([[-50.0, -40.0], [-55.0, -35.0]], dtype=np.float64)
+    widget._norm_last_update = 0.0
+    widget._update_normalization(force=True)
+    floors, ceilings = widget._levels_for_width(2)
+    assert ceilings.max() > floors.min()
+    assert ceilings.max() - floors.min() >= 6.0
+
+
+def test_manual_level_ignores_slice_cache(flat_band_cols):
+    widget = WaterfallTimeline(
+        waterfall_auto_level=False,
+        manual_norm_min=-70.0,
+        manual_norm_max=-25.0,
+    )
+    widget._slice_cache = np.array([[-10.0, 0.0]], dtype=np.float64)
+    widget._update_normalization(force=True)
+    floors, ceilings = widget._levels_for_width(1)
+    assert floors[0] == -70.0
+    assert ceilings[0] == -25.0
+
+
+def test_gradient_color_interpolates():
+    c0 = gradient_color(0.0)
+    c1 = gradient_color(1.0)
+    cm = gradient_color(0.5)
+    assert c0 != c1
+    assert cm != c0
+    assert cm != c1
 
 
 def test_batch_slice_not_slower_than_linear_threshold(flat_band_cols):

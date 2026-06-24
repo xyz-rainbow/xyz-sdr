@@ -23,9 +23,11 @@ Definidos en `core/device.py` → `BANDWIDTH_PRESETS`:
 | 250 kHz | NFM, señales estrechas |
 | 500 kHz | AM, scanning fino |
 | 1 MHz | FM local |
-| 2.048 MHz | WBFM, default RSP1 |
-| 4 MHz | Exploración amplia |
-| 8 MHz | Máximo (según driver) |
+| 2.048 MHz | WBFM, **recomendado para audio FM** |
+| 4 MHz | Exploración amplia (espectro; demod decima IQ internamente) |
+| 8 MHz | Máximo captura (espectro; audio FM usa decimación IQ interna) |
+
+> **Audio WBFM:** un bandwidth IQ alto mejora el espectro visible pero **no** hace falta para escuchar FM comercial (~200 kHz PASS). El demodulador reduce la tasa IQ antes de filtrar (`resample_iq_for_demod` en `core/dsp.py`). Para la mejor relación calidad/CPU en FM, usa **1–2 MHz**.
 
 SoapySDR filtra los presets según el rango soportado por el hardware. En **modo simulado** están todos disponibles.
 
@@ -103,10 +105,13 @@ Al arrancar, si `sample_rate` del TOML difiere del default del dispositivo y es 
 | Archivo | Responsabilidad |
 |---------|-----------------|
 | `core/device.py` | `set_sample_rate()`, `get_supported_sample_rates()` |
-| `core/dsp.py` | `compute_rx_chunk_samples()` — lectura IQ escalada |
+| `core/dsp.py` | `compute_rx_chunk_samples()`, demod, `resample_iq_for_demod`, `resample_audio_to_rate` |
+| `core/dsp_profiles.py` | Perfiles DSP por preset IQ |
 | `core/config_store.py` | Persistencia TOML |
 | `tui/app.py` | `change_bandwidth()`, zoom dinámico, worker RX |
 | `tui/widgets/settings_menu.py` | Cambio de driver con rollback |
+
+Ver también [audio-presets-research.md](audio-presets-research.md) para la matriz completa por preset.
 
 ---
 

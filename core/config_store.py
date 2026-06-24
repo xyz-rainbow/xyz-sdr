@@ -88,6 +88,7 @@ def patch_dsp_section(
     nbfm_bandwidth: float | None = None,
     am_bandwidth: float | None = None,
     fm_deemphasis_us: float | None = None,
+    fm_agc_enabled: bool | None = None,
 ) -> None:
     """Actualiza valores en la sección [dsp] del archivo TOML."""
     config_path = Path(path)
@@ -105,6 +106,7 @@ def patch_dsp_section(
         "nbfm_bandwidth": int(nbfm_bandwidth) if nbfm_bandwidth is not None else None,
         "am_bandwidth": int(am_bandwidth) if am_bandwidth is not None else None,
         "fm_deemphasis_us": int(fm_deemphasis_us) if fm_deemphasis_us is not None else None,
+        "fm_agc_enabled": fm_agc_enabled,
     }
 
     for key, value in updates.items():
@@ -113,3 +115,27 @@ def patch_dsp_section(
 
     config_path.write_text(text, encoding="utf-8")
     logger.info("Config DSP actualizada: %s", path)
+
+
+def patch_display_section(
+    path: str,
+    *,
+    waterfall_auto_level: bool | None = None,
+) -> None:
+    """Actualiza valores en la sección [display] del archivo TOML."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    text = config_path.read_text(encoding="utf-8")
+    updates = {
+        "waterfall_auto_level": waterfall_auto_level,
+    }
+
+    for key, value in updates.items():
+        if value is not None:
+            text = _patch_key(text, key, value)
+
+    config_path.write_text(text, encoding="utf-8")
+    logger.info("Config display actualizada: %s", path)

@@ -1,96 +1,128 @@
-# 🏛️ Arquitectura del Sistema — xyz-sdr
+# System architecture — xyz-sdr
 
-Este documento describe la arquitectura interna, el flujo de datos y el modelo de concurrencia de la aplicación `xyz-sdr`.
+This document describes the internal architecture, data flow, and concurrency model of the xyz-sdr application.
 
 ---
 
-## 🏗️ Estructura y Flujo de Datos
+## Structure and data flow
 
-El diseño sigue una separación clara entre el hardware (SDR), el procesamiento digital de señales (DSP) y la interfaz de usuario en terminal (TUI).
+The design separates hardware (SDR), digital signal processing (DSP), and the terminal user interface (TUI).
 
 ```mermaid
 sequenceDiagram
     participant HW as Hardware SDR
     participant Worker as RX Thread (Background Worker)
-    participant DSP as DSP Engine (DSP.py)
+    participant DSP as DSP Engine (dsp.py)
+    participant Mailbox as BandFrameMailbox
     participant App as TUI App (Main Thread)
-    participant UI as Interactive Widgets
+    participant UI as Spectrum / Waterfall
 
-    HW->>Worker: Captura muestras IQ complejas
-    loop RX Loop
-        Worker->>DSP: Envía muestras IQ
-        DSP->>Worker: Retorna freqs y densidades espectrales (PSD)
-        Worker->>App: call_from_thread(update_data / add_row)
-        App->>UI: Notifica refresco de datos
-        UI->>UI: Re-alinea y renderiza según el viewport
+    HW->>Worker: IQ samples (read_samples / readStream)
+    loop RX loop
+        Worker->>DSP: IQ chunk
+        DSP->>Worker: PSD + SNR
+        Worker->>Mailbox: publish(latest frame) — coalesced
+        Note over App: set_interval(display_fps)
+        App->>Mailbox: consume_if_new()
+        Mailbox->>App: newest BandFrame only
+        App->>UI: set_band_frame / add_band_row
     end
 ```
 
----
-
-## 🧵 Modelo de Concurrencia (Threading Model)
-
-Para asegurar que la interfaz de usuario en terminal se mantenga fluida (60 FPS) y libre de bloqueos de renderizado, `xyz-sdr` utiliza dos hilos de ejecución diferenciados:
-
-1. **Hilo Principal (Main Thread)**:
-   * Gestiona el bucle de eventos de Textual.
-   * Renderiza los widgets en pantalla.
-   * Procesa la entrada de teclado y ratón.
-   * Mantiene el estado del viewport de visualización.
-2. **Hilo de Recepción (Background RX Worker)**:
-   * Se ejecuta en un hilo separado de Python mediante el decorador `@work(thread=True)`.
-   * Realiza lecturas síncronas bloqueantes sobre el hardware mediante `SDRDevice.read_samples()`.
-   * Calcula la transformada de Fourier (FFT) y la densidad espectral de potencia (PSD) mediante funciones NumPy/SciPy.
-   * Distribuye los resultados a los widgets de la interfaz usando el método seguro `call_from_thread()`.
+The RX worker **does not** call `call_from_thread()` for spectrum or waterfall updates. It publishes into a **`BandFrameMailbox`** (`core/band_buffer.py`); the main thread drains the latest frame on a timer (`_flush_display_frames` in `tui/app.py`).
 
 ---
 
-## 🔄 Sincronización de Estado y Viewport
+## Concurrency model
 
-La aplicación mantiene un **estado centralizado** en la clase principal `XyzSDRApp` para controlar qué parte del espectro es visible y qué frecuencia se está escuchando:
+Two execution contexts keep the TUI responsive:
 
-| Variable | Tipo | Propósito |
-| :--- | :--- | :--- |
-| `tuned_frequency` | `float` | Frecuencia absoluta demodulada por el dispositivo en Hz. |
-| `viewport_center` | `float` | Frecuencia absoluta en Hz correspondiente al centro de la pantalla. |
-| `visible_span` | `float` | Ancho de banda visible en pantalla (zoom). Máximo = `sample_rate` actual. |
-| `sample_rate` | `float` | Bandwidth IQ de captura del SDR (Hz). Configurable desde el selector **BANDWIDTH**. |
-| `scroll_step` | `float` | Cantidad de Hz que varía la frecuencia con cada pulsación de `←` o `→`. |
+1. **Main thread (Textual event loop)**
+   - Renders widgets and handles keyboard/mouse.
+   - Owns viewport state (`viewport_center`, `visible_span`, etc.).
+   - Periodically calls `_flush_display_frames()` at `display_fps` from config.
+2. **Background RX worker** (`@work(thread=True)`, `_rx_worker`)
+   - Blocking reads via `SDRDevice.read_samples()`.
+   - FFT / PSD averaging (`average_psd`), SNR estimation, band projection (`make_band_frame`).
+   - Publishes to `BandFrameMailbox` (drops intermediate frames if the UI is slow).
+   - Demodulates audio and **non-blocking** enqueues to `AudioOutputQueue` (see [audio.md](audio.md)).
 
-### Flujo de Sincronización (`_sync_viewport`)
-Cuando el usuario interactúa (por ejemplo, hace scroll a la izquierda o zoom-in), el hilo principal modifica `viewport_center` o `visible_span` e invoca `_sync_viewport()`. Este método actualiza las propiedades reactivas en cascada para cada uno de los tres widgets visuales:
+### BandFrameMailbox coalescing
+
 ```python
-def _sync_viewport(self) -> None:
-    # 1. Actualiza la regla de frecuencias superior
-    timeline = self.query_one("#timeline", FrequencyTimeline)
-    timeline.viewport_center_hz = self.viewport_center
-    timeline.visible_span_hz = self.visible_span
-    timeline.tuned_freq_hz = self.tuned_frequency
+# Worker (RX thread)
+frame = make_band_frame(psd, center_freq, sample_rate, band_cols=band_cols)
+self._band_mailbox.publish(frame, snr)
 
-    # 2. Sincroniza el gráfico FFT
-    spectrum = self.query_one("#spectrum", SpectrumGraph)
-    spectrum.set_viewport(self.viewport_center, self.visible_span)
-
-    # 3. Sincroniza el historial de la cascada
-    waterfall = self.query_one("#waterfall", WaterfallTimeline)
-    waterfall.set_viewport(self.viewport_center, self.visible_span)
+# Main thread (timer callback)
+frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
+if frame is not None:
+    spectrum.set_band_frame(frame)
+    waterfall.add_band_row(frame)
 ```
-Esto asegura que las tres representaciones visuales estén alineadas píxel a píxel a lo largo del mismo eje de frecuencia horizontal de forma instantánea.
+
+If the worker runs faster than `display_fps`, only the **most recent** frame is applied — avoiding Textual cross-thread calls and reducing UI backlog.
 
 ---
 
-## 📡 Cambio de Bandwidth IQ
+## Startup: re-exec and hardware gate
 
-Ver documentación detallada: [bandwidth.md](bandwidth.md).
+### `try_reexec_for_soapy()` (`core/python_runtime.py`)
 
-Resumen del flujo en `change_bandwidth()`:
+On entry, `main.py` calls `try_reexec_for_soapy()` unless `XYZ_SDR_REEXEC_DONE` is set. When the current interpreter is not the project `.venv` or a Soapy-compatible Python, the process **re-launches** itself with the correct executable, preserving **`main.py` and all CLI arguments** (fixed in commit `e9da33e`).
 
-1. Validar rate soportado (`SDRDevice.is_sample_rate_supported`).
-2. Detener RX y esperar al worker (`_rx_stop_event`).
-3. Aplicar `set_sample_rate()` en hardware.
-4. Regenerar niveles de zoom (`build_visible_spans`) y adaptar viewport sin mover la sintonía.
-5. Persistir en TOML vía `config_store.patch_device_section`.
-6. Reanudar RX si estaba activo.
+Always prefer:
 
-Los niveles de zoom ya no son fijos: dependen del `sample_rate` activo (100 kHz … sample_rate).
+```powershell
+.\scripts\run.ps1 [--flags]
+```
 
+over bare `python main.py` from an arbitrary shell.
+
+### `--sim` gate (`main.py`)
+
+| Flag | Behavior |
+|------|----------|
+| `--sim` | `driver = "simulated"`; no hardware check |
+| *(none)* | `bootstrap_soapy()`; exit 1 if import fails or `has_devices` is false |
+
+The installer wizard may add `--sim` automatically when launching without hardware; **`scripts/run.ps1` does not.**
+
+Readiness properties live in `setup/env_state.py`: `env_ready` (sim-capable) vs `hardware_ready` (real RX). See [hardware.md](hardware.md).
+
+---
+
+## Centralized viewport state
+
+`XyzSDRApp` holds shared tuning and zoom state:
+
+| Variable | Purpose |
+|----------|---------|
+| `tuned_frequency` | Absolute demod frequency (Hz) |
+| `viewport_center` | Screen center frequency (Hz) |
+| `visible_span` | Visible bandwidth / zoom (≤ `sample_rate`) |
+| `sample_rate` | IQ capture bandwidth (Hz) |
+| `scroll_step` | Hz per `←` / `→` key press |
+
+`_sync_viewport()` propagates these values to `FrequencyTimeline`, `SpectrumGraph`, and `WaterfallTimeline` so all three layers stay aligned.
+
+---
+
+## IQ bandwidth changes
+
+See [bandwidth.md](bandwidth.md). Summary of `change_bandwidth()`:
+
+1. Validate rate (`SDRDevice.is_sample_rate_supported`).
+2. Stop RX and wait for the worker (`_rx_stop_event`).
+3. Apply `set_sample_rate()` on hardware.
+4. Rebuild zoom levels (`build_visible_spans`) without moving tuned frequency.
+5. Persist via `config_store.patch_device_section`.
+6. Resume RX if it was active.
+
+Zoom levels are derived from the active `sample_rate`, not fixed presets.
+
+---
+
+## Adaptive DSP at zoom
+
+`compute_effective_fft_size()` and `compute_effective_band_cols()` (`core/dsp.py`) scale FFT size and band cache columns when the visible span narrows. This applies equally in simulation and on hardware; real devices add USB/CPU load at high zoom. Tune `config/defaults.toml` if needed ([hardware.md](hardware.md)).

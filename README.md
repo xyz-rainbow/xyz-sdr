@@ -106,8 +106,8 @@ xyz-sdr/
    O diagnóstico completo: `python setup/check_env.py --verbose`
 
 3. **Listar hardware detectado**:
-   ```bash
-   python main.py --list-dev
+   ```powershell
+   .\scripts\run.ps1 --list-dev
    ```
 
 4. **Verificación manual (Windows)**:
@@ -127,12 +127,16 @@ xyz-sdr/
    ```
    Sin hardware conectado la app **no** entra en simulación automática; usa `--sim` o conecta el SDR.
 
+   **Prefer `.\scripts\run.ps1`** over `python main.py` — the wrapper uses the project `.venv` and preserves CLI flags through Soapy re-exec (see [hardware setup](docs/hardware.md)).
+
 ---
 
 ## 📖 Documentación Completa
 
 Para profundizar en el diseño e implementación del proyecto, consulta los documentos de desarrollo en el directorio `/docs`:
+- [Hardware real vs simulación](docs/hardware.md)
 - [Arquitectura Interna](docs/architecture.md)
+- [Audio (demod + UI effects)](docs/audio.md)
 - [Bandwidth IQ (Sample Rate)](docs/bandwidth.md)
 - [Banda audible (PASS)](docs/passband.md)
 - [Funcionamiento de Widgets](docs/widgets.md)

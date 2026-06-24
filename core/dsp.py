@@ -6,10 +6,15 @@ Procesado digital de señal: FFT, demodulación FM/AM/SSB, filtros.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import signal as scipy_signal
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dsp_profiles import PresetProfile
 
 DemodMode = Literal["wbfm", "nbfm", "am", "usb", "lsb"]
 
@@ -189,26 +194,128 @@ def compute_rx_chunk_samples(
     reference_rate: float = RX_REFERENCE_SAMPLE_RATE,
     reference_windows: int = RX_REFERENCE_FFT_WINDOWS,
     max_samples: int = 256 * 1024 * 4,
+    *,
+    chunk_scale: float = 1.0,
+    low_rate_scale: float | None = None,
 ) -> int:
     """Calcula cuántas muestras IQ leer por iteración del worker RX."""
     min_samples = fft_size * max(num_avg + 2, 8)
     reference_chunk = fft_size * reference_windows
     scaled = int(reference_chunk * (sample_rate / reference_rate))
+    if low_rate_scale is not None and sample_rate < 500_000:
+        scaled = int(scaled * low_rate_scale)
     chunk = max(min_samples, scaled)
+    chunk = int(chunk * max(chunk_scale, 0.1))
     chunk = max(fft_size, (chunk // fft_size) * fft_size)
     return min(chunk, max_samples)
 
 
+def compute_audio_chunk_samples(
+    fft_chunk: int,
+    sample_rate: float,
+    *,
+    audio_chunk_max: int = 65_536,
+    fft_size: int = 8192,
+) -> int:
+    """Tamaño IQ para demod audio (Phase 3: desacople espectro/audio)."""
+    if sample_rate <= 500_000:
+        target = min(audio_chunk_max, max(fft_size * 4, 4096))
+    else:
+        target = min(audio_chunk_max, max(fft_size * 8, fft_chunk // 2))
+    target = max(fft_size, (target // fft_size) * fft_size)
+    return min(target, fft_chunk)
+
+
 # ─── Filtros ────────────────────────────────────────────────────────────────
+
+def _adaptive_fir_order(
+    cutoff_hz: float,
+    sample_rate: float,
+    *,
+    min_order: int = 63,
+    max_order: int = 4095,
+) -> int:
+    """Más taps cuando el corte es muy bajo respecto a la tasa (p. ej. WBFM @ 8 MHz)."""
+    nyq = sample_rate / 2
+    if cutoff_hz >= nyq * 0.95:
+        return min_order
+    transition_hz = max(cutoff_hz * 0.25, 1_500.0)
+    order = int(3.3 * sample_rate / transition_hz)
+    order = max(min_order, min(order, max_order))
+    if order % 2 == 0:
+        order += 1
+    return order
+
+
+def resample_iq_for_demod(
+    samples: np.ndarray,
+    sample_rate: float,
+    channel_bw_hz: float,
+    *,
+    oversample: float = 2.8,
+    min_rate: float = 250_000,
+    max_rate: float | None = None,
+    target_rate: float | None = None,
+) -> tuple[np.ndarray, float]:
+    """
+    Reduce la tasa IQ antes de demodular.
+
+    Con bandwidth IQ alto (p. ej. 8 MHz) un filtro corto no rechaza el ruido fuera del
+    PASS (~200 kHz WBFM); decimar IQ primero mejora mucho el audio FM.
+    """
+    if len(samples) == 0 or sample_rate <= 0:
+        return samples, sample_rate
+    bw = max(channel_bw_hz, 10_000.0)
+    if target_rate is not None:
+        target = min(float(sample_rate), max(float(target_rate), min_rate))
+    else:
+        target = max(bw * oversample, min_rate)
+        if max_rate is not None:
+            target = min(target, max_rate)
+        target = min(float(sample_rate), target)
+    if sample_rate <= target * 1.1:
+        return samples, float(sample_rate)
+
+    out = samples
+    sr = float(sample_rate)
+    while sr / target > 1.05:
+        factor = min(max(int(sr / target), 2), 16)
+        out = scipy_signal.resample_poly(out, 1, factor)
+        sr /= factor
+    return out.astype(samples.dtype, copy=False), sr
+
+
+def resample_audio_to_rate(
+    audio: np.ndarray,
+    sample_rate_in: float,
+    sample_rate_out: float = 48_000,
+) -> np.ndarray:
+    """Remuestrea audio a tasa exacta (p. ej. 48 kHz) vía resample_poly racional."""
+    if audio is None or len(audio) == 0 or sample_rate_in <= 0:
+        return audio
+    if abs(sample_rate_in - sample_rate_out) < 0.5:
+        return np.asarray(audio, dtype=np.float32).ravel()
+    ratio = Fraction(sample_rate_out / sample_rate_in).limit_denominator(1000)
+    out = scipy_signal.resample_poly(
+        np.asarray(audio, dtype=np.float64).ravel(),
+        ratio.numerator,
+        ratio.denominator,
+    )
+    return out.astype(np.float32, copy=False)
+
 
 def low_pass_filter(
     samples: np.ndarray,
     cutoff_hz: float,
     sample_rate: float,
-    order: int = 64,
+    order: int | None = None,
 ) -> np.ndarray:
-    """Filtro paso bajo FIR."""
-    nyq  = sample_rate / 2
+    """Filtro paso bajo FIR (orden adaptativo si no se indica)."""
+    nyq = sample_rate / 2
+    if cutoff_hz >= nyq * 0.99:
+        return samples
+    if order is None:
+        order = _adaptive_fir_order(cutoff_hz, sample_rate)
     taps = scipy_signal.firwin(order + 1, cutoff_hz / nyq)
     return scipy_signal.lfilter(taps, 1.0, samples)
 
@@ -236,21 +343,25 @@ def fm_deemphasis(
     sample_rate: float,
     *,
     tau_us: float = 75.0,
-) -> np.ndarray:
-    """Filtro de de-emphasis FM (tau típico 75 µs América / 50 µs Europa)."""
+    zi: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Filtro de de-emphasis FM (tau típico 75 µs América / 50 µs Europa).
+
+    Implementación IIR estándar: y[n] = x[n] + alpha * y[n-1].
+    Devuelve (audio, estado) para continuidad entre chunks.
+    """
     if tau_us <= 0 or len(audio) == 0:
-        return audio
+        empty_zi = np.zeros(1, dtype=np.float64)
+        return audio, empty_zi if zi is None else zi
     tau_s = tau_us * 1e-6
-    # y[n] = x[n] + alpha * (y[n-1] - x[n]); alpha = exp(-1/(fs*tau))
     alpha = math.exp(-1.0 / (sample_rate * tau_s))
-    out = np.empty_like(audio, dtype=np.float64)
-    prev_y = 0.0
-    prev_x = 0.0
-    for i, x in enumerate(audio.astype(np.float64, copy=False)):
-        prev_y = float(x) + alpha * (prev_y - prev_x)
-        prev_x = float(x)
-        out[i] = prev_y
-    return out.astype(np.float32)
+    b = np.array([1.0], dtype=np.float64)
+    a = np.array([1.0, -alpha], dtype=np.float64)
+    if zi is None:
+        zi = np.zeros(1, dtype=np.float64)
+    out, zf = scipy_signal.lfilter(b, a, audio.astype(np.float64, copy=False), zi=zi)
+    return out.astype(np.float32), zf
 
 
 def _normalize_audio(audio: np.ndarray) -> np.ndarray:
@@ -258,6 +369,130 @@ def _normalize_audio(audio: np.ndarray) -> np.ndarray:
     if peak > 0:
         audio = audio / peak * NORMALIZE_LEVEL
     return audio.astype(np.float32)
+
+
+class AudioAgc:
+    """AGC post-demod por chunks con ataque/release suaves."""
+
+    def __init__(
+        self,
+        target_rms: float = 0.12,
+        max_gain: float = 8.0,
+        min_gain: float = 0.05,
+        attack_ms: float = 8.0,
+        release_ms: float = 250.0,
+    ):
+        self.target_rms = target_rms
+        self.max_gain = max_gain
+        self.min_gain = min_gain
+        self.attack_ms = attack_ms
+        self.release_ms = release_ms
+        self._gain = 1.0
+
+    def configure(
+        self,
+        *,
+        target_rms: float | None = None,
+        max_gain: float | None = None,
+        attack_ms: float | None = None,
+        release_ms: float | None = None,
+    ) -> None:
+        if target_rms is not None:
+            self.target_rms = max(1e-4, target_rms)
+        if max_gain is not None:
+            self.max_gain = max(1.0, max_gain)
+        if attack_ms is not None:
+            self.attack_ms = max(0.1, attack_ms)
+        if release_ms is not None:
+            self.release_ms = max(1.0, release_ms)
+
+    def reset(self) -> None:
+        self._gain = 1.0
+
+    def process(self, audio: np.ndarray, sample_rate: float = 48_000) -> np.ndarray:
+        if audio is None or len(audio) == 0:
+            return audio
+        rms = float(np.sqrt(np.mean(np.square(audio.astype(np.float64)))))
+        if rms < 1e-8:
+            return audio
+        desired = float(np.clip(self.target_rms / rms, self.min_gain, self.max_gain))
+        chunk_ms = (len(audio) / max(sample_rate, 1.0)) * 1000.0
+        tau = self.attack_ms if desired > self._gain else self.release_ms
+        alpha = math.exp(-chunk_ms / max(tau, 0.1))
+        self._gain = desired + (self._gain - desired) * alpha
+        out = audio.astype(np.float32, copy=False) * self._gain
+        return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+
+def apply_fm_agc(
+    audio: np.ndarray,
+    gate: AudioAgc,
+    *,
+    enabled: bool,
+    sample_rate: float = 48_000,
+) -> np.ndarray:
+    """Aplica AGC FM reutilizando estado entre chunks RX."""
+    if not enabled or audio is None or len(audio) == 0:
+        return audio
+    return gate.process(audio, sample_rate)
+
+
+@dataclass
+class FmDemodState:
+    """Estado entre chunks para discriminador FM y de-emphasis."""
+
+    last_filtered: complex = 0j
+    deemph_zi: np.ndarray = field(default_factory=lambda: np.zeros(1, dtype=np.float64))
+
+    def reset(self) -> None:
+        self.last_filtered = 0j
+        self.deemph_zi = np.zeros(1, dtype=np.float64)
+
+
+def _iq_demod_kwargs(
+    profile: PresetProfile | None,
+    channel_bw_hz: float,
+    audio_rate: float,
+) -> dict:
+    if profile is None:
+        return {}
+    from core.dsp_profiles import compute_target_demod_rate
+
+    target = compute_target_demod_rate(channel_bw_hz, profile, audio_rate=audio_rate)
+    return {
+        "oversample": profile.oversample,
+        "min_rate": profile.iq_demod_min_hz,
+        "max_rate": profile.iq_demod_max_hz,
+        "target_rate": target,
+    }
+
+
+def _fm_discriminator(
+    filtered: np.ndarray,
+    state: FmDemodState | None,
+) -> np.ndarray:
+    """Discriminador de fase con continuidad opcional entre chunks."""
+    if len(filtered) < 2:
+        return np.zeros(0, dtype=np.float64)
+    if state is not None and state.last_filtered != 0j:
+        extended = np.empty(len(filtered) + 1, dtype=filtered.dtype)
+        extended[0] = state.last_filtered
+        extended[1:] = filtered
+        demod = np.angle(extended[1:] * np.conj(extended[:-1]))
+        state.last_filtered = complex(filtered[-1])
+    else:
+        demod = np.angle(filtered[1:] * np.conj(filtered[:-1]))
+        if state is not None and len(filtered) > 0:
+            state.last_filtered = complex(filtered[-1])
+    return demod.astype(np.float64, copy=False)
+
+
+def _audio_from_demod(
+    demod: np.ndarray,
+    sample_rate: float,
+    audio_rate: float,
+) -> np.ndarray:
+    return resample_audio_to_rate(demod, sample_rate, audio_rate)
 
 
 # ─── Demoduladores ──────────────────────────────────────────────────────────
@@ -270,6 +505,8 @@ def demod_wbfm(
     bandwidth_hz: float = 200_000,
     fm_deemphasis_us: float = 75.0,
     frequency_offset_hz: float = 0.0,
+    fm_state: FmDemodState | None = None,
+    profile: PresetProfile | None = None,
 ) -> np.ndarray:
     """
     Demodulador FM de banda ancha (WBFM).
@@ -279,17 +516,19 @@ def demod_wbfm(
         samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
 
     bw = max(bandwidth_hz, 10_000.0)
+    resample_kw = _iq_demod_kwargs(profile, bw, audio_rate)
+    samples, sample_rate = resample_iq_for_demod(samples, sample_rate, bw, **resample_kw)
     filtered = low_pass_filter(samples, bw / 2, sample_rate)
 
-    demod = np.angle(filtered[1:] * np.conj(filtered[:-1]))
+    demod = _fm_discriminator(filtered, fm_state)
+    audio = _audio_from_demod(demod, sample_rate, audio_rate)
 
-    dec_factor = int(sample_rate / audio_rate)
-    if dec_factor > 1:
-        audio = decimate(demod, dec_factor)
+    if fm_state is not None:
+        audio, fm_state.deemph_zi = fm_deemphasis(
+            audio, audio_rate, tau_us=fm_deemphasis_us, zi=fm_state.deemph_zi
+        )
     else:
-        audio = demod
-
-    audio = fm_deemphasis(audio, audio_rate, tau_us=fm_deemphasis_us)
+        audio, _ = fm_deemphasis(audio, audio_rate, tau_us=fm_deemphasis_us)
     return _normalize_audio(audio)
 
 
@@ -302,6 +541,8 @@ def demod_nbfm(
     bandwidth_hz: float | None = None,
     fm_deemphasis_us: float = 75.0,
     frequency_offset_hz: float = 0.0,
+    fm_state: FmDemodState | None = None,
+    profile: PresetProfile | None = None,
 ) -> np.ndarray:
     """
     Demodulador FM de banda estrecha (NBFM).
@@ -311,18 +552,21 @@ def demod_nbfm(
         samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
 
     bw = bandwidth_hz if bandwidth_hz is not None else deviation * 2.5
+    bw = max(float(bw), 3_000.0)
+    resample_kw = _iq_demod_kwargs(profile, bw, audio_rate)
+    samples, sample_rate = resample_iq_for_demod(samples, sample_rate, bw, **resample_kw)
     filtered = low_pass_filter(samples, bw / 2, sample_rate)
 
-    demod = np.angle(filtered[1:] * np.conj(filtered[:-1]))
+    demod = _fm_discriminator(filtered, fm_state)
     demod = demod / (2 * np.pi * deviation / sample_rate)
+    audio = _audio_from_demod(demod, sample_rate, audio_rate)
 
-    dec_factor = int(sample_rate / audio_rate)
-    if dec_factor > 1:
-        audio = decimate(demod.real, dec_factor)
+    if fm_state is not None:
+        audio, fm_state.deemph_zi = fm_deemphasis(
+            audio, audio_rate, tau_us=fm_deemphasis_us, zi=fm_state.deemph_zi
+        )
     else:
-        audio = demod.real
-
-    audio = fm_deemphasis(audio, audio_rate, tau_us=fm_deemphasis_us)
+        audio, _ = fm_deemphasis(audio, audio_rate, tau_us=fm_deemphasis_us)
     peak = np.max(np.abs(audio))
     if peak > 0:
         audio = np.clip(audio / peak, -1, 1) * NORMALIZE_LEVEL
@@ -336,6 +580,7 @@ def demod_am(
     *,
     bandwidth_hz: float = 5_000,
     frequency_offset_hz: float = 0.0,
+    profile: PresetProfile | None = None,
 ) -> np.ndarray:
     """
     Demodulador AM (detección de envolvente).
@@ -343,18 +588,15 @@ def demod_am(
     if frequency_offset_hz:
         samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
 
+    audio_bw = max(bandwidth_hz, 1_000.0)
+    resample_kw = _iq_demod_kwargs(profile, audio_bw, audio_rate)
+    samples, sample_rate = resample_iq_for_demod(samples, sample_rate, audio_bw, **resample_kw)
+
     envelope = np.abs(samples)
     envelope -= np.mean(envelope)
 
-    audio_bw = max(bandwidth_hz, 1_000.0)
     filtered = low_pass_filter(envelope, audio_bw / 2, sample_rate)
-
-    dec_factor = int(sample_rate / audio_rate)
-    if dec_factor > 1:
-        audio = decimate(filtered, dec_factor)
-    else:
-        audio = filtered
-
+    audio = _audio_from_demod(filtered.astype(np.float64), sample_rate, audio_rate)
     return _normalize_audio(audio)
 
 
@@ -363,33 +605,29 @@ def demod_ssb(
     sample_rate: float = 2.048e6,
     audio_rate: float = 48_000,
     mode: Literal["usb", "lsb"] = "usb",
+    *,
+    bandwidth_hz: float = 3_000,
+    frequency_offset_hz: float = 0.0,
+    profile: PresetProfile | None = None,
 ) -> np.ndarray:
     """
     Demodulador SSB (USB/LSB).
     Ideal para radioaficionados en HF.
     """
-    bw = 3_000  # 3 kHz ancho de banda de voz
+    bw = max(float(bandwidth_hz), 1_500.0)
+
+    if frequency_offset_hz:
+        samples = shift_to_baseband(samples, frequency_offset_hz, sample_rate)
+
+    resample_kw = _iq_demod_kwargs(profile, bw, audio_rate)
+    samples, sample_rate = resample_iq_for_demod(samples, sample_rate, bw, **resample_kw)
 
     if mode == "lsb":
-        # Invertir espectro para LSB
         samples = samples * np.exp(-1j * 2 * np.pi * bw * np.arange(len(samples)) / sample_rate)
 
-    # Filtro paso bajo
-    filtered = low_pass_filter(samples, bw, sample_rate)
-
-    # Tomar parte real
-    audio = filtered.real
-
-    dec_factor = int(sample_rate / audio_rate)
-    if dec_factor > 1:
-        audio = decimate(audio, dec_factor)
-
-    # Normalizar
-    peak = np.max(np.abs(audio))
-    if peak > 0:
-        audio = audio / peak * NORMALIZE_LEVEL
-
-    return audio.astype(np.float32)
+    filtered = low_pass_filter(samples, bw / 2, sample_rate)
+    audio = _audio_from_demod(filtered.real.astype(np.float64), sample_rate, audio_rate)
+    return _normalize_audio(audio)
 
 
 # ─── Router de demodulación ─────────────────────────────────────────────────
@@ -403,10 +641,17 @@ def demodulate(
     passband_width_hz: float | None = None,
     fm_deemphasis_us: float = 75.0,
     frequency_offset_hz: float = 0.0,
+    fm_state: FmDemodState | None = None,
+    profile: PresetProfile | None = None,
 ) -> np.ndarray:
-    """Demodula según el modo especificado. Retorna audio float32."""
-    offset_kw = {"frequency_offset_hz": frequency_offset_hz}
+    """Demodula según el modo especificado. Retorna audio float32 @ audio_rate."""
+    from core.dsp_profiles import profile_for_sample_rate
+
+    if profile is None:
+        profile = profile_for_sample_rate(sample_rate)
+    offset_kw = {"frequency_offset_hz": frequency_offset_hz, "profile": profile}
     deemph_kw = {"fm_deemphasis_us": fm_deemphasis_us}
+    fm_kw = {"fm_state": fm_state}
 
     if mode == "wbfm":
         bw = passband_width_hz if passband_width_hz is not None else 200_000
@@ -417,6 +662,7 @@ def demodulate(
             bandwidth_hz=bw,
             **deemph_kw,
             **offset_kw,
+            **fm_kw,
         )
     if mode == "nbfm":
         bw = passband_width_hz
@@ -427,6 +673,7 @@ def demodulate(
             bandwidth_hz=bw,
             **deemph_kw,
             **offset_kw,
+            **fm_kw,
         )
     if mode == "am":
         bw = passband_width_hz if passband_width_hz is not None else 5_000
@@ -438,9 +685,25 @@ def demodulate(
             **offset_kw,
         )
     if mode == "usb":
-        return demod_ssb(samples, sample_rate, audio_rate, "usb")
+        bw = passband_width_hz if passband_width_hz is not None else 3_000
+        return demod_ssb(
+            samples,
+            sample_rate,
+            audio_rate,
+            "usb",
+            bandwidth_hz=bw,
+            **offset_kw,
+        )
     if mode == "lsb":
-        return demod_ssb(samples, sample_rate, audio_rate, "lsb")
+        bw = passband_width_hz if passband_width_hz is not None else 3_000
+        return demod_ssb(
+            samples,
+            sample_rate,
+            audio_rate,
+            "lsb",
+            bandwidth_hz=bw,
+            **offset_kw,
+        )
     raise ValueError(f"Modo desconocido: {mode}. Opciones: wbfm, nbfm, am, usb, lsb")
 
 

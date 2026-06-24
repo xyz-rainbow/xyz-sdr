@@ -14,7 +14,7 @@ import numpy as np
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, Container, VerticalScroll, VerticalGroup
+from textual.containers import Horizontal, Vertical, Container, VerticalGroup
 from textual.widgets import (
     Header, Static, Label, Button,
     Select, Input, Log,
@@ -23,16 +23,25 @@ from textual.reactive import reactive
 from textual import work, events
 
 from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
-from core.config_store import patch_device_section, patch_dsp_section
-from core.band_buffer import BandFrameMailbox, make_band_frame
+from core.config_store import patch_device_section, patch_dsp_section, patch_display_section
+from core.band_buffer import BandFrameMailbox, make_band_frame, slice_band_to_viewport
 from core.dsp import (
     average_psd,
     compute_effective_band_cols,
     compute_effective_fft_size,
     compute_rx_chunk_samples,
+    compute_audio_chunk_samples,
     apply_squelch_with_state,
+    apply_fm_agc,
     estimate_snr_at_freq,
     SquelchGate,
+    AudioAgc,
+    FmDemodState,
+)
+from core.dsp_profiles import (
+    profile_for_sample_rate,
+    effective_fft_avg,
+    is_mode_recommended,
 )
 from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
@@ -47,6 +56,8 @@ from tui.widgets.passband_messages import PassbandPreview, PassbandSelectRequest
 from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
 from tui.widgets.waterfall_timeline import WaterfallTimeline
+from core.display_levels import ColumnLevelTracker
+from tui.widgets.display_palette import compute_auto_levels, plot_content_width
 
 logger = logging.getLogger(__name__)
 
@@ -651,38 +662,22 @@ class XyzSDRApp(App):
         border: round #10b981;
     }
 
-    #waterfall_area {
-        height: 1fr;
+    #waterfall_speed_row {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        width: 100%;
         layout: horizontal;
-        align: left top;
-    }
-
-    #waterfall_speed_bar {
-        width: 7;
-        height: 100%;
-        min-height: 0;
-        background: transparent;
-        border: none;
-        border-left: solid #1e293b;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-size: 0 0;
+        background: #090d16;
+        border-left: round #6366f1;
+        border-right: round #6366f1;
         padding: 0;
         margin: 0;
-    }
-
-    #waterfall_speed_bar .speed-btn-stack {
-        layout: vertical;
-        height: auto;
-        width: 100%;
         grid-gutter: 0 0;
-        padding: 0;
-        margin: 0;
-        align: left top;
     }
 
-    #waterfall_speed_bar Button.spd-btn {
-        width: 100%;
+    #waterfall_speed_row Button.spd-btn {
+        width: 1fr;
         height: 3;
         min-height: 3;
         max-height: 3;
@@ -697,42 +692,42 @@ class XyzSDRApp(App):
         border: round #4338ca;
     }
 
-    #waterfall_speed_bar Button.spd-btn:hover,
-    #waterfall_speed_bar Button.spd-btn:focus,
-    #waterfall_speed_bar Button.spd-btn.-active,
-    #waterfall_speed_bar Button.spd-btn.-highlight {
+    #waterfall_speed_row Button.spd-btn:hover,
+    #waterfall_speed_row Button.spd-btn:focus,
+    #waterfall_speed_row Button.spd-btn.-active,
+    #waterfall_speed_row Button.spd-btn.-highlight {
         background: #090d16;
         background-tint: transparent;
         border: round #4338ca;
     }
 
-    #waterfall_speed_bar Button.spd-a {
+    #waterfall_speed_row Button.spd-a {
         color: #818cf8;
         border: round #4338ca;
     }
 
-    #waterfall_speed_bar Button.spd-b {
+    #waterfall_speed_row Button.spd-b {
         color: #c084fc;
         border: round #6d28d9;
     }
 
-    #waterfall_speed_bar Button.spd-a:hover,
-    #waterfall_speed_bar Button.spd-a:focus {
+    #waterfall_speed_row Button.spd-a:hover,
+    #waterfall_speed_row Button.spd-a:focus {
         color: #818cf8;
         border: round #4338ca;
     }
 
-    #waterfall_speed_bar Button.spd-b:hover,
-    #waterfall_speed_bar Button.spd-b:focus {
+    #waterfall_speed_row Button.spd-b:hover,
+    #waterfall_speed_row Button.spd-b:focus {
         color: #c084fc;
         border: round #6d28d9;
     }
 
-    #waterfall_speed_bar Button.spd-btn.active-spd,
-    #waterfall_speed_bar Button.spd-btn.active-spd:hover,
-    #waterfall_speed_bar Button.spd-btn.active-spd:focus,
-    #waterfall_speed_bar Button.spd-btn.active-spd.-active,
-    #waterfall_speed_bar Button.spd-btn.active-spd.-highlight {
+    #waterfall_speed_row Button.spd-btn.active-spd,
+    #waterfall_speed_row Button.spd-btn.active-spd:hover,
+    #waterfall_speed_row Button.spd-btn.active-spd:focus,
+    #waterfall_speed_row Button.spd-btn.active-spd.-active,
+    #waterfall_speed_row Button.spd-btn.active-spd.-highlight {
         background: #090d16;
         background-tint: transparent;
         color: #a3e635;
@@ -740,13 +735,12 @@ class XyzSDRApp(App):
     }
 
     WaterfallTimeline {
-        width: 1fr;
-        height: 100%;
+        width: 100%;
+        height: 1fr;
         min-height: 0;
         overflow: hidden;
         background: #090d16;
         border: round #6366f1;
-        border-right: none;
     }
 
     #log_panel {
@@ -813,6 +807,7 @@ class XyzSDRApp(App):
     GAIN_OPTIONS = [0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
     VOLUME_OPTIONS = [0, 10, 20, 30, 40, 50, 60, 70, 75, 80, 90, 100]
     SQUELCH_THRESHOLD_OPTIONS = [5, 10, 12, 15, 18, 20, 25, 30, 35, 40]
+    FM_DEEMPHASIS_OPTIONS = [50, 75]
 
     # ── Inicializacion ───────────────────────────────────────────────────────
 
@@ -851,7 +846,8 @@ class XyzSDRApp(App):
             demod_mode, dsp_cfg_init
         )
         self._passband_preview_width: float | None = None
-        self.fm_deemphasis_us: float = float(dsp_cfg_init.get("fm_deemphasis_us", 75))
+        self.fm_deemphasis_us: float = float(dsp_cfg_init.get("fm_deemphasis_us", 50))
+        self.fm_agc_enabled: bool = bool(dsp_cfg_init.get("fm_agc_enabled", True))
         initial_rate = float(self.config.get("device", {}).get("sample_rate", 2_048_000))
         self.sample_rate: float = initial_rate
         self.visible_spans: list[float] = build_visible_spans(initial_rate)
@@ -878,6 +874,10 @@ class XyzSDRApp(App):
         self._debug_ui_proc_ms: list[float] = []
         self._debug_frame_latency_ms: list[float] = []
         self._debug_last_viewport_ms: float = 0.0
+        self._debug_chunk_samples: list[int] = []
+        self._debug_chunk_duration_ms: list[float] = []
+        self._debug_demod_ms: list[float] = []
+        self._debug_audio_samples: list[int] = []
         self._debug_report_window_start: float = time.time()
         self._viewport_debounce_timer = None
         self._status_last_update: float = 0.0
@@ -894,6 +894,11 @@ class XyzSDRApp(App):
             threshold_db=self.squelch_threshold,
             hang_ms=self.squelch_hang_ms,
         )
+        audio_rate = float(dsp_cfg.get("audio_rate", 48_000))
+        self._audio_rate = int(audio_rate)
+        self._fm_agc = AudioAgc()
+        self._fm_agc_sample_rate = audio_rate
+        self._fm_demod_state = FmDemodState()
 
         rec_cfg = self.config.get("recorder", {})
         self._project_root = Path(self.config_path).resolve().parent.parent
@@ -902,6 +907,23 @@ class XyzSDRApp(App):
             project_root=self._project_root,
         )
         self._recorder = SDRRecorder(self._recordings_dir)
+
+        display_cfg_init = self.config.get("display", {})
+        self.waterfall_auto_level = bool(display_cfg_init.get("waterfall_auto_level", True))
+        self.display_level_mode = str(display_cfg_init.get("display_level_mode", "per_column"))
+        self._tracker_viewport_span: float | None = None
+        self._level_tracker = ColumnLevelTracker(
+            width=max(self._display_width, 1),
+            floor_pct=float(display_cfg_init.get("column_floor_pct", 10)),
+            ceiling_pct=float(display_cfg_init.get("column_ceiling_pct", 99)),
+            min_range_db=float(display_cfg_init.get("waterfall_min_range_db", 6.0)),
+            attack=float(display_cfg_init.get("column_ema_attack", 0.35)),
+            release=float(display_cfg_init.get("column_ema_release", 0.08)),
+            smooth_bins=int(display_cfg_init.get("column_smooth_bins", 3)),
+            history_rows=int(display_cfg_init.get("column_history_rows", 32)),
+        )
+        span_ratio = self.visible_span / max(self.sample_rate, 1.0)
+        self._level_tracker.set_span_ratio(span_ratio)
 
     def _load_passband_width_for_mode(self, mode: str, dsp_cfg: dict | None = None) -> float:
         cfg = dsp_cfg or self.config.get("dsp", {})
@@ -936,8 +958,18 @@ class XyzSDRApp(App):
             waterfall.passband_center_hz = self.passband_center_hz
             waterfall.passband_width_hz = self.passband_width_hz
             waterfall.passband_preview_width_hz = preview
+            waterfall.waterfall_auto_level = self.waterfall_auto_level
         except Exception:
             pass
+
+    def _persist_display_config(self, *, waterfall_auto_level: bool | None = None) -> None:
+        try:
+            patch_display_section(
+                self.config_path,
+                waterfall_auto_level=waterfall_auto_level,
+            )
+        except Exception as exc:
+            self._log(f"[WARN] No se pudo guardar config display: {exc}")
 
     def _persist_passband_width(self) -> None:
         kwargs: dict = {}
@@ -1020,6 +1052,10 @@ class XyzSDRApp(App):
         display_cfg = self.config.get("display", {})
         waterfall_max_history = int(display_cfg.get("waterfall_history", 100))
         waterfall_buffer_ratio = float(display_cfg.get("waterfall_history_buffer_ratio", 2 / 3))
+        waterfall_auto_level = bool(display_cfg.get("waterfall_auto_level", True))
+        waterfall_level_low_pct = float(display_cfg.get("waterfall_level_low_pct", 5))
+        waterfall_level_high_pct = float(display_cfg.get("waterfall_level_high_pct", 99))
+        waterfall_min_range_db = float(display_cfg.get("waterfall_min_range_db", 6.0))
 
         yield Header()
 
@@ -1073,20 +1109,22 @@ class XyzSDRApp(App):
             with Vertical(id="display_area"):
                 yield FrequencyTimeline(id="timeline")
                 yield SpectrumGraph(id="spectrum")
-                with Horizontal(id="waterfall_area"):
-                    yield WaterfallTimeline(
-                        id="waterfall",
-                        max_history=waterfall_max_history,
-                        history_buffer_ratio=waterfall_buffer_ratio,
-                    )
-                    with VerticalScroll(id="waterfall_speed_bar", can_focus=True):
-                        with VerticalGroup(classes="speed-btn-stack"):
-                            for i, spd in enumerate(WATERFALL_SPEEDS):
-                                yield Button(
-                                    str(spd),
-                                    id=f"btn_spd_{spd}",
-                                    classes=f"spd-btn spd-{'a' if i % 2 == 0 else 'b'}",
-                                )
+                with Horizontal(id="waterfall_speed_row"):
+                    for i, spd in enumerate(WATERFALL_SPEEDS):
+                        yield Button(
+                            str(spd),
+                            id=f"btn_spd_{spd}",
+                            classes=f"spd-btn spd-{'a' if i % 2 == 0 else 'b'}",
+                        )
+                yield WaterfallTimeline(
+                    id="waterfall",
+                    max_history=waterfall_max_history,
+                    history_buffer_ratio=waterfall_buffer_ratio,
+                    waterfall_auto_level=waterfall_auto_level,
+                    level_low_pct=waterfall_level_low_pct,
+                    level_high_pct=waterfall_level_high_pct,
+                    min_range_db=waterfall_min_range_db,
+                )
                 yield Log(id="log_panel", max_lines=200)
 
         yield StatusBar(id="status")
@@ -1095,7 +1133,14 @@ class XyzSDRApp(App):
 
     def on_mount(self) -> None:
         self._device = SDRDevice(driver=self.driver)
-        self._device.open()
+        _hw_open_error: str | None = None
+        try:
+            self._device.open()
+        except HardwareInitializationError as exc:
+            _hw_open_error = str(exc)
+            self.driver = "simulated"
+            self._device = SDRDevice(driver="simulated")
+            self._device.open()
         self._device.set_frequency(self.tuned_frequency)
         self._device.set_gain(self.gain_value)
         self.sample_rate = self._device.sample_rate
@@ -1124,7 +1169,11 @@ class XyzSDRApp(App):
         self._set_waterfall_speed(10)  # Establecer velocidad inicial de cascada (10 fps)
 
         log = self.query_one("#log_panel", Log)
-        if self._device.is_simulated:
+        if _hw_open_error:
+            log.write_line(f"[ERR]  Hardware no disponible: {_hw_open_error}")
+            log.write_line("[WARN] Modo SIMULACION activado (servicio SDRplay no responde o dispositivo ocupado)")
+            log.write_line("[INFO] Para restaurar RX real: 1) Cierra SDRuno  2) Verifica servicio SDRplay  3) Reinicia la app")
+        elif self._device.is_simulated:
             log.write_line("[WARN] Hardware no detectado -- Modo SIMULACION activado")
             log.write_line("[INFO] Para usar hardware real instala PothosSDR + SDRplay API")
         else:
@@ -1156,6 +1205,37 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
+    def _compute_column_levels(
+        self,
+        cols: np.ndarray,
+        display_cfg: dict,
+        waterfall: WaterfallTimeline | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Calcula suelo/techo por columna (per-column o global)."""
+        width = len(cols)
+        min_range_db = float(display_cfg.get("waterfall_min_range_db", 6.0))
+        low_pct = float(display_cfg.get("waterfall_level_low_pct", 5))
+        high_pct = float(display_cfg.get("waterfall_level_high_pct", 99))
+
+        if not self.waterfall_auto_level:
+            return np.full(width, -80.0), np.full(width, -20.0)
+
+        if self.display_level_mode == "per_column":
+            history = None
+            if waterfall is not None:
+                history_rows = int(display_cfg.get("column_history_rows", 32))
+                history = waterfall.get_level_history(max_rows=history_rows)
+            self._level_tracker.update(cols, history)
+            return self._level_tracker.floors, self._level_tracker.ceilings
+
+        level_min, level_max = compute_auto_levels(
+            cols,
+            low_pct=low_pct,
+            high_pct=high_pct,
+            min_range_db=min_range_db,
+        )
+        return np.full(width, level_min), np.full(width, level_max)
+
     def _flush_display_frames(self) -> None:
         """Coalescing: aplica el frame más reciente al espectro y waterfall."""
         if not self._rx_active:
@@ -1169,13 +1249,36 @@ class XyzSDRApp(App):
         self._last_snr = snr
 
         ui_t0 = time.perf_counter()
+        display_cfg = self.config.get("display", {})
+        cols = slice_band_to_viewport(
+            frame.band_cols,
+            frame.center_hz,
+            frame.sample_rate,
+            self.viewport_center,
+            self.visible_span,
+            self._display_width,
+        )
+
+        waterfall = None
         try:
-            self.query_one("#spectrum", SpectrumGraph).set_band_frame(frame)
+            waterfall = self.query_one("#waterfall", WaterfallTimeline)
+        except Exception:
+            pass
+
+        floors, ceilings = self._compute_column_levels(cols, display_cfg, waterfall)
+
+        try:
+            spectrum = self.query_one("#spectrum", SpectrumGraph)
+            spectrum.set_column_levels(floors, ceilings)
+            spectrum.set_band_frame(frame)
         except Exception:
             pass
 
         try:
-            self.query_one("#waterfall", WaterfallTimeline).add_band_row(frame)
+            if waterfall is None:
+                waterfall = self.query_one("#waterfall", WaterfallTimeline)
+            waterfall.set_column_levels(floors, ceilings)
+            waterfall.add_band_row(frame)
         except Exception:
             pass
 
@@ -1211,9 +1314,22 @@ class XyzSDRApp(App):
             ui_proc = list(self._debug_ui_proc_ms)
             latencies = list(self._debug_frame_latency_ms)
             viewport_ms = self._debug_last_viewport_ms
+            chunk_samples = list(self._debug_chunk_samples)
+            chunk_ms = list(self._debug_chunk_duration_ms)
+            demod_ms = list(self._debug_demod_ms)
+            audio_out = list(self._debug_audio_samples)
+            underruns = 0
+            dropped = 0
+            if self._audio_output:
+                underruns = self._audio_output.underrun_count
+                dropped = self._audio_output.dropped_chunks
 
             self._debug_rx_iter_count = 0
             self._debug_display_frames = 0
+            self._debug_chunk_samples.clear()
+            self._debug_chunk_duration_ms.clear()
+            self._debug_demod_ms.clear()
+            self._debug_audio_samples.clear()
             self._debug_report_window_start = now
 
         if not self._rx_active:
@@ -1234,6 +1350,18 @@ class XyzSDRApp(App):
             parts.append(f"UI {ui_fps:.1f} fps draw {avg_ui:.1f}ms lat {avg_lat:.0f}ms p95 {p95_lat:.0f}ms")
         if viewport_ms > 0:
             parts.append(f"viewport {viewport_ms:.1f}ms")
+        if chunk_samples:
+            avg_chunk = int(sum(chunk_samples) / len(chunk_samples))
+            avg_dur = sum(chunk_ms) / len(chunk_ms) if chunk_ms else 0.0
+            parts.append(f"iq {avg_chunk} smp {avg_dur:.0f}ms")
+        if demod_ms:
+            avg_demod = sum(demod_ms) / len(demod_ms)
+            parts.append(f"demod {avg_demod:.1f}ms")
+        if audio_out:
+            avg_audio = int(sum(audio_out) / len(audio_out))
+            parts.append(f"audio {avg_audio} smp/iter")
+        if underruns or dropped:
+            parts.append(f"audio u/d {underruns}/{dropped}")
 
         if len(parts) > 1:
             self._log(" | ".join(parts))
@@ -1242,13 +1370,19 @@ class XyzSDRApp(App):
         self._update_display_width()
 
     def _update_display_width(self) -> None:
-        """Ancho de referencia; re-slicea espectro al redimensionar terminal."""
+        """Ancho de referencia compartido espectro/waterfall."""
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
-            width = spectrum.size.width
+            waterfall = self.query_one("#waterfall", WaterfallTimeline)
+            width = plot_content_width(spectrum)
             if width > 0:
+                if width != self._display_width:
+                    self._level_tracker.reconfigure(width)
                 self._display_width = width
+                spectrum.set_frequency_columns(width)
+                waterfall.set_frequency_columns(width)
                 spectrum.set_viewport(self.viewport_center, self.visible_span)
+                waterfall.set_viewport(self.viewport_center, self.visible_span)
         except Exception:
             pass
 
@@ -1323,6 +1457,15 @@ class XyzSDRApp(App):
     def _apply_display_viewport(self) -> None:
         """Actualiza espectro y waterfall (re-slice desde caché de banda)."""
         vp_t0 = time.perf_counter() if self.debug_mode else 0.0
+
+        span_ratio = self.visible_span / max(self.sample_rate, 1.0)
+        self._level_tracker.set_span_ratio(span_ratio)
+        if (
+            self._tracker_viewport_span is None
+            or abs(self._tracker_viewport_span - self.visible_span) > 1.0
+        ):
+            self._level_tracker.reconfigure(self._display_width, reset=True)
+            self._tracker_viewport_span = float(self.visible_span)
 
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
@@ -1439,6 +1582,10 @@ class XyzSDRApp(App):
         if self._rx_active:
             return
 
+        if not self._device:
+            self._log("[ERROR] Dispositivo SDR no inicializado — reinicia la app")
+            return
+
         if not self._rx_stop_event.is_set():
             if not self._rx_stop_event.wait(timeout=3.0):
                 self._log("[WARN] Worker RX previo no finalizó; continuando")
@@ -1448,10 +1595,10 @@ class XyzSDRApp(App):
         self._rx_stop_event.clear()
 
         try:
-            self._audio_output = AudioOutputQueue(sample_rate=48_000)
+            self._audio_output = AudioOutputQueue(sample_rate=self._audio_rate)
             self._audio_output.set_volume(self.volume_value / 100.0)
             self._audio_output.start()
-            self._log("[OK]   Salida de audio iniciada (48 kHz, callback)")
+            self._log(f"[OK]   Salida de audio iniciada ({self._audio_rate} Hz, callback)")
         except Exception as e:
             self._audio_output = None
             self._log(f"[WARN] Sin salida de audio: {e}")
@@ -1464,6 +1611,8 @@ class XyzSDRApp(App):
             pass
         self._log("RX iniciado")
         self._invalidate_band_cache()
+        self._fm_demod_state.reset()
+        self._fm_agc.reset()
         self._rx_worker()
 
     def _stop_rx(self) -> None:
@@ -1539,6 +1688,7 @@ class XyzSDRApp(App):
         idx = self.DEMOD_MODES.index(self.demod_mode)
         self.demod_mode = self.DEMOD_MODES[(idx + 1) % len(self.DEMOD_MODES)]
         self.passband_width_hz = self._load_passband_width_for_mode(self.demod_mode)
+        self._fm_demod_state.reset()
         self._sync_passband_widgets()
         self._update_mode_ui()
         self._log(f"Modo: {self.demod_mode.upper()}")
@@ -1657,8 +1807,10 @@ class XyzSDRApp(App):
         squelch_threshold: float | None = None,
         squelch_hang_ms: float | None = None,
         volume: float | None = None,
+        fm_deemphasis_us: float | None = None,
+        fm_agc_enabled: bool | None = None,
     ) -> None:
-        """Guarda ajustes DSP (squelch, volumen) en el TOML."""
+        """Guarda ajustes DSP (squelch, volumen, FM) en el TOML."""
         try:
             patch_dsp_section(
                 self.config_path,
@@ -1666,6 +1818,8 @@ class XyzSDRApp(App):
                 squelch_threshold=squelch_threshold,
                 squelch_hang_ms=squelch_hang_ms,
                 volume=volume,
+                fm_deemphasis_us=fm_deemphasis_us,
+                fm_agc_enabled=fm_agc_enabled,
             )
             dsp_cfg = self.config.setdefault("dsp", {})
             if squelch_enabled is not None:
@@ -1676,6 +1830,10 @@ class XyzSDRApp(App):
                 dsp_cfg["squelch_hang_ms"] = int(squelch_hang_ms)
             if volume is not None:
                 dsp_cfg["volume"] = float(volume)
+            if fm_deemphasis_us is not None:
+                dsp_cfg["fm_deemphasis_us"] = int(fm_deemphasis_us)
+            if fm_agc_enabled is not None:
+                dsp_cfg["fm_agc_enabled"] = fm_agc_enabled
         except Exception as exc:
             self._log(f"[WARN] No se pudo guardar config DSP: {exc}")
 
@@ -1793,6 +1951,12 @@ class XyzSDRApp(App):
             self._update_status()
 
             self._log(f"[OK]   Bandwidth: {_format_bandwidth_hz(new_rate)}")
+            profile = profile_for_sample_rate(new_rate)
+            if self.demod_mode == "wbfm" and new_rate <= 250_000:
+                self._log("[INFO] WBFM @ 250 kHz: PASS limitado; 1–2 MHz recomendado para FM broadcast")
+            elif not is_mode_recommended(self.demod_mode, profile):
+                modes = ", ".join(profile.recommended_modes)
+                self._log(f"[INFO] Modo {self.demod_mode.upper()}: preset óptimo para {modes}")
             if new_span < previous_span - 1.0:
                 self._log(
                     f"[INFO] Zoom adaptado: {_format_hz(previous_span)} -> {_format_hz(new_span)}"
@@ -1972,6 +2136,16 @@ class XyzSDRApp(App):
 
     # ── RX Worker ────────────────────────────────────────────────────────────
 
+    def _on_rx_worker_crashed(self) -> None:
+        """Restaura la UI del botón RX cuando el worker salió por error (hilo principal)."""
+        try:
+            btn = self.query_one("#btn_rx", Button)
+            btn.label = ">> INICIAR RX"
+            btn.variant = "success"
+        except Exception:
+            pass
+        self._log("[WARN] RX detenido por error de hardware — verifica el dispositivo y pulsa INICIAR RX de nuevo")
+
     @work(thread=True)
     def _rx_worker(self) -> None:
         """Loop de recepcion en hilo separado."""
@@ -2011,13 +2185,24 @@ class XyzSDRApp(App):
                 capture_passband_center = float(self.passband_center_hz)
                 capture_passband_width = float(self.passband_width_hz)
                 capture_deemph = float(self.fm_deemphasis_us)
+                capture_fm_agc = bool(self.fm_agc_enabled)
                 audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
                 freq_offset = capture_passband_center - capture_freq
+                profile = profile_for_sample_rate(capture_rate)
+                avg_windows = effective_fft_avg(num_avg, profile)
 
                 num_samples = compute_rx_chunk_samples(
                     fft_size=fft_size,
                     sample_rate=capture_rate,
-                    num_avg=num_avg,
+                    num_avg=avg_windows,
+                    chunk_scale=profile.chunk_scale,
+                    low_rate_scale=profile.chunk_scale if capture_rate < 500_000 else None,
+                )
+                audio_iq_samples = compute_audio_chunk_samples(
+                    num_samples,
+                    capture_rate,
+                    audio_chunk_max=profile.audio_chunk_max,
+                    fft_size=fft_size,
                 )
 
                 try:
@@ -2025,12 +2210,19 @@ class XyzSDRApp(App):
                     if not self._rx_active or self._bandwidth_changing:
                         continue
 
+                    chunk_duration_ms = (len(samples) / capture_rate) * 1000.0 if capture_rate else 0.0
+                    audio_samples = (
+                        samples[-audio_iq_samples:]
+                        if len(samples) > audio_iq_samples
+                        else samples
+                    )
+
                     proc_t0 = time.perf_counter()
                     _, psd = average_psd(
                         samples,
                         fft_size=fft_size,
                         sample_rate=capture_rate,
-                        num_avg=num_avg,
+                        num_avg=avg_windows,
                         overlap=fft_overlap,
                     )
 
@@ -2055,8 +2247,14 @@ class XyzSDRApp(App):
                         with self._debug_lock:
                             self._debug_rx_iter_count += 1
                             self._debug_rx_proc_ms.append(proc_ms)
+                            self._debug_chunk_samples.append(len(samples))
+                            self._debug_chunk_duration_ms.append(chunk_duration_ms)
                             if len(self._debug_rx_proc_ms) > 120:
                                 self._debug_rx_proc_ms.pop(0)
+                            if len(self._debug_chunk_samples) > 120:
+                                self._debug_chunk_samples.pop(0)
+                            if len(self._debug_chunk_duration_ms) > 120:
+                                self._debug_chunk_duration_ms.pop(0)
 
                     if self._recorder and self._recorder.active and self._recorder.records_iq:
                         self._recorder.write_iq(samples)
@@ -2064,15 +2262,26 @@ class XyzSDRApp(App):
                     if self._audio_output and capture_mode in ["wbfm", "nbfm", "am", "usb", "lsb"]:
                         from core.dsp import demodulate
                         try:
+                            demod_t0 = time.perf_counter()
                             audio = demodulate(
-                                samples,
+                                audio_samples,
                                 mode=capture_mode,
                                 sample_rate=capture_rate,
                                 audio_rate=audio_rate,
                                 passband_width_hz=capture_passband_width,
                                 fm_deemphasis_us=capture_deemph,
                                 frequency_offset_hz=freq_offset,
+                                fm_state=self._fm_demod_state,
+                                profile=profile,
                             )
+                            demod_elapsed = (time.perf_counter() - demod_t0) * 1000.0
+                            if capture_mode in ("wbfm", "nbfm"):
+                                audio = apply_fm_agc(
+                                    audio,
+                                    self._fm_agc,
+                                    enabled=capture_fm_agc,
+                                    sample_rate=audio_rate,
+                                )
                             audio, squelch_open = apply_squelch_with_state(
                                 audio,
                                 snr,
@@ -2085,6 +2294,14 @@ class XyzSDRApp(App):
                             if self._recorder and self._recorder.active and self._recorder.records_audio:
                                 self._recorder.write_audio(audio)
                             self._audio_output.enqueue(audio)
+                            if self.debug_mode:
+                                with self._debug_lock:
+                                    self._debug_demod_ms.append(demod_elapsed)
+                                    self._debug_audio_samples.append(len(audio))
+                                    if len(self._debug_demod_ms) > 120:
+                                        self._debug_demod_ms.pop(0)
+                                    if len(self._debug_audio_samples) > 120:
+                                        self._debug_audio_samples.pop(0)
                         except Exception as ae:
                             logger.error(f"Error en reproducción de audio: {ae}")
                     elif capture_squelch_enabled:
@@ -2099,6 +2316,10 @@ class XyzSDRApp(App):
                     self.call_from_thread(self._log, f"[ERROR] RX: {e}")
                     break
         finally:
+            if self._rx_active:
+                # Worker salió por error (break), no por _stop_rx() — resetear estado
+                self._rx_active = False
+                self.call_from_thread(self._on_rx_worker_crashed)
             self._rx_stop_event.set()
             logger.info("RX worker detenido")
 

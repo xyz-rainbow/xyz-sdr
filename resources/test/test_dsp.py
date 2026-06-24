@@ -12,6 +12,7 @@ from core.dsp import (
     demod_wbfm,
     fm_deemphasis,
     map_psd_to_columns,
+    resample_iq_for_demod,
     round_fft_size,
     shift_to_baseband,
 )
@@ -120,14 +121,42 @@ def test_demod_wbfm_variable_bandwidth():
 
 
 def test_fm_deemphasis_preserves_signal():
-    rng = np.random.default_rng(1)
-    audio = rng.normal(size=4800).astype(np.float32)
-    out = fm_deemphasis(audio, 48_000, tau_us=75.0)
+    t = np.arange(4800, dtype=np.float64) / 48_000
+    audio = np.sin(2 * np.pi * 5_000 * t).astype(np.float32)
+    out, zf = fm_deemphasis(audio, 48_000, tau_us=75.0)
     assert out.shape == audio.shape
     assert np.max(np.abs(out)) > 0
+    assert zf.shape == (1,)
+    out2, _ = fm_deemphasis(audio, 48_000, tau_us=75.0, zi=zf)
+    assert out2.shape == audio.shape
 
 
 def test_shift_to_baseband_noop_at_zero_offset():
     samples = np.array([1 + 1j, 2 + 2j], dtype=np.complex64)
     shifted = shift_to_baseband(samples, 0.0, 2_048_000)
     np.testing.assert_array_equal(shifted, samples)
+
+
+def test_resample_iq_for_demod_reduces_high_rate():
+    rng = np.random.default_rng(2)
+    n = 80_000
+    iq = (rng.normal(size=n) + 1j * rng.normal(size=n)).astype(np.complex64)
+    out, sr = resample_iq_for_demod(iq, 8_000_000, 200_000)
+    assert sr < 8_000_000
+    assert sr >= 250_000
+    assert len(out) < len(iq)
+
+
+def test_demod_wbfm_high_sample_rate_produces_audio():
+    n = 80_000
+    t = np.arange(n) / 8_000_000
+    tone = np.exp(2j * np.pi * 25_000 * t).astype(np.complex64)
+    audio = demod_wbfm(
+        tone,
+        sample_rate=8_000_000,
+        audio_rate=48_000,
+        bandwidth_hz=200_000,
+        fm_deemphasis_us=50.0,
+    )
+    assert audio.size > 0
+    assert float(np.max(np.abs(audio))) > 0

@@ -1,62 +1,92 @@
-# 🔊 Motor y Biblioteca de Sonidos — xyz-sdr
+# Audio — xyz-sdr
 
-Este documento describe el funcionamiento técnico del motor de efectos de sonido, cómo se generan las ondas electromecánicas retro y cómo se integra con la interfaz en terminal (TUI).
-
----
-
-## 🛠️ Cómo Funciona el Motor de Sonidos
-
-El motor de sonidos está implementado en la clase `AudioEffects` dentro del archivo [audio_effects.py](file:///Y:/[Proyectos]/[General]/[Main]/xyz-sdr/core/audio_effects.py).
-
-A diferencia de los reproductores multimedia tradicionales que cargan archivos `.mp3` o `.wav` externos, `xyz-sdr` utiliza un **motor de síntesis digital directa (DDS)**. Todos los efectos se generan matemáticamente en memoria en tiempo de inicialización de la app.
-
-### Características del Motor:
-1. **No Bloqueante**: La reproducción utiliza la biblioteca `sounddevice` (`sd.play(..., blocking=False)`), lo que permite que la interfaz de la terminal responda instantáneamente sin pausar el hilo principal ni retrasar el renderizado de la pantalla.
-2. **Fallas Silenciosas (Fail-Safe)**: Todo el sistema de reproducción de audio está envuelto en bloques `try/except`. Si el hardware de sonido del host está ocupado, no tiene controladores instalados, o se ejecuta en un contenedor sin audio, el motor descarta el sonido de manera silenciosa escribiendo únicamente un registro de depuración en los logs de la app. Esto asegura que la aplicación TUI nunca se detenga o falle por problemas de audio del sistema.
-3. **Control Dinámico**: Se puede habilitar o deshabilitar globalmente mediante el interruptor **Efectos Sonido** del menú de ajustes (ESC).
+This document covers **demodulated RF audio** (real-time listening) and the **UI sound-effects engine** (clicks, blips, chimes). These are separate audio paths.
 
 ---
 
-## 🎵 Biblioteca de Sonidos Utilizados
+## Demodulated audio (RX)
 
-Las señales de audio se generan usando un muestreo de **44100 Hz** y se exportan como arrays de tipo `numpy.float32`.
+When reception is active (`S` / **INICIAR RX**), the RX worker in `tui/app.py`:
 
-### 1. Click (Sintonía / Scroll)
-*   **Diseño**: Un tono de alta frecuencia muy corto (12 ms) que decae de forma exponencial.
-*   **Fórmula**: $s(t) = \sin(2\pi \cdot 900 \cdot t) \cdot e^{-t / 0.003} \cdot 0.25$
-*   **Uso**: Comportamiento de feedback rápido. *Nota: Se ha desactivado intencionadamente en el scroll continuo de frecuencias para evitar saturación del canal de audio durante barridos rápidos.*
+1. Reads IQ from `SDRDevice.read_samples()` — SoapySDR on real hardware, `SimulatedSDR` with `--sim`.
+2. Demodulates per `demod_mode` (`wbfm`, `nbfm`, `am`, `usb`, `lsb`) via `core/dsp.demodulate()`, using the configured PASS bandwidth and FM de-emphasis (`fm_deemphasis_us`, default **50 µs EU**). For high IQ bandwidth (BANDWIDTH selector), the demodulator **decimates IQ internally** before filtering so audio quality does not degrade at 4–8 MHz capture rates.
+3. Applies **FM AGC** (`fm_agc_enabled`, default on) for `wbfm` / `nbfm` — slow attack, fast release to stabilize level between stations.
+4. Applies squelch (optional) and enqueues audio through **`AudioOutputQueue.enqueue()`** (`core/audio_output.py`) **without blocking** the RX thread. Output rate follows `dsp.audio_rate` (default 48 kHz). Resampling uses `resample_audio_to_rate()` for exact rational rates.
 
-### 2. Blip (Selección e Interacción)
-*   **Diseño**: Un pulso de frecuencia media (650 Hz) con una caída lineal linealizada (35 ms).
-*   **Fórmula**: $s(t) = \sin(2\pi \cdot 650 \cdot t) \cdot (1.0 - t/t_{max}) \cdot 0.12$
-*   **Uso**: Interacción con botones (`btn_rx`, `btn_spd_*`), selección de modos de demodulación (`btn_mode_*`) y cambios en menús desplegables (`Select`).
+Per-preset DSP profiles: [`core/dsp_profiles.py`](../core/dsp_profiles.py) — see [audio-presets-research.md](audio-presets-research.md).
 
-### 3. Chime (Éxito / Ajustes Aplicados)
-*   **Diseño**: Un arpegio ascendente de 4 notas en acordes mayores de Do (C5, E5, G5, C6) con una envolvente lineal de atenuación de 220 ms.
-*   **Notas**: C5 (523 Hz) ➔ E5 (659 Hz) ➔ G5 (784 Hz) ➔ C6 (1046 Hz).
-*   **Uso**: Se reproduce al confirmar y guardar la configuración en las ventanas modales de ajustes (Hardware, Noise Removal).
+`AudioOutputQueue` uses a `sounddevice` `OutputStream` with a callback and a bounded queue (~8 chunks). On saturation it drops the oldest chunk (`put_nowait` + discard). User volume (0–100 %, shortcut `V`) is applied in the callback.
 
-### 4. Error (Alerta / Validación Fallida)
-*   **Diseño**: Un zumbido disonante y áspero (180 ms) que suma la frecuencia fundamental (130 Hz) y su segundo armónico (260 Hz), con una atenuación de ganancia suave.
-*   **Fórmula**: $s(t) = (\sin(2\pi \cdot 130 \cdot t) + 0.4 \cdot \sin(2\pi \cdot 260 \cdot t)) \cdot \text{env}(t) \cdot 0.35$
-*   **Uso**: Se dispara cuando el usuario ingresa un dato erróneo (como una frecuencia no numérica o fuera de límites en el campo de texto de frecuencia).
+| Mode | IQ source | Notes |
+|------|-----------|-------|
+| `--sim` | Fixed synthetic stations + noise | UI/demod testing without SDR |
+| Real hardware | SoapySDR `readStream` | USB/CPU latency; see [hardware.md](hardware.md) if audio stutters |
 
-### 5. Startup (Inicio de la Aplicación)
-*   **Diseño**: Un barrido de frecuencia de subida (*frequency sweep / chirp*) de 350 ms que sube linealmente de 350 Hz a 1100 Hz, con una envolvente de ataque suavizada al inicio para evitar clics abruptos en los altavoces.
-*   **Uso**: Se reproduce al terminar de montar la aplicación TUI e iniciar correctamente el flujo del hardware SDR.
+Demod normalization uses `NORMALIZE_LEVEL` in `core/dsp.py`; FM AGC and user volume (`V`) shape final loudness.
+
+### FM settings (Esc → **Audio FM / Noise**)
+
+| Setting | TOML key | Default | Notes |
+|---------|----------|---------|-------|
+| De-emphasis | `fm_deemphasis_us` | `50` | **50 µs** (EU broadcast), **75 µs** (Americas) |
+| FM AGC | `fm_agc_enabled` | `true` | Post-demod level tracking for WBFM/NBFM |
+| Squelch | `squelch_enabled` | `false` | Mutes audio below SNR threshold |
 
 ---
 
-## 🎛️ Puntos de Integración en la Interfaz (TUI)
+## UI sound-effects engine
 
-Los disparadores de sonido se configuran en los siguientes métodos de la clase principal `XyzSDRApp`:
+The retro UI feedback sounds live in `AudioEffects` (`core/audio_effects.py`).
 
-*   **`on_mount`**: Llama a `self.audio_effects.play_startup()` una vez inicializado con éxito el hardware y montada la interfaz.
-*   **`on_button_pressed`**: 
-    *   Reproduce `self.audio_effects.play_blip()` al iniciar/detener la recepción (`btn_rx`) o cambiar los FPS del waterfall (`btn_spd_*`).
-*   **`on_click`**: 
-    *   Reproduce `self.audio_effects.play_blip()` cuando se hace clic en los botones de modo de demodulación (`btn_mode_*`).
-*   **`on_select_changed`**: 
-    *   Reproduce `self.audio_effects.play_blip()` cuando el usuario selecciona un nuevo preset o ajusta la ganancia.
-*   **`on_input_submitted`**:
-    *   En caso de capturar un `ValueError` (entrada incorrecta en `inp_freq`), dispara `self.audio_effects.play_error()`. En caso de éxito, no reproduce ningún sonido de sintonía para mantener el entorno silencioso según las especificaciones de diseño.
+Unlike traditional media players that load external `.mp3` or `.wav` files, xyz-sdr uses **direct digital synthesis (DDS)**. All effects are generated in memory at app startup.
+
+### Engine characteristics
+
+1. **Non-blocking**: Playback uses `sounddevice` (`sd.play(..., blocking=False)`) so the Textual main thread stays responsive.
+2. **Fail-safe**: Wrapped in `try/except`; missing or busy audio hardware fails silently with a debug log only.
+3. **Toggle**: Enable/disable globally via **Efectos Sonido** in the settings menu (Esc).
+
+---
+
+## Sound library
+
+Samples are generated at **44100 Hz** as `numpy.float32` arrays.
+
+### 1. Click (tuning / scroll)
+
+- **Design**: Short high-frequency tone (12 ms) with exponential decay.
+- **Formula**: $s(t) = \sin(2\pi \cdot 900 \cdot t) \cdot e^{-t / 0.003} \cdot 0.25$
+- **Use**: Quick feedback. Disabled during continuous frequency scroll to avoid audio saturation.
+
+### 2. Blip (selection / interaction)
+
+- **Design**: Medium-frequency pulse (650 Hz), 35 ms linear falloff.
+- **Formula**: $s(t) = \sin(2\pi \cdot 650 \cdot t) \cdot (1.0 - t/t_{max}) \cdot 0.12$
+- **Use**: Buttons (`btn_rx`, `btn_spd_*`), demod mode buttons, `Select` widgets.
+
+### 3. Chime (success / settings applied)
+
+- **Design**: Ascending 4-note arpeggio (C5, E5, G5, C6), 220 ms envelope.
+- **Use**: Confirming settings in modal dialogs (Hardware, Noise Removal).
+
+### 4. Error (validation failure)
+
+- **Design**: Dissonant buzz (130 Hz + 260 Hz harmonic), 180 ms.
+- **Use**: Invalid frequency input in `inp_freq`.
+
+### 5. Startup
+
+- **Design**: Upward chirp 350 Hz → 1100 Hz over 350 ms with soft attack.
+- **Use**: After TUI mount and successful device open.
+
+---
+
+## TUI integration points
+
+Sound triggers in `XyzSDRApp`:
+
+- **`on_mount`**: `play_startup()` after hardware init.
+- **`on_button_pressed`**: `play_blip()` for RX toggle and waterfall speed buttons.
+- **`on_click`**: `play_blip()` on demod mode buttons.
+- **`on_select_changed`**: `play_blip()` on preset/gain changes.
+- **`on_input_submitted`**: `play_error()` on invalid frequency input.

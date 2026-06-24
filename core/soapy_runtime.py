@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -163,8 +164,40 @@ def check_sdrplay_api() -> bool:
     return False
 
 
+def _parse_sdrplay_find_stdout(stdout: str) -> bool:
+    """True solo si SoapySDRUtil reporta al menos un dispositivo sdrplay en stdout."""
+    text = stdout or ""
+    lowered = text.lower()
+    if "no devices found" in lowered:
+        return False
+    if "found device" not in lowered:
+        return False
+    return bool(re.search(r"driver\s*=\s*sdrplay", text, re.IGNORECASE))
+
+
+def check_sdrplay_service_running() -> bool:
+    """True si el servicio Windows SDRplay API está en ejecución."""
+    if os.name != "nt":
+        return True
+    for service_name in ("SDRplayAPIService", "sdrplay-api"):
+        try:
+            res = subprocess.run(
+                ["sc", "query", service_name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            if res.returncode != 0:
+                continue
+            return "RUNNING" in (res.stdout or "")
+        except Exception:
+            continue
+    return False
+
+
 def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
-    """True si SoapySDRUtil encuentra el driver sdrplay."""
+    """True si SoapySDRUtil enumera al menos un dispositivo con driver sdrplay."""
     try:
         res = subprocess.run(
             ["SoapySDRUtil", "--find=driver=sdrplay"],
@@ -173,8 +206,7 @@ def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
             check=False,
             timeout=timeout,
         )
-        out = (res.stdout or "") + (res.stderr or "")
-        return "driver=sdrplay" in out.lower() or "sdrplay" in out.lower()
+        return _parse_sdrplay_find_stdout(res.stdout or "")
     except Exception:
         return False
 
@@ -293,7 +325,9 @@ def format_hardware_help(status: SoapyStatus) -> str:
         if not status.sdrplay_api_ok:
             lines.append("  SDRplay API no detectada. Instala opción [1] en install_drivers.")
         if not status.sdrplay_plugin_ok:
-            lines.append("  Plugin sdrplay no visible. Prueba: SoapySDRUtil --find=driver=sdrplay")
+            lines.append("  Plugin sdrplay no enumera dispositivos. Prueba: SoapySDRUtil --find=driver=sdrplay")
+            if not check_sdrplay_service_running():
+                lines.append("  Servicio SDRplayAPIService detenido — Start-Service o Restart-Service.")
         lines.append("  Comprueba USB, cierra SDRuno/SDRUno y reinicia el servicio SDRplay.")
         return "\n".join(lines)
 

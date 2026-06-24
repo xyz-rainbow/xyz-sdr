@@ -30,17 +30,18 @@ graph TD
 
 ---
 
-## 🟡 Fase 2: Demodulación de Audio y DSP [EN DESARROLLO]
+## 🟡 Fase 2: Demodulación de Audio y DSP [EN DESARROLLO — núcleo implementado]
 * **Objetivo**: Integrar la decodificación de señales analógicas y la reproducción de audio en tiempo real.
-* **Tareas prioritarias**:
-  * **FM de Banda Ancha (WBFM)**: Demodulación de transmisiones de radiodifusión FM comercial (88-108 MHz) mediante discriminador de fase y filtro de de-énfasis (50/75 µs).
-  * **Demodulación AM/NBFM/SSB (LSB/USB)**:
-    * AM por detección de envolvente.
-    * NBFM (FM de banda estrecha) para bandas aéreas y servicios públicos.
-    * SSB (Banda lateral única) mediante filtros pasa-banda asimétricos e inyección de portadora por BFO.
-  * **Remuestreo de Audio**: Conversión de tasas de muestreo complejas de IQ (ej. 2.048 MHz) a las tasas de tarjetas de sonido (ej. 48 kHz / 44.1 kHz) usando interpolación multietapa/decimación de SciPy.
-  * **Reproducción en Vivo**: Canalización del audio decodificado a `sounddevice` en hilos de baja latencia con buffers circulares para evitar cortes (underflow).
-  * **Squelch Dinámico**: Silenciamiento de ruido de fondo cuando la relación señal/ruido (SNR) cae por debajo del umbral configurable.
+* **Completado (parcial)**:
+  * WBFM/NBFM/AM/USB/LSB demod + PASS band + de-emphasis 50/75 µs + AGC FM
+  * Perfiles DSP por preset IQ (`core/dsp_profiles.py`)
+  * Remuestreo exacto a 48 kHz (`resample_audio_to_rate`)
+  * Cola `AudioOutputQueue` + squelch dinámico
+  * Continuidad discriminador FM entre chunks (`FmDemodState`)
+* **Pendiente**:
+  * Estéreo WBFM / RDS
+  * Modos UI `cw`, `dsb`, `raw`, `auto`
+  * Buffer circular dedicado si underruns persisten en 250 kHz
 
 ---
 
