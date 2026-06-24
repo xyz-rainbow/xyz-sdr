@@ -17,7 +17,7 @@
 
 ---
 
-![Demo de xyz-sdr](https://github.com/user-attachments/assets/XXXXXXX.mp4](https://github.com/user-attachments/assets/6bf02f3e-dbbf-41fc-9be9-94ce2defc04c)
+![Demo de xyz-sdr](https://github.com/user-attachments/assets/6bf02f3e-dbbf-41fc-9be9-94ce2defc04c)
 
 ---
 
