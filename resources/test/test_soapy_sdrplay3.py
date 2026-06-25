@@ -38,10 +38,25 @@ def test_needs_build_false_when_plugin_ok():
 def test_install_skips_when_not_needed():
     messages: list[str] = []
 
-    with patch("setup.soapy_sdrplay3.needs_soapy_sdrplay3_build", return_value=False):
+    with patch("setup.soapy_sdrplay3.needs_soapy_sdrplay3_build", return_value=False), patch(
+        "setup.soapy_sdrplay3.check_sdrplay_plugin", return_value=True
+    ):
         ok = install_soapy_sdrplay3_if_needed("/tmp", say=messages.append, force=False)
     assert ok is True
     assert any("operativo" in m for m in messages)
+
+
+def test_install_restarts_service_when_plugin_on_disk_but_api_hung():
+    messages: list[str] = []
+
+    with patch("setup.soapy_sdrplay3.needs_soapy_sdrplay3_build", return_value=False), patch(
+        "setup.soapy_sdrplay3.check_sdrplay_plugin", side_effect=[False, True]
+    ), patch("setup.soapy_sdrplay3.is_sdrplay_soapy_module_ok", return_value=True), patch(
+        "core.sdrplay_service.restart_sdrplay_service", return_value=(True, "restarted")
+    ):
+        ok = install_soapy_sdrplay3_if_needed("/tmp", say=messages.append, force=False)
+    assert ok is True
+    assert any("reiniciando servicio" in m.lower() for m in messages)
 
 
 def test_install_uses_bundled_before_build(tmp_path):

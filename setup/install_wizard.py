@@ -48,6 +48,12 @@ def run_repair_wizard(ctx: InstallContext, *, quiet: bool = False) -> int:
         state = probe_environment(bootstrap_soapy=False)
 
         if key == "drivers":
+            if state.sdrplay_ok:
+                from core.sdrplay_enumerate import recover_sdrplay_enumeration
+
+                ctx.say("  [>>] Comprobando SDRplay API / enumeración…")
+                found, msg, _st = recover_sdrplay_enumeration(restart_if_missing=True, log=log_line)
+                ctx.say(f"  [{'OK' if found else '!!'}] {msg}")
             if not state.sdrplay_ok:
                 install_sdrplay(ctx)
             else:

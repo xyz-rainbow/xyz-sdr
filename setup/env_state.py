@@ -266,7 +266,9 @@ def probe_environment(*, bootstrap_soapy: bool = True) -> EnvironmentState:
                 state.device_count = len(devices)
                 state.has_devices = state.device_count > 0
 
-    state.sdrplay_plugin_ok = is_sdrplay_soapy_module_ok()
+    state.sdrplay_plugin_ok = (
+        check_sdrplay_plugin() if state.sdrplay_ok else is_sdrplay_soapy_module_ok()
+    )
     if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_plugin_ok:
         blockers.append("soapy_sdrplay3")
 

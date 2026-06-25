@@ -161,9 +161,9 @@ def _sha256_file(path: Path) -> str:
 
 
 def needs_soapy_sdrplay3_build() -> bool:
-    if is_sdrplay_soapy_module_ok():
-        return False
     if check_sdrplay_plugin():
+        return False
+    if is_sdrplay_soapy_module_ok():
         return False
     status = bootstrap_soapy(force=True)
     module = status.sdrplay_plugin_module
@@ -497,6 +497,23 @@ def install_soapy_sdrplay3_if_needed(
     publish_bundled: bool = False,
 ) -> bool:
     if not force and not needs_soapy_sdrplay3_build():
+        if check_sdrplay_plugin():
+            say("  [OK] Plugin Soapy sdrplay ya operativo")
+            log_line("SKIP soapy_sdrplay3")
+            return True
+        if is_sdrplay_soapy_module_ok():
+            say("  [!!] Plugin en disco pero SDRplay API no responde — reiniciando servicio…")
+            from core.sdrplay_service import restart_sdrplay_service
+
+            ok, msg = restart_sdrplay_service()
+            say(f"  [{'OK' if ok else '>>'}] {msg}")
+            if check_sdrplay_plugin():
+                say("  [OK] Plugin Soapy sdrplay operativo tras reinicio")
+                log_line("OK soapy_sdrplay3 after service restart")
+                return True
+            say("  [!!] Cierra SDRuno, revisa USB y ejecuta: Restart-Service SDRplayAPIService")
+            log_line("WARN soapy_sdrplay3 API not responding after restart")
+            return False
         say("  [OK] Plugin Soapy sdrplay ya operativo")
         log_line("SKIP soapy_sdrplay3")
         return True
