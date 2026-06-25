@@ -7,6 +7,7 @@ Compatible con: SDRplay RSP1, RTL-SDR, HackRF, Airspy y cualquier dispositivo So
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -30,12 +31,13 @@ _sdr_devices_open = 0
 _soapy_mod: Any | None = None
 SOAPY_SDR_RX: Any = None
 SOAPY_SDR_CF32: Any = None
+SOAPY_SDR_CS16: Any = None
 SOAPY_SDR_OVERFLOW: int = -3
 
 
 def _load_soapy() -> bool:
     """Carga SoapySDR bajo demanda tras bootstrap. Devuelve True si import OK."""
-    global _soapy_mod, SOAPY_SDR_RX, SOAPY_SDR_CF32
+    global _soapy_mod, SOAPY_SDR_RX, SOAPY_SDR_CF32, SOAPY_SDR_CS16
     if _soapy_mod is not None:
         return True
     status = bootstrap_soapy()
@@ -48,6 +50,12 @@ def _load_soapy() -> bool:
         _soapy_mod = mod
         SOAPY_SDR_RX = _rx
         SOAPY_SDR_CF32 = _cf32
+        try:
+            from SoapySDR import SOAPY_SDR_CS16 as _cs16  # noqa: WPS433
+
+            SOAPY_SDR_CS16 = _cs16
+        except ImportError:
+            SOAPY_SDR_CS16 = None
         try:
             from SoapySDR import SOAPY_SDR_OVERFLOW as _overflow  # noqa: WPS433
 
@@ -88,6 +96,20 @@ SAFE_START_SAMPLE_RATE = 500_000.0
 # MTU inicial conservador para plugins sdrplay (sube tras warmup en read_samples).
 SDRPLAY_INITIAL_STREAM_MTU = 16_384
 SDRPLAY_PROBE_READ_SAMPLES = 4_096
+
+
+def _sdrplay_stream_format_name() -> str:
+    return os.environ.get("XYZ_SDR_SDRPLAY_STREAM_FORMAT", "CF32").strip().upper()
+
+
+def _sdrplay_uses_cs16() -> bool:
+    return _sdrplay_stream_format_name() == "CS16" and SOAPY_SDR_CS16 is not None
+
+
+def _sdrplay_soapy_stream_format() -> Any:
+    if _sdrplay_uses_cs16():
+        return SOAPY_SDR_CS16
+    return SOAPY_SDR_CF32
 
 
 def _format_bandwidth_hz(rate_hz: float) -> str:
@@ -709,7 +731,10 @@ class SDRDevice:
         self._apply_gain_unlocked()
 
     def _sdrplay_probe_read_unlocked(self) -> int:
-        buff = np.empty(SDRPLAY_PROBE_READ_SAMPLES, dtype=np.complex64)
+        if _sdrplay_uses_cs16():
+            buff = np.empty(SDRPLAY_PROBE_READ_SAMPLES * 2, dtype=np.int16)
+        else:
+            buff = np.empty(SDRPLAY_PROBE_READ_SAMPLES, dtype=np.complex64)
         sr = self._sdr.readStream(
             self._stream,
             [buff],
@@ -732,7 +757,7 @@ class SDRDevice:
             f"target={self.sample_rate:.0f}"
         )
         if self._stream is None:
-            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, _sdrplay_soapy_stream_format())
         self._try_set_stream_mtu_unlocked(SDRPLAY_INITIAL_STREAM_MTU)
         self._sdr.activateStream(self._stream)
         time.sleep(0.05)
@@ -756,7 +781,7 @@ class SDRDevice:
             pass
         self._stream = None
         self._sdrplay_apply_tuning_unlocked(apply_rate, mode="stopped")
-        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, _sdrplay_soapy_stream_format())
         self._try_set_stream_mtu_unlocked(SDRPLAY_INITIAL_STREAM_MTU)
         self._sdr.activateStream(self._stream)
         time.sleep(0.05)
@@ -807,7 +832,12 @@ class SDRDevice:
             )
         self._prepare_stream_unlocked(iq_rate_hz=iq_rate)
         if self._stream is None:
-            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+            stream_fmt = (
+                _sdrplay_soapy_stream_format()
+                if self.driver == "sdrplay"
+                else SOAPY_SDR_CF32
+            )
+            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, stream_fmt)
         initial_mtu = SDRPLAY_INITIAL_STREAM_MTU if self.driver == "sdrplay" else 65_536
         self._try_set_stream_mtu_unlocked(initial_mtu)
         self._sdr.activateStream(self._stream)
@@ -966,24 +996,40 @@ class SDRDevice:
         read = 0
         chunk = min(num_samples, 65536)
         overflow_retries = 0
+        use_cs16 = self.driver == "sdrplay" and _sdrplay_uses_cs16()
 
-        tmp = np.empty(chunk, dtype=np.complex64)
+        if use_cs16:
+            tmp_iq = np.empty(chunk * 2, dtype=np.int16)
+        else:
+            tmp = np.empty(chunk, dtype=np.complex64)
 
         while read < num_samples:
             to_read = min(chunk, num_samples - read)
-            tmp_view = tmp[:to_read]
             try:
                 with self._lock:
                     if not self._stream:
                         break
-                    sr = self._sdr.readStream(self._stream, [tmp_view], to_read, timeoutUs=int(1e6))
+                    if use_cs16:
+                        tmp_view = tmp_iq[: to_read * 2]
+                        sr = self._sdr.readStream(
+                            self._stream, [tmp_view], to_read, timeoutUs=int(1e6)
+                        )
+                    else:
+                        tmp_view = tmp[:to_read]
+                        sr = self._sdr.readStream(
+                            self._stream, [tmp_view], to_read, timeoutUs=int(1e6)
+                        )
             except Exception as exc:
                 logger.warning("readStream excepción: %s", exc)
                 with self._lock:
                     self._stream_stats.read_errors += 1
                 break
             if sr.ret > 0:
-                buff[read:read + sr.ret] = tmp_view[:sr.ret]
+                if use_cs16:
+                    raw = tmp_iq[: sr.ret * 2].astype(np.float32).reshape(-1, 2)
+                    buff[read : read + sr.ret] = (raw[:, 0] + 1j * raw[:, 1]) / 32768.0
+                else:
+                    buff[read : read + sr.ret] = tmp_view[: sr.ret]
                 read += sr.ret
                 with self._lock:
                     self._stream_stats.samples_received += sr.ret
