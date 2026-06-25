@@ -1,0 +1,8 @@
+{
+  "artifact": "SDRplay_RSP_API-Windows-3.15.exe",
+  "platform": "win-x64",
+  "size_bytes": 54017720,
+  "sha256": "8ad5c36f1ca26cf7a61010c3f3c80dae69d4468ef5e59f7a0d42fb135a1c7326",
+  "source_url": "https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.exe",
+  "notes": "Optional offline copy; git may omit the .exe (see .gitignore). Place manually in this folder or use Downloads / XYZ_SDR_SDRPLAY_INSTALLER."
+}
