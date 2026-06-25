@@ -1,32 +1,7 @@
-# SoapySDRPlay3 — Windows x64 (bundled)
+# SoapySDRPlay3 — Windows x64 (legacy path)
 
-Prebuilt `sdrPlaySupport.dll` for **PothosSDR 2021.07.25** (SoapySDR 0.8) on **Windows x64**.
+**Moved:** bundled plugin now lives under [`drivers/win-x64/plugins/`](../../drivers/win-x64/plugins/README.md).
 
-The xyz-sdr installer copies this file to:
+This folder remains as a **read fallback** for older checkouts. New publishes go to `drivers/win-x64/`.
 
-`C:\Program Files\PothosSDR\lib\SoapySDR\modules0.8\sdrPlaySupport.dll`
-
-## Requirements (not included here)
-
-- [SDRplay API v3.15+](https://www.sdrplay.com/downloads/) (official installer)
-- PothosSDR (installed by `setup/install_drivers.ps1`)
-
-## License
-
-SoapySDRPlay3 is [MIT licensed](https://github.com/pothosware/SoapySDRPlay3/blob/master/LICENSE.txt).
-
-## Refreshing the bundled binary
-
-After building on a maintainer machine:
-
-```powershell
-.\setup\install_soapy_sdrplay3.ps1 --publish-bundled
-```
-
-Or from Python:
-
-```powershell
-python setup/soapy_sdrplay3.py --publish-bundled
-```
-
-See `manifest.json` for source commit, size, and SHA-256.
+See [`drivers/win-x64/manifest.json`](../../drivers/win-x64/manifest.json) for SHA-256 metadata.

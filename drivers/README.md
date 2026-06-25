@@ -3,7 +3,7 @@
 Carpeta destino para runtime **redistribuible** (plugin Soapy + subset Soapy mínimo).  
 **No sustituye** la instalación oficial de SDRplay API (servicio USB + kernel).
 
-Estado: **Fase 2–3 del roadmap** — layout en preparación; ver [roadmap.md](../roadmap.md).
+Estado: **Fase 2** — layout `drivers/win-x64/` activo; subset Soapy en Fase 3.
 
 ---
 
@@ -33,7 +33,7 @@ Instalador offline API: [resources/installers/win-x64/](../resources/installers/
 3. Pothos `Program Files` (fallback)
 4. `%LOCALAPPDATA%\xyz-sdr\` (cache usuario)
 
-Implementación: [core/soapy_runtime.py](../core/soapy_runtime.py) (Fase 2).
+Implementación: [core/driver_runtime.py](../core/driver_runtime.py) + [core/soapy_runtime.py](../core/soapy_runtime.py).
 
 ---
 
@@ -45,4 +45,4 @@ Tras compilar plugin en máquina maintainer:
 .\setup\install_soapy_sdrplay3.ps1 --publish-bundled
 ```
 
-Destino canónico futuro: `drivers/win-x64/plugins/` (migración desde `resources/bin/win-x64/`).
+Destino canónico: `drivers/win-x64/plugins/` (fallback lectura: `resources/bin/win-x64/`).

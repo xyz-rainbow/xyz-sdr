@@ -1,0 +1,12 @@
+{
+  "schema": "xyz-sdr-drivers-manifest-v1",
+  "platform": "win-x64",
+  "artifact": "sdrPlaySupport.dll",
+  "plugin_path": "plugins/sdrPlaySupport.dll",
+  "target": "PothosSDR 2021.07.25 / SoapySDR 0.8",
+  "size_bytes": 42000,
+  "sha256": "a7da4a19efb398efdbf60587624a837be5d260e726068855b18fb327eeefa38d",
+  "built_at": "2026-06-25T09:49:25Z",
+  "source_repo": "https://github.com/pothosware/SoapySDRPlay3.git",
+  "source_commit": "abc123"
+}
