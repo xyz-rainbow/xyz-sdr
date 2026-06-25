@@ -1,0 +1,29 @@
+{
+  "schema": "xyz-sdr-runtime-manifest-v1",
+  "platform": "win-x64",
+  "status": "template",
+  "notes": "Populate after stage_soapy_runtime.ps1 or publish-bundled plugin.",
+  "components": {
+    "soapy_subset": {
+      "path": "drivers/win-x64/soapy",
+      "required_dlls": ["SoapySDR.dll"],
+      "optional": ["SoapySDRUtil.exe"],
+      "artifacts": []
+    },
+    "sdrplay_plugin": {
+      "path": "drivers/win-x64/plugins",
+      "artifact": "sdrPlaySupport.dll",
+      "size_bytes": null,
+      "sha256": null,
+      "source_repo": "https://github.com/pothosware/SoapySDRPlay3.git",
+      "source_commit": null,
+      "built_at": null
+    },
+    "sdrplay_api_installer": {
+      "path": "resources/installers/win-x64",
+      "artifact": "SDRplay_RSP_API-Windows-3.15.exe",
+      "redistribute_dll": false,
+      "requires_official_installer": true
+    }
+  }
+}
