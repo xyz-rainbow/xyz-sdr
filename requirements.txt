@@ -1,25 +1,27 @@
+# Runtime dependencies for xyz-sdr
+# Versiones ancladas con ~= para builds reproducibles
+# Para dev: pip install -r requirements-dev.txt
+# Para AI extras: pip install -r requirements-ai.txt
+
 # xyz-sdr — Dependencias Python
 # Instala con: pip install -r requirements.txt
 # Recomendado (instalador): uv pip install -r requirements.txt
 
 # ─── Core SDR ────────────────────────────────────────────────────────────────
 SoapySDR               # Abstracción hardware SDR (requiere PothosSDR instalado)
-numpy>=1.24            # Operaciones numéricas / IQ data
-scipy>=1.10            # Filtros, FFT, procesado de señal
+numpy~=1.24            # Operaciones numéricas / IQ data
+scipy~=1.10            # Filtros, FFT, procesado de señal
 
 # ─── Audio ───────────────────────────────────────────────────────────────────
-sounddevice>=0.4.6     # Reproducción de audio demodulado
-soundfile>=0.12        # Lectura/escritura de archivos de audio
+sounddevice~=0.4       # Reproducción de audio demodulado
+soundfile~=0.12        # Lectura/escritura de archivos de audio
 
 # ─── TUI (Terminal UI) ───────────────────────────────────────────────────────
-textual>=0.60          # Framework TUI moderno (Textual)
-rich>=13               # Estilos y colores en terminal
+textual~=0.60          # Framework TUI moderno (Textual)
+rich~=13.0             # Estilos y colores en terminal
 
 # ─── Configuración ───────────────────────────────────────────────────────────
 tomli>=2.0; python_version < "3.11"   # TOML parser (Python < 3.11)
 # tomllib es built-in desde Python 3.11
-
-# ─── Tests (dev) ─────────────────────────────────────────────────────────────
-pytest>=7.0
 
 # Dependencias IA opcionales: requirements-ai.txt

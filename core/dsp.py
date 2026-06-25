@@ -838,7 +838,61 @@ def demodulate(
             frequency_offset_hz=frequency_offset_hz,
             fm_state=fm_state,
         )
-    raise ValueError(f"Modo desconocido: {mode}. Opciones: wbfm, nbfm, am, usb, lsb, cw, dsb, raw")
+
+    # ── Plugins externos (entry_points) ─────────────────────────────────
+    # Si el mode no es builtin, busca en plugins descubiertos.
+    # Permite a usuarios añadir modos demod custom sin tocar el core.
+    try:
+        from core.plugins import discover_demodulators
+        for plugin_name, plugin in discover_demodulators().items():
+            if plugin_name == mode:
+                return plugin.demodulate(
+                    samples,
+                    sample_rate=sample_rate,
+                    audio_rate=audio_rate,
+                    passband_width_hz=passband_width_hz,
+                    fm_deemphasis_us=fm_deemphasis_us,
+                    frequency_offset_hz=frequency_offset_hz,
+                )
+    except Exception as exc:
+        # Si el discovery falla, seguimos con el raise estándar
+        import logging
+        logging.getLogger(__name__).debug("Plugin discovery falló: %s", exc)
+
+    raise ValueError(
+        f"Modo desconocido: {mode}. Opciones builtin: wbfm, nbfm, am, usb, lsb, cw, dsb, raw. "
+        f"Plugins: ver discover_demodulators()."
+    )
+
+
+# ─── Lista de modos (builtin + plugins) ──────────────────────────────────────
+
+
+BUILTIN_DEMOD_MODES: tuple[str, ...] = (
+    "wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw",
+)
+
+
+def list_demod_modes(*, include_plugins: bool = True) -> list[str]:
+    """Lista todos los modos demod disponibles (builtin + plugins).
+
+    Args:
+        include_plugins: si True, consulta ``discover_demodulators()`` y añade
+            los nombres de plugins externos.
+
+    Returns:
+        Lista ordenada de nombres de modo.
+    """
+    modes = list(BUILTIN_DEMOD_MODES)
+    if include_plugins:
+        try:
+            from core.plugins import discover_demodulators
+            for name in discover_demodulators().keys():
+                if name not in modes:
+                    modes.append(name)
+        except Exception:
+            pass
+    return sorted(modes)
 
 
 # ─── Métricas ───────────────────────────────────────────────────────────────

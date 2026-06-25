@@ -90,13 +90,27 @@ class SDRDriverPlugin(Protocol):
 
 
 def _entry_points(group: str) -> list:
-    """Carga entry_points del grupo. Tolerante a importlib.metadata ausente."""
+    """Carga entry_points del grupo. Tolerante a importlib.metadata ausente.
+
+    Compatibilidad:
+    - Python 3.10+: ``md.entry_points(group=...)`` (keyword)
+    - Python 3.9:   ``md.entry_points()['group_name']`` (dict-like)
+    """
     try:
         from importlib import metadata as md
     except ImportError:  # pragma: no cover
         return []
     try:
-        return list(md.entry_points(group=group))
+        # Python 3.10+
+        try:
+            return list(md.entry_points(group=group))
+        except TypeError:
+            # Python 3.9 — entry_points() devuelve dict-like
+            eps = md.entry_points()
+            try:
+                return list(eps[group])
+            except (KeyError, TypeError):
+                return []
     except Exception as exc:
         logger.warning("entry_points(%s) falló: %s", group, exc)
         return []
