@@ -312,6 +312,8 @@ def user_xyz_sdr_bin_dir() -> str:
 
 def soapy_plugin_search_dirs(pothos_root: str | None = None) -> list[str]:
     """Directorios donde buscar módulos Soapy (SOAPY_SDR_PLUGIN_PATH, usuario, Pothos)."""
+    from core.driver_runtime import bundled_plugins_dir, legacy_bundled_plugins_dir
+
     dirs: list[str] = []
     seen: set[str] = set()
 
@@ -327,6 +329,8 @@ def soapy_plugin_search_dirs(pothos_root: str | None = None) -> list[str]:
     for part in os.environ.get("SOAPY_SDR_PLUGIN_PATH", "").split(os.pathsep):
         _add(part.strip())
 
+    _add(str(bundled_plugins_dir()))
+    _add(str(legacy_bundled_plugins_dir()))
     _add(user_soapy_plugin_dir())
 
     root = pothos_root or find_pothos_install()
@@ -377,11 +381,19 @@ def is_sdrplay_soapy_module_ok(pothos_root: str | None = None) -> bool:
 
 
 def _configure_soapy_plugin_path(pothos_root: str) -> None:
+    from core.driver_runtime import resolve_bundled_sdrplay_plugin
+
     user_dir = user_soapy_plugin_dir()
     user_module = os.path.join(user_dir, "sdrPlaySupport.dll")
     if os.path.isfile(user_module) and assess_sdrplay_soapy_module(user_module) == "present":
         _prepend_soapy_plugin_dir(user_dir)
         logger.info("SOAPY plugin path: user dir %s", user_dir)
+        return
+
+    bundled = resolve_bundled_sdrplay_plugin()
+    if bundled is not None and assess_sdrplay_soapy_module(str(bundled)) == "present":
+        _prepend_soapy_plugin_dir(str(bundled.parent))
+        logger.info("SOAPY plugin path: bundled %s", bundled.parent)
         return
 
     mod_dir = _soapy_modules_dir(pothos_root)
@@ -419,6 +431,11 @@ def _prepend_soapy_plugin_dir(mod_dir: str) -> None:
 
 
 def _soapy_util_executable() -> str:
+    from core.driver_runtime import bundled_soapy_util
+
+    util = bundled_soapy_util()
+    if util is not None:
+        return str(util)
     pothos = find_pothos_install()
     if pothos:
         util = os.path.join(pothos, "bin", "SoapySDRUtil.exe")
@@ -513,6 +530,15 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
         return _last_status
 
     status = SoapyStatus(sdrplay_api_ok=check_sdrplay_api())
+
+    from core.driver_runtime import bundled_soapy_dll_dir
+
+    soapy_bundled = bundled_soapy_dll_dir()
+    if soapy_bundled is not None:
+        soapy_path = str(soapy_bundled)
+        _prepend_path(soapy_path)
+        _register_dll_directory(soapy_path)
+        logger.info("Soapy bundled runtime: %s", soapy_path)
 
     sync_sdrplay_api_dll_to_pothos()
     user_bin = user_xyz_sdr_bin_dir()

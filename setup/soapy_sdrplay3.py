@@ -3,7 +3,7 @@ xyz-sdr | setup/soapy_sdrplay3.py
 Instala SoapySDRPlay3 (plugin Soapy para SDRplay API v3.15+).
 
 Flujo híbrido:
-  1. Copia el DLL embebido en resources/bin/win-x64/ (sin compilar).
+  1. Copia el DLL embebido en drivers/win-x64/plugins/ (sin compilar).
   2. Si falla o no existe, compila desde fuente (Git, CMake, VS Build Tools vía winget).
 """
 
@@ -27,6 +27,7 @@ if _project_root not in sys.path:
 if _script_dir:
     os.chdir(_project_root)
 
+from core import driver_runtime as dr
 from core.soapy_runtime import (
     assess_sdrplay_soapy_module,
     bootstrap_soapy,
@@ -41,9 +42,12 @@ from setup.install_log import log_line
 from setup.windows_installers import configure_soapy_plugin_path, configure_user_bin_path, refresh_windows_environment
 
 SOAPY_SDRPLAY3_REPO = "https://github.com/pothosware/SoapySDRPlay3.git"
-BUNDLED_DLL_NAME = "sdrPlaySupport.dll"
-BUNDLED_DIR = Path(_project_root) / "resources" / "bin" / "win-x64"
-BUNDLED_MANIFEST = BUNDLED_DIR / "manifest.json"
+BUNDLED_DLL_NAME = dr.PLUGIN_DLL_NAME
+
+# Aliases legacy para tests que parchean rutas embebidas
+BUNDLED_DIR = dr.bundled_plugins_dir()
+BUNDLED_MANIFEST = dr.bundled_manifest_path()
+
 CMAKE_GENERATORS = (
     ("Visual Studio 17 2022", "x64"),
     ("Visual Studio 16 2019", "x64"),
@@ -113,32 +117,39 @@ def _winget_executable(env: dict[str, str]) -> str:
 
 
 def bundled_dll_path() -> Path | None:
-    candidate = BUNDLED_DIR / BUNDLED_DLL_NAME
-    if not candidate.is_file():
-        return None
-    try:
-        if candidate.stat().st_size < 32_768:
-            return None
-    except OSError:
-        return None
-    manifest = load_bundled_manifest()
-    if manifest:
-        expected_size = manifest.get("size_bytes")
-        if isinstance(expected_size, int) and candidate.stat().st_size != expected_size:
-            return None
-        expected_sha = manifest.get("sha256")
-        if isinstance(expected_sha, str) and _sha256_file(candidate) != expected_sha.lower():
-            return None
-    return candidate
+    return dr.resolve_bundled_sdrplay_plugin()
 
 
-def load_bundled_manifest() -> dict | None:
-    if not BUNDLED_MANIFEST.is_file():
-        return None
-    try:
-        return json.loads(BUNDLED_MANIFEST.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+def publish_bundled_dll(source: Path, *, say: Callable[[str], None], source_commit: str | None = None) -> bool:
+    """Copia un DLL compilado a drivers/win-x64/plugins/ y escribe manifest.json."""
+    if not source.is_file():
+        say(f"  [XX] No existe: {source}")
+        return False
+
+    plugins_dir = dr.bundled_plugins_dir()
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    dest = plugins_dir / BUNDLED_DLL_NAME
+    shutil.copy2(source, dest)
+    stat = dest.stat()
+    manifest = {
+        "schema": "xyz-sdr-drivers-manifest-v1",
+        "platform": "win-x64",
+        "artifact": BUNDLED_DLL_NAME,
+        "plugin_path": f"plugins/{BUNDLED_DLL_NAME}",
+        "target": "PothosSDR 2021.07.25 / SoapySDR 0.8",
+        "size_bytes": stat.st_size,
+        "sha256": _sha256_file(dest),
+        "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_repo": SOAPY_SDRPLAY3_REPO,
+        "source_commit": source_commit,
+    }
+    manifest_path = dr.bundled_manifest_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    say(f"  [OK] Bundled actualizado: {dest} ({stat.st_size} bytes)")
+    say(f"  [OK] Manifest: {manifest_path}")
+    log_line(f"PUBLISH bundled {dest}")
+    return True
 
 
 def _sha256_file(path: Path) -> str:
@@ -276,33 +287,6 @@ def _git_head_commit(repo_dir: Path, env: dict[str, str]) -> str | None:
     return (proc.stdout or "").strip() or None
 
 
-def publish_bundled_dll(source: Path, *, say: Callable[[str], None], source_commit: str | None = None) -> bool:
-    """Copia un DLL compilado a resources/bin/win-x64/ y escribe manifest.json."""
-    if not source.is_file():
-        say(f"  [XX] No existe: {source}")
-        return False
-
-    BUNDLED_DIR.mkdir(parents=True, exist_ok=True)
-    dest = BUNDLED_DIR / BUNDLED_DLL_NAME
-    shutil.copy2(source, dest)
-    stat = dest.stat()
-    manifest = {
-        "artifact": BUNDLED_DLL_NAME,
-        "platform": "win-x64",
-        "target": "PothosSDR 2021.07.25 / SoapySDR 0.8",
-        "size_bytes": stat.st_size,
-        "sha256": _sha256_file(dest),
-        "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source_repo": SOAPY_SDRPLAY3_REPO,
-        "source_commit": source_commit,
-    }
-    BUNDLED_MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    say(f"  [OK] Bundled actualizado: {dest} ({stat.st_size} bytes)")
-    say(f"  [OK] Manifest: {BUNDLED_MANIFEST}")
-    log_line(f"PUBLISH bundled {dest}")
-    return True
-
-
 def _disable_pothos_sdrplay_module(pothos_root: str, *, say: Callable[[str], None]) -> None:
     """Renombra cualquier sdrPlaySupport.dll en Pothos para evitar duplicado con el plugin de usuario."""
     module = _module_dir(pothos_root) / BUNDLED_DLL_NAME
@@ -388,7 +372,7 @@ def install_bundled_soapy_sdrplay3(*, say: Callable[[str], None]) -> bool:
     """Copia el DLL embebido del repositorio a PothosSDR."""
     source = bundled_dll_path()
     if source is None:
-        say("  [!!] Plugin embebido no disponible en resources/bin/win-x64/")
+        say("  [!!] Plugin embebido no disponible en drivers/win-x64/plugins/")
         return False
 
     pothos_root = find_pothos_install()
@@ -396,7 +380,7 @@ def install_bundled_soapy_sdrplay3(*, say: Callable[[str], None]) -> bool:
         say("  [XX] PothosSDR no encontrado.")
         return False
 
-    manifest = load_bundled_manifest()
+    manifest = dr.load_bundled_manifest()
     if manifest:
         say(f"  [>>] Plugin embebido ({manifest.get('built_at', '?')}, {source.stat().st_size} bytes)…")
     else:
@@ -558,12 +542,12 @@ def _parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--publish-bundled",
         action="store_true",
-        help="Tras compilar, copiar el DLL a resources/bin/win-x64/",
+        help="Tras compilar, copiar el DLL a drivers/win-x64/plugins/",
     )
     parser.add_argument(
         "--publish-only",
         metavar="PATH",
-        help="Publicar un DLL ya compilado en resources/bin/win-x64/",
+        help="Publicar un DLL ya compilado en drivers/win-x64/plugins/",
     )
     parser.add_argument("-y", "--yes", action="store_true", help="Aceptar instalación de VS Build Tools")
     return parser.parse_args(list(argv) if argv is not None else None)

@@ -58,9 +58,16 @@ def test_install_uses_bundled_before_build(tmp_path):
 
 
 def test_bundled_dll_path_with_manifest(tmp_path, monkeypatch):
-    monkeypatch.setattr("setup.soapy_sdrplay3.BUNDLED_DIR", tmp_path)
-    monkeypatch.setattr("setup.soapy_sdrplay3.BUNDLED_MANIFEST", tmp_path / "manifest.json")
-    dll = tmp_path / BUNDLED_DLL_NAME
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    monkeypatch.setattr("core.driver_runtime.bundled_plugins_dir", lambda root=None: plugins)
+    monkeypatch.setattr(
+        "core.driver_runtime.bundled_manifest_path", lambda root=None: tmp_path / "manifest.json"
+    )
+    monkeypatch.setattr("core.driver_runtime.legacy_bundled_plugins_dir", lambda root=None: legacy)
+    dll = plugins / BUNDLED_DLL_NAME
     dll.write_bytes(b"x" * 40_000)
     manifest = {
         "size_bytes": 40_000,
@@ -78,16 +85,24 @@ def test_bundled_dll_path_with_manifest(tmp_path, monkeypatch):
 
 
 def test_publish_bundled_dll(tmp_path, monkeypatch):
-    monkeypatch.setattr("setup.soapy_sdrplay3.BUNDLED_DIR", tmp_path)
-    monkeypatch.setattr("setup.soapy_sdrplay3.BUNDLED_MANIFEST", tmp_path / "manifest.json")
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    monkeypatch.setattr("core.driver_runtime.bundled_plugins_dir", lambda root=None: plugins)
+    monkeypatch.setattr(
+        "core.driver_runtime.bundled_manifest_path", lambda root=None: tmp_path / "manifest.json"
+    )
+    monkeypatch.setattr(
+        "core.driver_runtime.legacy_bundled_plugins_dir",
+        lambda root=None: tmp_path / "legacy",
+    )
     source = tmp_path / "built.dll"
     source.write_bytes(b"new-plugin-bytes-here" * 2000)
     messages: list[str] = []
     assert publish_bundled_dll(source, say=messages.append, source_commit="abc123") is True
-    assert (tmp_path / BUNDLED_DLL_NAME).is_file()
+    assert (plugins / BUNDLED_DLL_NAME).is_file()
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["source_commit"] == "abc123"
-    assert manifest["size_bytes"] == (tmp_path / BUNDLED_DLL_NAME).stat().st_size
+    assert manifest["size_bytes"] == (plugins / BUNDLED_DLL_NAME).stat().st_size
 
 
 def test_command_available_git():
