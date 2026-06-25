@@ -1,50 +1,100 @@
 """
 xyz-sdr | core/config_store.py
 Persistencia parcial de ajustes en el archivo TOML de configuración.
+
+Implementación: round-trip con ``tomllib`` (lectura) + ``tomli_w`` (escritura).
+Trade-off documentado (informe, item 53): se PIERDE la preservación de
+comentarios en línea y de la alineación manual de espacios. El archivo
+se reescribe con la representación canónica del escritor TOML.
 """
 
 from __future__ import annotations
 
 import logging
-import re
+import sys
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def _format_toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return f"{value:_}"
-    if isinstance(value, float):
-        if value.is_integer() and abs(value) >= 1000:
-            return f"{int(value):_}"
-        return repr(value)
-    if isinstance(value, str):
-        return f'"{value}"'
-    return repr(value)
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - Python 3.9/3.10 path
+    import tomli as tomllib
+
+import tomli_w
 
 
-def _patch_key(text: str, key: str, value: Any) -> str:
-    """Reemplaza una clave de primer nivel conservando comentarios al final de línea."""
-    value_repr = _format_toml_value(value)
-    pattern = rf'^({re.escape(key)}\s*=\s*)(.+)$'
+def user_config_path(defaults_path: str) -> str:
+    """Ruta config/local.toml (preferencias de usuario, gitignored)."""
+    return str(Path(defaults_path).parent / "local.toml")
 
-    def _repl(match: re.Match[str]) -> str:
-        tail = match.group(2)
-        comment = ""
-        if "#" in tail:
-            comment = tail[tail.index("#") :]
-        sep = "      " if comment else ""
-        return f"{match.group(1)}{value_repr}{sep}{comment}"
 
-    new_text, count = re.subn(pattern, _repl, text, count=1, flags=re.MULTILINE)
-    if count == 0:
-        logger.warning("No se encontró la clave %s en el TOML", key)
-        return text
-    return new_text
+def ensure_user_config(defaults_path: str) -> str:
+    """Crea local.toml desde el ejemplo si no existe."""
+    local = Path(user_config_path(defaults_path))
+    if local.is_file():
+        return str(local)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    example = local.parent / "local.toml.example"
+    if example.is_file():
+        local.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        local.write_text(
+            '# xyz-sdr user preferences\n\n[app]\nactive_band_profile = ""\n',
+            encoding="utf-8",
+        )
+    return str(local)
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _write_toml(path: Path, data: dict[str, Any]) -> None:
+    with path.open("wb") as handle:
+        tomli_w.dump(data, handle)
+
+
+def _ensure_section(data: dict[str, Any], section: str) -> dict[str, Any]:
+    bucket = data.get(section)
+    if not isinstance(bucket, dict):
+        bucket = {}
+        data[section] = bucket
+    return bucket
+
+
+def _apply_updates(section: dict[str, Any], updates: dict[str, Any]) -> None:
+    for key, value in updates.items():
+        if value is not None:
+            section[key] = value
+
+
+def _patch_section(path: str, section: str, updates: dict[str, Any]) -> None:
+    """Lee TOML, aplica ``updates`` en la sección indicada y reescribe."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    try:
+        data = _read_toml(config_path)
+    except Exception as exc:
+        logger.error("No se pudo leer %s: %s", path, exc)
+        return
+
+    bucket = _ensure_section(data, section)
+    _apply_updates(bucket, updates)
+
+    try:
+        _write_toml(config_path, data)
+    except Exception as exc:
+        logger.error("No se pudo escribir %s: %s", path, exc)
+        return
+
+    logger.info("Config %s actualizada: %s", section, path)
 
 
 def patch_device_section(
@@ -56,25 +106,13 @@ def patch_device_section(
     gain: float | None = None,
 ) -> None:
     """Actualiza valores en la sección [device] del archivo TOML."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
     updates = {
         "driver": driver,
         "sample_rate": int(sample_rate) if sample_rate is not None else None,
         "center_freq": int(center_freq) if center_freq is not None else None,
         "gain": gain,
     }
-
-    for key, value in updates.items():
-        if value is not None:
-            text = _patch_key(text, key, value)
-
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config actualizada: %s", path)
+    _patch_section(path, "device", updates)
 
 
 def patch_dsp_section(
@@ -92,12 +130,6 @@ def patch_dsp_section(
     demod_mode: str | None = None,
 ) -> None:
     """Actualiza valores en la sección [dsp] del archivo TOML."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
     updates = {
         "squelch_enabled": squelch_enabled,
         "squelch_threshold": int(squelch_threshold) if squelch_threshold is not None else None,
@@ -110,13 +142,7 @@ def patch_dsp_section(
         "fm_agc_enabled": fm_agc_enabled,
         "demod_mode": demod_mode,
     }
-
-    for key, value in updates.items():
-        if value is not None:
-            text = _patch_key(text, key, value)
-
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config DSP actualizada: %s", path)
+    _patch_section(path, "dsp", updates)
 
 
 def patch_display_section(
@@ -127,56 +153,12 @@ def patch_display_section(
     freq_span_mhz: float | None = None,
 ) -> None:
     """Actualiza valores en la sección [display] del archivo TOML."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
     updates = {
         "waterfall_auto_level": waterfall_auto_level,
         "display_level_mode": display_level_mode,
         "freq_span_mhz": freq_span_mhz,
     }
-
-    for key, value in updates.items():
-        if value is not None:
-            text = _patch_key(text, key, value)
-
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config display actualizada: %s", path)
-
-
-def _insert_or_patch_key(text: str, key: str, value: Any) -> str:
-    """Actualiza una clave única o la añade al final si no existe."""
-    patched = _patch_key(text, key, value)
-    if patched != text:
-        return patched
-    return text.rstrip() + f"\n{key} = {_format_toml_value(value)}\n"
-
-
-def patch_app_section(
-    path: str,
-    *,
-    active_band_profile: str | None = None,
-) -> None:
-    """Actualiza la sección [app] (crea claves si faltan)."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
-    if active_band_profile is not None:
-        if "[app]" not in text:
-            text = text.rstrip() + (
-                f'\n\n[app]\nactive_band_profile = {_format_toml_value(active_band_profile)}\n'
-            )
-        else:
-            text = _insert_or_patch_key(text, "active_band_profile", active_band_profile)
-
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config app actualizada: %s", path)
+    _patch_section(path, "display", updates)
 
 
 def patch_recorder_section(
@@ -186,23 +168,11 @@ def patch_recorder_section(
     record_audio: bool | None = None,
 ) -> None:
     """Actualiza valores en la sección [recorder] del archivo TOML."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
     updates = {
         "record_iq": record_iq,
         "record_audio": record_audio,
     }
-
-    for key, value in updates.items():
-        if value is not None:
-            text = _patch_key(text, key, value)
-
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config Recorder actualizada: %s", path)
+    _patch_section(path, "recorder", updates)
 
 
 def patch_scanner_section(
@@ -217,12 +187,6 @@ def patch_scanner_section(
     pause_resume_snr_db: float | None = None,
 ) -> None:
     """Actualiza valores en la sección [scanner] del archivo TOML."""
-    config_path = Path(path)
-    if not config_path.is_file():
-        logger.warning("Config no encontrada: %s", path)
-        return
-
-    text = config_path.read_text(encoding="utf-8")
     updates = {
         "freq_start": int(freq_start) if freq_start is not None else None,
         "freq_end": int(freq_end) if freq_end is not None else None,
@@ -232,29 +196,55 @@ def patch_scanner_section(
         "pause_on_signal": pause_on_signal,
         "pause_resume_snr_db": pause_resume_snr_db,
     }
+    _patch_section(path, "scanner", updates)
 
-    for key, value in updates.items():
-        if value is not None:
-            text = _patch_key(text, key, value)
 
-    config_path.write_text(text, encoding="utf-8")
-    logger.info("Config Scanner actualizada: %s", path)
+def patch_app_section(
+    path: str,
+    *,
+    active_band_profile: str | None = None,
+) -> None:
+    """Actualiza la sección [app] (crea la sección si falta)."""
+    if active_band_profile is None:
+        return
+    config_path = Path(path)
+    if not config_path.is_file():
+        logger.warning("Config no encontrada: %s", path)
+        return
+
+    try:
+        data = _read_toml(config_path)
+    except Exception as exc:
+        logger.error("No se pudo leer %s: %s", path, exc)
+        return
+
+    bucket = _ensure_section(data, "app")
+    bucket["active_band_profile"] = active_band_profile
+
+    try:
+        _write_toml(config_path, data)
+    except Exception as exc:
+        logger.error("No se pudo escribir %s: %s", path, exc)
+        return
+
+    logger.info("Config app actualizada: %s", path)
 
 
 def persist_band_profile(path: str, profile_id: str, profile: dict[str, Any]) -> None:
-    """Persiste un perfil de banda en defaults.toml (device, dsp, display, [app])."""
+    """Persiste un perfil de banda en config/local.toml (no modifica defaults.toml)."""
+    local_path = ensure_user_config(path)
     dev = profile.get("device", {}) if isinstance(profile.get("device"), dict) else {}
     dsp = profile.get("dsp", {}) if isinstance(profile.get("dsp"), dict) else {}
     display = profile.get("display", {}) if isinstance(profile.get("display"), dict) else {}
 
     patch_device_section(
-        path,
+        local_path,
         sample_rate=float(dev["sample_rate"]) if "sample_rate" in dev else None,
         center_freq=float(dev["center_freq"]) if "center_freq" in dev else None,
         gain=float(dev["gain"]) if "gain" in dev else None,
     )
     patch_dsp_section(
-        path,
+        local_path,
         demod_mode=str(dsp["demod_mode"]) if "demod_mode" in dsp else None,
         volume=float(dsp["volume"]) if "volume" in dsp else None,
         squelch_enabled=bool(dsp["squelch_enabled"]) if "squelch_enabled" in dsp else None,
@@ -266,10 +256,10 @@ def persist_band_profile(path: str, profile_id: str, profile: dict[str, Any]) ->
         fm_agc_enabled=bool(dsp["fm_agc_enabled"]) if "fm_agc_enabled" in dsp else None,
     )
     patch_display_section(
-        path,
+        local_path,
         display_level_mode=str(display["display_level_mode"])
         if "display_level_mode" in display
         else None,
         freq_span_mhz=float(display["freq_span_mhz"]) if "freq_span_mhz" in display else None,
     )
-    patch_app_section(path, active_band_profile=profile_id)
+    patch_app_section(local_path, active_band_profile=profile_id)

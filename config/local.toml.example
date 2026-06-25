@@ -1,0 +1,25 @@
+# Copia como config/local.toml para preferencias de usuario (gitignored).
+# persist_band_profile() escribe aquí, no en defaults.toml.
+
+[app]
+active_band_profile = "fm_broadcast"
+
+[device]
+sample_rate = 2_048_000
+center_freq = 97_780_487
+gain = 40.0
+
+[dsp]
+demod_mode = "wbfm"
+volume = 75.0
+wbfm_bandwidth = 180_000
+nbfm_bandwidth = 12_500
+am_bandwidth = 15_000
+fm_deemphasis_us = 50
+fm_agc_enabled = true
+squelch_enabled = false
+squelch_threshold = 5
+
+[display]
+display_level_mode = "per_column"
+freq_span_mhz = 2.0

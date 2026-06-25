@@ -1,74 +1,72 @@
-# xyz-sdr | defaults.toml — Configuración por defecto
-
 [device]
-driver       = "sdrplay"      # "auto" | "sdrplay" | "rtlsdr" | "hackrf" | "airspy"
-sample_rate  = 500_000      # Muestras por segundo (Hz); presets hasta 2.048 MHz vía UI
-center_freq  = 97_780_487      # Frecuencia central Hz
-gain         = 40.0      # Ganancia en dB (0-60 típico)
-auto_gain    = false
-ppm_correction = 0            # Corrección PPM del oscilador
+driver = "sdrplay"
+sample_rate = 500000
+center_freq = 98200000
+gain = 50.0
+auto_gain = false
+ppm_correction = 0
 
 [dsp]
-fft_size     = 2048           # FFT base; escala al zoom in (compute_effective_fft_size)
-fft_overlap  = 0.5            # Solapamiento FFT (0.0 - 1.0)
-fft_avg_windows = 4           # Ventanas FFT promediadas por iteración RX
-band_cache_cols = 1024        # Rejilla BW base; escala al zoom in (compute_effective_band_cols)
-display_fps  = 20             # Tope de refresco visual espectro/waterfall
-demod_mode   = "wbfm"         # "wbfm" | "nbfm" | "am" | "usb" | "lsb"
-audio_rate   = 48_000         # Hz — tasa de audio de salida
-wbfm_bandwidth = 80_000      # Ancho audible WBFM (selección con ratón)
-nbfm_bandwidth = 12_500      # Ancho audible NBFM
-am_bandwidth   = 15_000      # Ancho audible AM
-fm_deemphasis_us = 50      # De-emphasis FM (50 µs Europa, 75 µs América)
-fm_agc_enabled = true      # AGC post-demod en WBFM/NBFM
-volume       = 75.0           # Volumen de salida 0–100 %
-squelch_db       = -70.0          # Umbral de squelch en dBFS (legacy)
-squelch_enabled  = false
-squelch_threshold = 5      # Umbral UI en dB (5–40)
-squelch_hang_ms  = 500             # Retardo antes de mutear tras perder señal (ms)
+fft_size = 2048
+fft_overlap = 0.5
+fft_avg_windows = 4
+band_cache_cols = 1024
+display_fps = 20
+demod_mode = "wbfm"
+audio_rate = 48000
+wbfm_bandwidth = 180000
+nbfm_bandwidth = 12500
+am_bandwidth = 15000
+fm_deemphasis_us = 50
+fm_agc_enabled = true
+volume = 75.0
+squelch_db = -70.0
+squelch_enabled = false
+squelch_threshold = 5
+squelch_hang_ms = 500
 
 [display]
-waterfall_history = 100              # Tope de filas guardadas en memoria
-waterfall_history_buffer_ratio = 0.667 # Extra sobre lo visible (2/3); no afecta lag al zoom
-waterfall_auto_level = true      # Auto-ajuste del rango dB de la paleta
-waterfall_level_low_pct = 5          # Percentil inferior (modo auto)
-waterfall_level_high_pct = 99        # Percentil superior (modo auto)
-waterfall_min_range_db = 6.0         # Rango mínimo dB (evita pantalla plana)
-display_level_mode = "per_column"   # "global" | "per_column"
-column_floor_pct = 10                 # Percentil suelo por columna (per_column)
-column_ceiling_pct = 99               # Percentil techo por columna (per_column)
-column_ema_attack = 0.35              # EMA rápida (attack)
-column_ema_release = 0.08             # EMA lenta (release)
-column_smooth_bins = 3                # Suavizado lateral 1D (columnas)
-column_history_rows = 32              # Filas waterfall para estimar suelo
-freq_span_mhz     = 0.5       # Span inicial mostrado (MHz); suele igualar sample_rate/1e6
-color_theme       = "cyberpunk"
+waterfall_history = 100
+waterfall_history_buffer_ratio = 0.667
+waterfall_auto_level = true
+waterfall_level_low_pct = 5
+waterfall_level_high_pct = 99
+waterfall_min_range_db = 6.0
+display_level_mode = "per_column"
+column_floor_pct = 10
+column_ceiling_pct = 99
+column_ema_attack = 0.35
+column_ema_release = 0.08
+column_smooth_bins = 3
+column_history_rows = 32
+freq_span_mhz = 0.5
+color_theme = "cyberpunk"
 
 [app]
-active_band_profile = ""      # fm_broadcast | airband | pmr446 | hf_lsb | vacío = ninguno
+active_band_profile = ""
 
 [recorder]
-output_dir        = ""              # Vacío → ~/Music/xyz-sdr; relativa → respecto al proyecto
-record_iq         = true              # SigMF IQ (todos los modos)
-record_audio      = true              # WAV demodulado (solo wbfm/nbfm/am/usb/lsb)
-iq_format         = "sigmf"   # "sigmf" | "raw" | "wav"
-audio_format      = "wav"
-auto_record       = false
-trigger_db        = -50.0     # Grabar si señal supera este nivel
+output_dir = ""
+record_iq = true
+record_audio = true
+iq_format = "sigmf"
+audio_format = "wav"
+auto_record = false
+trigger_db = -50.0
 
 [ai]
-whisper_enabled   = false
-whisper_model     = "base"    # "tiny" | "base" | "small" | "medium" | "large"
-whisper_language  = "es"
+whisper_enabled = false
+whisper_model = "base"
+whisper_language = "es"
 classifier_enabled = false
-classifier_model  = "./ai/models/modulation_classifier.pkl"
+classifier_model = "./ai/models/modulation_classifier.pkl"
 
 [scanner]
-enabled     = false
-freq_start  = 88_000_000     # 88 MHz
-freq_end    = 108_000_000    # 108 MHz
-freq_step   = 200_000        # 200 kHz
-dwell_ms    = 500            # Tiempo en cada frecuencia (ms)
-min_snr_db  = 10.0
-pause_on_signal = true      # Pausar al detectar señal >= min_snr_db
-pause_resume_snr_db = 7.0   # Auto-reanudar si SNR cae por debajo (histéresis)
+enabled = false
+freq_start = 88000000
+freq_end = 108000000
+freq_step = 200000
+dwell_ms = 500
+min_snr_db = 10.0
+pause_on_signal = true
+pause_resume_snr_db = 7.0
