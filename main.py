@@ -155,6 +155,9 @@ def main():
     use_startup_splash = _will_use_startup_splash(args)
     defer_config = use_startup_splash
 
+    def _startup_phase_label(phase: str) -> None:
+        startup_logs.append(f"Fase: {phase}")
+
     def _load_application_config(*, exit_on_error: bool = True) -> tuple[dict, str | None]:
         cfg = load_config(args.config)
         from core.band_profiles import merge_configs
@@ -275,6 +278,7 @@ def main():
             nonlocal driver, enumerated_devices, config, active_band
             nonlocal center_freq, gain, demod_mode, volume
 
+            _startup_phase_label("config")
             with suppress_startup_output(startup_logs):
                 if defer_config and not config:
                     loaded_cfg, loaded_band = _load_application_config(exit_on_error=False)
@@ -295,12 +299,19 @@ def main():
                 from core.soapy_runtime import bootstrap_soapy, format_hardware_help
                 from core.device import filter_sdr_devices, resolve_device
 
+                _startup_phase_label("enumerate SDR")
+
+                def _recover_log(msg: str) -> None:
+                    if "restart" in msg.lower() or "ensure_service" in msg.lower():
+                        _startup_phase_label("recovery API")
+                    log_breadcrumb(msg)
+
                 with suppress_startup_output(startup_logs):
                     from core.sdrplay_enumerate import recover_sdrplay_enumeration
 
                     found, recover_msg, _recover_status = recover_sdrplay_enumeration(
                         restart_if_missing=True,
-                        log=log_breadcrumb,
+                        log=_recover_log,
                     )
                     if recover_msg:
                         log_breadcrumb(f"sdrplay.enumerate: found={found} msg={recover_msg!r}")
@@ -343,6 +354,7 @@ def main():
                     center_freq / 1e6,
                     demod_mode,
                 )
+            _startup_phase_label("listo")
 
         if args.no_splash:
             _startup_phase()

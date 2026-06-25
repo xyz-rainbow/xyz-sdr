@@ -33,6 +33,19 @@ def sdrplay_find_ok(*, status: SoapyStatus | None = None) -> bool:
     return check_sdrplay_plugin()
 
 
+_QUICK_RETRY_DELAYS = (0.5, 1.0, 1.5)
+
+
+def _quick_enumerate_retries(status: SoapyStatus) -> SoapyStatus:
+    """Reintentos ligeros antes de reiniciar SDRplayAPIService."""
+    for delay in _QUICK_RETRY_DELAYS:
+        if sdrplay_find_ok(status=status):
+            return status
+        time.sleep(delay)
+        status = bootstrap_soapy(force=True)
+    return status
+
+
 def recover_sdrplay_enumeration(
     *,
     restart_if_missing: bool = True,
@@ -47,6 +60,10 @@ def recover_sdrplay_enumeration(
     status = bootstrap_soapy(force=True)
     if sdrplay_find_ok(status=status):
         return True, "SDRplay enumerado", status
+
+    status = _quick_enumerate_retries(status)
+    if sdrplay_find_ok(status=status):
+        return True, "SDRplay visible tras reintento", status
 
     if not restart_if_missing:
         return False, "SDRplay no visible en enumerate/find", status
@@ -70,7 +87,7 @@ def recover_sdrplay_enumeration(
             if sdrplay_find_ok(status=status):
                 return True, f"SDRplay visible tras iniciar servicio ({msg})", status
 
-    ok, msg = restart_sdrplay_service(stop_wait_s=10.0, start_wait_s=5.0)
+    ok, msg = restart_sdrplay_service(stop_wait_s=5.0, start_wait_s=5.0)
     if log:
         log(f"sdrplay.enumerate restart ok={ok} {msg!r}")
     if not ok:

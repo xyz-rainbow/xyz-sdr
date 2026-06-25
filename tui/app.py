@@ -1271,7 +1271,12 @@ class XyzSDRApp(App):
             )
             from core.sdrplay_service import restart_sdrplay_service
 
-            recover_sdrplay_enumeration(restart_if_missing=True, log=log_breadcrumb)
+            has_cached_sdrplay = any(
+                str(dev.get("driver", "")).lower() == "sdrplay"
+                for dev in (self._cached_sdr_devices or [])
+            )
+            if not has_cached_sdrplay:
+                recover_sdrplay_enumeration(restart_if_missing=True, log=log_breadcrumb)
 
             # Arranque TUI: solo minimal (CS16→CF32) para no bloquear ~2 min
             startup_timeout = min(resolve_preflight_timeout(), 50.0)

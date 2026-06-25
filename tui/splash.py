@@ -182,6 +182,58 @@ def _trim_status_line(line: str, width: int) -> str:
     return plain[: max(8, width - 5)] + "..."
 
 
+_SPLASH_NOISE_MARKERS = (
+    "SOAPY plugin path",
+    "Soapy bundled runtime",
+    "core.soapy_runtime",
+    ":\\",
+    "/",
+)
+
+
+def _is_splash_noise_line(line: str) -> bool:
+    plain = line.strip()
+    if not plain:
+        return True
+    if plain.startswith("Fase:"):
+        return False
+    lowered = plain.lower()
+    return any(marker.lower() in lowered for marker in _SPLASH_NOISE_MARKERS)
+
+
+def _splash_display_lines(status_lines: list[str] | None) -> list[str]:
+    if not status_lines:
+        return []
+    phases = [line.strip() for line in status_lines if line.strip().startswith("Fase:")]
+    if phases:
+        return phases[-3:]
+    clean = [line.strip() for line in status_lines if not _is_splash_noise_line(line)]
+    return clean[-3:]
+
+
+def _phase_percent_from_lines(status_lines: list[str] | None) -> int | None:
+    if not status_lines:
+        return None
+    phase = ""
+    for line in reversed(status_lines):
+        text = line.strip()
+        if text.startswith("Fase:"):
+            phase = text
+            break
+    if not phase:
+        return None
+    lowered = phase.lower()
+    if "config" in lowered:
+        return 25
+    if "enumerate" in lowered or "sdr" in lowered:
+        return 55
+    if "recovery" in lowered or "api" in lowered:
+        return 80
+    if "listo" in lowered or "ready" in lowered:
+        return 100
+    return None
+
+
 def _render_startup_frame(
     width: int,
     v_padding: int,
@@ -189,7 +241,7 @@ def _render_startup_frame(
     percent: int,
     status_lines: list[str] | None,
     *,
-    max_status_lines: int = 5,
+    max_status_lines: int = 3,
     full_clear: bool = True,
 ) -> None:
     if full_clear:
@@ -198,12 +250,14 @@ def _render_startup_frame(
         _console_write("\033[H")
     _console_write(_render_banner_block(centered, v_padding))
     _draw_progress_bar(width, percent, use_cr=False)
-    if status_lines:
+    display_lines = _splash_display_lines(status_lines)
+    if display_lines:
         _console_write("\n")
-        for line in status_lines[-max_status_lines:]:
+        for line in display_lines[-max_status_lines:]:
             display = _trim_status_line(line, width)
             pad = max(0, (width - len(display)) // 2)
-            _console_write(" " * pad + f"{C_DIM}{display}{C_RESET}\n")
+            _console_write(" " * pad + f"{C_DIM}{display}{C_RESET}\033[K\n")
+        _console_write("\033[J")
 
 
 def run_startup_splash(
@@ -250,9 +304,10 @@ def run_startup_splash(
 
     while True:
         elapsed = time.monotonic() - t0
-        time_progress = min(95, int((elapsed / max(min_duration_s, 0.1)) * 95))
+        phase_percent = _phase_percent_from_lines(status_lines)
+        time_progress = min(98, int((elapsed / max(min_duration_s, 0.1)) * 98))
         if thread.is_alive():
-            percent = min(time_progress, 95)
+            percent = phase_percent if phase_percent is not None else min(time_progress, 98)
         else:
             percent = 100
 
@@ -276,9 +331,7 @@ def run_startup_splash(
             last_status_len = status_len
             last_redraw_at = now
 
-        if not thread.is_alive() and elapsed >= min_duration_s:
-            break
-        if not thread.is_alive() and percent >= 100:
+        if not thread.is_alive():
             break
 
         time.sleep(step_sleep_s)
