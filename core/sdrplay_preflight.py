@@ -15,9 +15,17 @@ from core.runtime_paths import project_root
 from core.sdrplay_service import is_native_crash_exit_code
 
 StreamPath = Literal["legacy", "minimal"]
+StreamFormat = Literal["CF32", "CS16"]
 
 DEFAULT_PREFLIGHT_TIMEOUT = 60.0
 MIN_PER_PATH_TIMEOUT = 30.0
+
+_PREFLIGHT_TRY_ORDER: tuple[tuple[StreamPath, StreamFormat], ...] = (
+    ("minimal", "CS16"),
+    ("minimal", "CF32"),
+    ("legacy", "CS16"),
+    ("legacy", "CF32"),
+)
 
 _DEVICE_KWARGS_BLOCK = """
     import os
@@ -27,7 +35,43 @@ _DEVICE_KWARGS_BLOCK = """
         kwargs["serial"] = _serial
 """
 
-_LEGACY_SCRIPT = f"""
+def _soapy_imports(stream_format: StreamFormat) -> str:
+    if stream_format == "CS16":
+        return "from SoapySDR import SOAPY_SDR_CS16, SOAPY_SDR_RX"
+    return "from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_RX"
+
+
+def _soapy_fmt_symbol(stream_format: StreamFormat) -> str:
+    return "SOAPY_SDR_CS16" if stream_format == "CS16" else "SOAPY_SDR_CF32"
+
+
+def _read_buffer_block(stream_format: StreamFormat) -> str:
+    if stream_format == "CS16":
+        return "    buff = np.empty(8192, np.int16)"
+    return "    buff = np.empty(4096, np.complex64)"
+
+
+def build_preflight_script(
+    path: StreamPath,
+    *,
+    stream_format: StreamFormat = "CF32",
+    sample_rate: int | None = None,
+) -> str:
+    fmt = stream_format.upper()
+    if fmt not in ("CF32", "CS16"):
+        fmt = "CF32"
+    soapy_imports = _soapy_imports(fmt)  # type: ignore[arg-type]
+    fmt_sym = _soapy_fmt_symbol(fmt)  # type: ignore[arg-type]
+    buff_block = _read_buffer_block(fmt)  # type: ignore[arg-type]
+
+    if path == "legacy":
+        rate_block = ""
+        if sample_rate is not None:
+            rate_block = f"""
+    dev.setSampleRate(SOAPY_SDR_RX, 0, {sample_rate})
+    step("setSampleRate")
+"""
+        return f"""
 import sys
 
 def step(name: str) -> None:
@@ -38,21 +82,20 @@ try:
     bootstrap_soapy(force=True)
     import numpy as np
     import SoapySDR
-    from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_RX
+    {soapy_imports}
 
     step("bootstrap")
 {_DEVICE_KWARGS_BLOCK}
     dev = SoapySDR.Device(kwargs)
     step("open")
-    dev.setSampleRate(SOAPY_SDR_RX, 0, 500_000)
-    step("setSampleRate")
+{rate_block}
     dev.setFrequency(SOAPY_SDR_RX, 0, 100.6e6)
     step("setFrequency")
-    stream = dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+    stream = dev.setupStream(SOAPY_SDR_RX, {fmt_sym})
     step("setupStream")
     dev.activateStream(stream)
     step("activateStream")
-    buff = np.empty(4096, np.complex64)
+{buff_block}
     sr = dev.readStream(stream, [buff], 4096, 1_000_000)
     step(f"readStream ret={{sr.ret}}")
     dev.deactivateStream(stream)
@@ -68,7 +111,22 @@ except Exception as exc:
     sys.exit(2)
 """
 
-_MINIMAL_SCRIPT = f"""
+    tune_after = ""
+    if sample_rate is not None:
+        tune_after = f"""
+    dev.setSampleRate(SOAPY_SDR_RX, 0, {sample_rate})
+    step("setSampleRate")
+    dev.setFrequency(SOAPY_SDR_RX, 0, 100.6e6)
+    step("setFrequency")
+"""
+    else:
+        tune_after = """
+    dev.setSampleRate(SOAPY_SDR_RX, 0, 500_000)
+    step("setSampleRate")
+    dev.setFrequency(SOAPY_SDR_RX, 0, 100.6e6)
+    step("setFrequency")
+"""
+    return f"""
 import sys
 
 def step(name: str) -> None:
@@ -79,23 +137,20 @@ try:
     bootstrap_soapy(force=True)
     import numpy as np
     import SoapySDR
-    from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_RX
+    {soapy_imports}
 
     step("bootstrap")
 {_DEVICE_KWARGS_BLOCK}
     dev = SoapySDR.Device(kwargs)
     step("open")
-    stream = dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+    stream = dev.setupStream(SOAPY_SDR_RX, {fmt_sym})
     step("setupStream")
     dev.activateStream(stream)
     step("activateStream")
-    buff = np.empty(4096, np.complex64)
+{buff_block}
     sr = dev.readStream(stream, [buff], 4096, 1_000_000)
     step(f"readStream ret={{sr.ret}}")
-    dev.setSampleRate(SOAPY_SDR_RX, 0, 500_000)
-    step("setSampleRate")
-    dev.setFrequency(SOAPY_SDR_RX, 0, 100.6e6)
-    step("setFrequency")
+{tune_after}
     dev.deactivateStream(stream)
     dev.closeStream(stream)
     step("closeStream")
@@ -108,11 +163,6 @@ except Exception as exc:
     print(f"ERR {{exc}}", flush=True)
     sys.exit(2)
 """
-
-_STREAM_SCRIPTS: dict[StreamPath, str] = {
-    "legacy": _LEGACY_SCRIPT,
-    "minimal": _MINIMAL_SCRIPT,
-}
 
 
 @dataclass
@@ -127,6 +177,18 @@ class PreflightResult:
     stderr: str = ""
     skipped: bool = False
     skip_reason: str = ""
+    stream_format: StreamFormat | str = "CF32"
+    sample_rate: int | None = None
+
+
+def apply_preflight_strategy(result: PreflightResult) -> None:
+    """Publica la ruta ganadora para device.py / matriz."""
+    if not result.ok:
+        return
+    os.environ["XYZ_SDR_SDRPLAY_STREAM_MODE"] = str(result.path)
+    os.environ["XYZ_SDR_SDRPLAY_STREAM_FORMAT"] = str(result.stream_format or "CF32").upper()
+    if result.sample_rate is not None:
+        os.environ["XYZ_SDR_SDRPLAY_STREAM_SAMPLE_RATE"] = str(int(result.sample_rate))
 
 
 def is_device_unavailable_detail(detail: str) -> bool:
@@ -185,6 +247,8 @@ def parse_stream_probe_output(
     returncode: int,
     *,
     path: StreamPath | str = "unknown",
+    stream_format: StreamFormat | str = "CF32",
+    sample_rate: int | None = None,
 ) -> PreflightResult:
     """Interpreta salida del subproceso de prueba stream."""
     out = (stdout or "").strip()
@@ -207,6 +271,8 @@ def parse_stream_probe_output(
             segfault=True,
             last_step=fail_step,
             detail=detail,
+            stream_format=stream_format,
+            sample_rate=sample_rate,
         )
 
     if returncode == 0 and "OK" in out:
@@ -216,6 +282,8 @@ def parse_stream_probe_output(
             segfault=False,
             last_step=last_step or "done",
             detail=out,
+            stream_format=stream_format,
+            sample_rate=sample_rate,
         )
 
     return PreflightResult(
@@ -224,6 +292,8 @@ def parse_stream_probe_output(
         segfault=False,
         last_step=last_step,
         detail=out or f"exit code {returncode}",
+        stream_format=stream_format,
+        sample_rate=sample_rate,
     )
 
 
@@ -269,6 +339,8 @@ def run_preflight(
     timeout: float | None = None,
     *,
     per_path_timeout_s: float | None = None,
+    stream_format: StreamFormat | str = "CF32",
+    sample_rate: int | None = None,
 ) -> PreflightResult:
     """Ejecuta una ruta de arranque RX en subproceso aislado."""
     if per_path_timeout_s is not None:
@@ -277,7 +349,12 @@ def run_preflight(
         effective = per_path_timeout(float(timeout))
     else:
         effective = per_path_timeout(resolve_preflight_timeout())
-    script = _STREAM_SCRIPTS.get(path, _MINIMAL_SCRIPT)
+
+    fmt = str(stream_format).upper()
+    if fmt not in ("CF32", "CS16"):
+        fmt = "CF32"
+
+    script = build_preflight_script(path, stream_format=fmt, sample_rate=sample_rate)  # type: ignore[arg-type]
     returncode, stdout, stderr, combined = _run_isolated_script(script, effective)
     if returncode == -1:
         return PreflightResult(
@@ -289,18 +366,31 @@ def run_preflight(
             returncode=returncode,
             stdout=stdout,
             stderr=stderr,
+            stream_format=fmt,
+            sample_rate=sample_rate,
         )
-    result = parse_stream_probe_output(combined, returncode, path=path)
+    result = parse_stream_probe_output(
+        combined,
+        returncode,
+        path=path,
+        stream_format=fmt,
+        sample_rate=sample_rate,
+    )
     result.returncode = returncode
     result.stdout = stdout
     result.stderr = stderr
     return result
 
 
-def run_preflight_best(timeout: float | None = None) -> PreflightResult:
-    """Prueba minimal y legacy; devuelve la primera ruta que funciona."""
+def run_preflight_best(
+    timeout: float | None = None,
+    *,
+    try_order: tuple[tuple[StreamPath, StreamFormat], ...] | None = None,
+) -> PreflightResult:
+    """Prueba rutas/formatos; devuelve la primera que funciona (CS16 primero)."""
     total = resolve_preflight_timeout(timeout)
     per = per_path_timeout(total)
+    order = try_order or _PREFLIGHT_TRY_ORDER
     last = PreflightResult(
         ok=False,
         path="none",
@@ -308,9 +398,10 @@ def run_preflight_best(timeout: float | None = None) -> PreflightResult:
         last_step="",
         detail="no stream path attempted",
     )
-    for path in ("minimal", "legacy"):
-        result = run_preflight(path, per_path_timeout_s=per)
+    for path, fmt in order:
+        result = run_preflight(path, per_path_timeout_s=per, stream_format=fmt)
         if result.ok:
+            apply_preflight_strategy(result)
             return result
         last = result
     return last

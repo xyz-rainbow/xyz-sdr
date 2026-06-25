@@ -52,18 +52,8 @@ def test_preflight_user_message_not_segfault_for_no_device():
 
 
 def test_skipped_preflight_when_device_open(monkeypatch):
-    """Simula dispositivo ya abierto en padre: no subprocess preflight."""
+    """Dispositivo abierto sin preflight previo: bloquear RX (no marcar OK)."""
     from types import SimpleNamespace
-
-    from core.sdrplay_preflight import run_preflight_best
-
-    calls: list[str] = []
-
-    def _fake_best(*_a, **_k):
-        calls.append("run")
-        raise AssertionError("should not run subprocess preflight")
-
-    monkeypatch.setattr("core.sdrplay_preflight.run_preflight_best", _fake_best)
 
     device = SimpleNamespace(
         is_simulated=False,
@@ -85,16 +75,18 @@ def test_skipped_preflight_when_device_open(monkeypatch):
 
             if not self._device or self._device.is_simulated or self._device.driver != "sdrplay":
                 return True
+            if self._sdrplay_preflight_done:
+                return self._sdrplay_preflight_ok
             if self._device._sdr is not None:
                 log_breadcrumb("skip")
                 self._sdrplay_preflight_done = True
-                self._sdrplay_preflight_ok = True
-                return True
+                self._sdrplay_preflight_ok = False
+                return False
             return False
 
     host = Host()
-    assert host._ensure_sdrplay_rx_preflight() is True
-    assert calls == []
+    assert host._ensure_sdrplay_rx_preflight() is False
+    assert host._sdrplay_preflight_ok is False
 
 
 def test_run_preflight_mock_subprocess(monkeypatch):
@@ -161,3 +153,31 @@ def test_run_preflight_best_prefers_minimal(monkeypatch):
     result = run_preflight_best(timeout=4.0)
     assert result.ok
     assert call_n["n"] == 1
+
+
+def test_build_preflight_script_cs16():
+    from core.sdrplay_preflight import build_preflight_script
+
+    script = build_preflight_script("minimal", stream_format="CS16")
+    assert "SOAPY_SDR_CS16" in script
+    assert "np.int16" in script
+
+
+def test_apply_preflight_strategy(monkeypatch):
+    from core.sdrplay_preflight import PreflightResult, apply_preflight_strategy
+
+    monkeypatch.delenv("XYZ_SDR_SDRPLAY_STREAM_FORMAT", raising=False)
+    apply_preflight_strategy(
+        PreflightResult(
+            ok=True,
+            path="minimal",
+            segfault=False,
+            last_step="done",
+            detail="OK",
+            stream_format="CS16",
+        )
+    )
+    import os
+
+    assert os.environ.get("XYZ_SDR_SDRPLAY_STREAM_FORMAT") == "CS16"
+    assert os.environ.get("XYZ_SDR_SDRPLAY_STREAM_MODE") == "minimal"
