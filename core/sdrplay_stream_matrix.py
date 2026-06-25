@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from core.runtime_paths import project_root
 from core.sdrplay_preflight import DEFAULT_PREFLIGHT_TIMEOUT, run_preflight
+from core.sdrplay_forensics import capture_post_segfault_evidence
 from core.soapy_runtime import find_sdrplay_api_dll, find_sdrplay_soapy_module
 
 MatrixResult = Literal["OK", "SEGFAULT", "FAIL", "TIMEOUT", "SKIP", "PENDING"]
@@ -46,6 +47,9 @@ class MatrixRow:
     stderr: str = ""
     minidump_path: str = ""
     event_log_entries: list[str] = field(default_factory=list)
+    event_log_note: str = ""
+    forensics_note: str = ""
+    wer_report_artifacts: list[str] = field(default_factory=list)
     service_events: list[str] = field(default_factory=list)
     timestamp: str = ""
 
@@ -116,6 +120,14 @@ def collect_environment(*, pip_freeze_file: str = "var/log/pip-freeze.txt") -> d
     api_dll = find_sdrplay_api_dll()
     plugin_hash = _sha256_file(plugin)
     api_hash = _sha256_file(api_dll)
+    wer: dict[str, Any] = {}
+    if os.name == "nt":
+        try:
+            from core.sdrplay_wer import wer_status
+
+            wer = wer_status()
+        except Exception:
+            wer = {}
     return {
         "python_version": sys.version.replace("\n", " "),
         "python_version_short": platform.python_version(),
@@ -130,6 +142,7 @@ def collect_environment(*, pip_freeze_file: str = "var/log/pip-freeze.txt") -> d
             "sdrplay_api.dll": api_hash,
         },
         "sdrplay_api_api_version": _probe_api_version(),
+        "wer": wer,
     }
 
 
@@ -173,53 +186,16 @@ def _ensure_python_version_file(out_dir: Path) -> None:
 
 
 def _collect_event_log_snippet(minutes: int = 3) -> list[str]:
-    if os.name != "nt":
-        return []
-    try:
-        ps = (
-            f"$start=(Get-Date).AddMinutes(-{minutes}); "
-            "Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=$start} -MaxEvents 25 "
-            "| ForEach-Object { "
-            "$_.TimeCreated.ToString('o') + ' [' + $_.LogName + '] ' + $_.ProviderName "
-            "+ ' Id=' + $_.Id + ' ' + $_.Message.Substring(0,[Math]::Min(240,$_.Message.Length)) "
-            "}"
-        )
-        res = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=45,
-        )
-        return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()][:25]
-    except Exception:
-        return []
+    from core.sdrplay_forensics import collect_event_log_after_crash
+
+    entries, _note = collect_event_log_after_crash(minutes=minutes)
+    return entries
 
 
 def _find_recent_minidump(*, since: float, dumps_dir: Path) -> str:
-    candidates: list[tuple[float, str]] = []
-    search_roots = [
-        dumps_dir,
-        Path(os.environ.get("LOCALAPPDATA", "")) / "CrashDumps",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "xyz-sdr" / "dumps",
-    ]
-    for root in search_roots:
-        if not root.is_dir():
-            continue
-        try:
-            for path in root.rglob("*.dmp"):
-                try:
-                    mtime = path.stat().st_mtime
-                except OSError:
-                    continue
-                if mtime >= since:
-                    candidates.append((mtime, str(path.resolve())))
-        except OSError:
-            continue
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    from core.sdrplay_forensics import find_recent_minidump
+
+    return find_recent_minidump(since=since, dumps_dir=dumps_dir, poll_seconds=0)
 
 
 def build_matrix_cases() -> list[MatrixRow]:
@@ -257,14 +233,21 @@ def _run_case(
     row.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _apply_env_meta(row, env_meta, service_events)
 
-    if row.format != "CF32":
+    fmt = str(row.format).upper()
+    if fmt not in STREAM_FORMATS:
         row.result = "SKIP"
-        row.stderr = f"format {row.format} planned Fase 0.1"
+        row.stderr = f"unsupported format {row.format!r}"
         return row
 
     case_started = datetime.now(timezone.utc).timestamp()
     per_path = max(timeout_s / 2.0, 30.0)
-    pre = run_preflight(row.stream_mode, per_path_timeout_s=per_path)
+    mode = row.stream_mode if row.stream_mode in STREAM_MODES else "minimal"
+    pre = run_preflight(
+        mode,  # type: ignore[arg-type]
+        per_path_timeout_s=per_path,
+        stream_format=fmt,  # type: ignore[arg-type]
+        sample_rate=row.sample_rate,
+    )
 
     row.exit_code = pre.returncode
     row.last_step = pre.last_step
@@ -277,10 +260,33 @@ def _run_case(
         row.result = "OK"
     elif pre.segfault:
         row.result = "SEGFAULT"
-        row.event_log_entries = _collect_event_log_snippet(minutes=2)
-        dump = _find_recent_minidump(since=min(run_started, case_started - 5.0), dumps_dir=dumps_dir)
-        if dump:
-            row.minidump_path = dump
+        evidence = capture_post_segfault_evidence(
+            since=min(run_started, case_started - 10.0),
+            dumps_dir=dumps_dir,
+            poll_seconds=20.0,
+            event_log_minutes=5,
+        )
+        row.event_log_entries = list(evidence.get("event_log_entries") or [])
+        row.event_log_note = str(evidence.get("event_log_note") or "")
+        row.minidump_path = str(evidence.get("minidump_path") or "")
+        row.wer_report_artifacts = list(evidence.get("wer_report_artifacts") or [])
+        notes: list[str] = []
+        if not row.minidump_path and not row.wer_report_artifacts:
+            notes.append(
+                "minidump: not found (run .\\scripts\\enable_wer_minidumps.ps1; "
+                f"WER folder={evidence.get('wer_dump_folder')!r})"
+            )
+        elif row.wer_report_artifacts and not row.minidump_path:
+            row.minidump_path = row.wer_report_artifacts[0]
+            tag = "historical WER Report" if evidence.get("wer_report_historical") else "wer_report"
+            notes.append(f"{tag}: {len(row.wer_report_artifacts)} artifact(s)")
+        else:
+            src = str(evidence.get("minidump_source") or "")
+            if src and src != row.minidump_path:
+                notes.append(f"minidump staged from {src}")
+        if not row.event_log_entries and row.event_log_note:
+            notes.append(f"event_log: {row.event_log_note}")
+        row.forensics_note = "; ".join(notes)
     elif pre.last_step == "timeout":
         row.result = "TIMEOUT"
     else:
@@ -294,11 +300,28 @@ def run_matrix(
     out_dir: Path | None = None,
     timeout_s: float = DEFAULT_PREFLIGHT_TIMEOUT,
     dry_run: bool = False,
+    cases: list[MatrixRow] | None = None,
+    enable_wer: bool = False,
 ) -> MatrixReport:
     log_dir = out_dir or (project_root() / "var" / "log")
     log_dir.mkdir(parents=True, exist_ok=True)
     dumps_dir = log_dir / "dumps"
     dumps_dir.mkdir(parents=True, exist_ok=True)
+
+    if enable_wer and os.name == "nt":
+        from core.sdrplay_wer import enable_wer_minidumps
+
+        ok, msg = enable_wer_minidumps(dumps_dir=dumps_dir)
+        print(f"WER: {msg}" if msg else "WER: (no message)")
+        if not ok:
+            print("[WARN] WER no configurado; minidumps pueden quedar vacíos")
+    elif os.name == "nt":
+        from core.sdrplay_wer import enable_wer_minidumps, wer_status
+
+        if not wer_status(dumps_dir=dumps_dir).get("configured"):
+            ok, msg = enable_wer_minidumps(dumps_dir=dumps_dir)
+            if ok:
+                print(f"WER (auto HKCU): {msg}")
 
     pip_path = _ensure_pip_freeze(log_dir)
     _ensure_python_version_file(log_dir)
@@ -308,7 +331,7 @@ def run_matrix(
     ]
     run_started = datetime.now(timezone.utc).timestamp()
 
-    cases = build_matrix_cases()
+    cases = cases if cases is not None else build_matrix_cases()
     rows: list[MatrixRow] = []
 
     if dry_run:
@@ -371,6 +394,10 @@ def format_matrix_summary(report: MatrixReport) -> str:
         lines.append(f"segfault_rows: {len(segfaults)} (event_log captured per row)")
         if segfaults[0].minidump_path:
             lines.append(f"minidump_example: {segfaults[0].minidump_path}")
+        elif segfaults[0].forensics_note:
+            lines.append(f"forensics: {segfaults[0].forensics_note}")
+        if segfaults[0].event_log_entries:
+            lines.append(f"event_log_example: {segfaults[0].event_log_entries[0][:120]}")
     if report.best_row_index is not None:
         b = report.rows[report.best_row_index]
         lines.append(f"best: index={report.best_row_index} mode={b.stream_mode} rate={b.sample_rate}")
@@ -384,8 +411,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=DEFAULT_PREFLIGHT_TIMEOUT)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--enable-wer",
+        action="store_true",
+        help="Configura WER LocalDumps para python.exe (requiere admin)",
+    )
+    parser.add_argument(
+        "--single-row",
+        default="",
+        help="Una fila: mode,format[,sample_rate] p.ej. minimal,CF32 o minimal,CS16,500000",
+    )
     args = parser.parse_args(argv)
-    report = run_matrix(out_dir=args.out_dir, timeout_s=args.timeout, dry_run=args.dry_run)
+
+    cases: list[MatrixRow] | None = None
+    if args.single_row.strip():
+        parts = [p.strip() for p in args.single_row.split(",") if p.strip()]
+        if len(parts) < 2:
+            parser.error("--single-row requiere mode,format[,sample_rate]")
+        mode = parts[0]
+        fmt = parts[1].upper()
+        rate: int | None = int(parts[2]) if len(parts) > 2 and parts[2].lower() != "none" else None
+        cases = [MatrixRow(sample_rate=rate, format=fmt, stream_mode=mode)]
+
+    report = run_matrix(
+        out_dir=args.out_dir,
+        timeout_s=args.timeout,
+        dry_run=args.dry_run,
+        cases=cases,
+        enable_wer=args.enable_wer,
+    )
     print(format_matrix_summary(report))
     out_path = write_matrix_report(report, args.out_dir)
     print(f"\n[OK] Informe: {out_path}")

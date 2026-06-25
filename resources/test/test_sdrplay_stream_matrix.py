@@ -18,3 +18,12 @@ def test_format_matrix_summary_no_best():
     text = format_matrix_summary(report)
     assert "best: (none OK)" in text
     assert "SEGFAULT=1" in text
+
+
+def test_matrix_dry_run_cs16_not_skip():
+    from core.sdrplay_stream_matrix import run_matrix
+
+    report = run_matrix(dry_run=True)
+    cs16 = [r for r in report.rows if r.format == "CS16"]
+    assert len(cs16) == 8
+    assert all(r.result == "PENDING" for r in cs16)

@@ -3,12 +3,17 @@ param(
     [string]$OutDir = "var/log",
     [switch]$DryRun,
     [switch]$SkipServiceRestart,
+    [switch]$EnableWer,
+    [string]$SingleRow = "",
     [int]$TimeoutSeconds = 90
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path $PSScriptRoot -Parent
+if (-not $Root) {
+    $Root = (Get-Location).Path
+}
 $env:PYTHONPYCACHEPREFIX = Join-Path $Root "var\pycache"
 $env:XYZ_SDR_PREFLIGHT_TIMEOUT = "$TimeoutSeconds"
 
@@ -68,6 +73,8 @@ Write-LiteralUtf8 -Path $pipPath -Content ((& $VenvPy -m pip freeze) | Out-Strin
 
 $matrixArgs = @("-m", "core.sdrplay_stream_matrix", "--out-dir", $LogDir, "--timeout", "$TimeoutSeconds")
 if ($DryRun) { $matrixArgs += "--dry-run" }
+if ($EnableWer) { $matrixArgs += "--enable-wer" }
+if ($SingleRow) { $matrixArgs += @("--single-row", $SingleRow) }
 
 Push-Location -LiteralPath $Root
 try {
@@ -88,17 +95,35 @@ $toZip = @(
 )
 if ($latestJson) { $toZip += $latestJson.FullName }
 Get-ChildItem -LiteralPath $DumpsDir -Filter "*.dmp" -ErrorAction SilentlyContinue | ForEach-Object { $toZip += $_.FullName }
+Get-ChildItem -LiteralPath (Join-Path $DumpsDir "wer-reports") -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $toZip += $_.FullName }
 Get-ChildItem -LiteralPath $LogDir -Filter "*.dmp" -ErrorAction SilentlyContinue | ForEach-Object { $toZip += $_.FullName }
 
-$existing = @($toZip | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+$existing = @($toZip | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Where-Object { Test-Path -LiteralPath $_ })
 if ($existing.Count -gt 0) {
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-    Compress-Archive -Path $existing -DestinationPath $zipPath -Force
-    Write-Host ""
-    Write-Host "[OK] Artefactos para Mario: $zipPath" -ForegroundColor Green
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($file in $existing) {
+                $entryName = [System.IO.Path]::GetFileName($file)
+                [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file, $entryName)
+            }
+        } finally {
+            $zip.Dispose()
+        }
+    } catch {
+        Write-Warning "Zip failed ($($_.Exception.Message)); skipping zip"
+        $zipPath = $null
+    }
+    if ($zipPath) {
+        Write-Host ""
+        Write-Host "[OK] Artefactos para Mario: $zipPath" -ForegroundColor Green
+    }
     if ($latestJson) {
         Write-Host "     JSON: $($latestJson.FullName)" -ForegroundColor Gray
     }
 }
 
+if ($null -eq $rc) { exit 1 }
 exit $rc
