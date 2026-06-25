@@ -70,6 +70,8 @@ También desde la raíz: **`xyz-sdr.bat`** / **`xyz-sdr.ps1`**, o `scripts\xyz-s
 
 **Preferir `.\scripts\run.ps1`** frente a `python main.py` — usa `.venv`, UTF-8 y preserva flags tras re-exec Soapy. Ver [docs/hardware.md](docs/hardware.md).
 
+**SDRplay — crash al pulsar INICIAR RX:** si la TUI se cierra sola, revisa `var/log/xyz-sdr-*.log` (última línea suele ser `setSampleRate`). Ejecuta `.\scripts\diagnose_sdrplay.ps1` y `python setup/check_env.py --verbose` (línea `sdrplay_rx_preflight`). Cierra SDRuno y reinicia `SDRplayAPIService` antes de reintentar.
+
 ---
 
 ## Características clave
@@ -149,7 +151,7 @@ xyz-sdr/
 | `[` / `]` | Estrechar / ensanchar PASS |
 | `G` / `V` | Ganancia / volumen |
 | `Esc` | Menú ajustes |
-| `Q` | Salir |
+| `Q` / `Ctrl+Q` / `Ctrl+C` | Salir (salida rápida; no bloquea en Soapy colgado) |
 
 Ratón: clic y arrastre en timeline/espectro para PASS; rueda = scroll; `Ctrl+rueda` = zoom.
 
