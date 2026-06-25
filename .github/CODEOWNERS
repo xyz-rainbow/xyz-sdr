@@ -1,0 +1,27 @@
+# xyz-sdr — CODEOWNERS
+# Default owner for the entire repository.
+# Replace <placeholder> with the GitHub username(s) of the actual owner(s).
+# Multiple owners per path: space-separated.
+
+# Default: everything
+*                                       @<placeholder>
+
+# Domain modules
+/core/                                  @<placeholder>
+/tui/                                   @<placeholder>
+/setup/                                 @<placeholder>
+
+# AI module (Fase 4-5)
+/ai/                                    @<placeholder>
+
+# Documentation
+/docs/                                  @<placeholder>
+/CONTRIBUTING.md                        @<placeholder>
+/README.md                              @<placeholder>
+
+# Infrastructure
+/.github/                               @<placeholder>
+/scripts/                               @<placeholder>
+/pyproject.toml                         @<placeholder>
+/requirements*.txt                      @<placeholder>
+/.pre-commit-config.yaml                @<placeholder>

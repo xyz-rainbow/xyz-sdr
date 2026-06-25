@@ -1,5 +1,11 @@
 ![xyz-sdr Banner](resources/svg/header.svg)
 
+[![CI](https://github.com/<owner>/xyz-sdr/actions/workflows/test.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/test.yml)
+[![Lint](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml)
+[![codecov](https://codecov.io/gh/<owner>/xyz-sdr/graph/badge.svg)](https://codecov.io/gh/<owner>/xyz-sdr)
+
+> **Nota:** Reemplazar `<owner>` en los badges con el owner real del repositorio antes de mergear a `main`.
+
 # 🛰️ xyz-sdr — SDR Terminal Controller
 
 > Controlador SDR interactivo en terminal (TUI) de alto rendimiento: timeline + espectro FFT + cascada alineados, perfiles por banda, observabilidad de stream y empaquetado DX en Windows.
@@ -17,15 +23,30 @@
 
 ---
 
+[![Demo de xyz-sdr](docs/assets/demo-thumb.png)](https://github.com/user-attachments/assets/6bf02f3e-dbbf-41fc-9be9-94ce2defc04c)
+
+---
+
 ## Instalación y ejecución rápida
 
 ### 1. Entorno (primera vez)
 
 ```powershell
+.\install-drivers.bat              # atajo raíz (recomendado)
+.\install-drivers.ps1
+# o directamente:
 .\setup\install_drivers.ps1
 ```
 
 Menú Express: **[1] Instalar o reparar todo** (drivers + Python + `.venv` + verificación).
+
+Instalar solo **SDRplay API v3.15** (offline en `resources/installers/win-x64/` o Downloads):
+
+```powershell
+.\setup\install_sdrplay_api.bat
+# o menú instalador → [A] Avanzado → [1] SDRplay API
+.\setup\install_drivers.ps1
+```
 
 ### 2. Acceso directo (opcional)
 
@@ -34,15 +55,16 @@ Menú Express: **[1] Instalar o reparar todo** (drivers + Python + `.venv` + ver
 .\setup\install_app.ps1 -StartMenu   # menú inicio
 ```
 
-También: doble clic en `scripts\xyz-sdr.cmd`.
+También desde la raíz: **`xyz-sdr.bat`** / **`xyz-sdr.ps1`**, o `scripts\xyz-sdr.cmd`.
 
 ### 3. Lanzar la app
 
 ```powershell
+.\xyz-sdr.bat                               # atajo raíz (recomendado)
 .\scripts\run.ps1                           # hardware
 .\scripts\run.ps1 -Sim                        # simulación sin SDR
 .\scripts\run.ps1 -Band fm_broadcast          # perfil FM 88–108 MHz
-.\scripts\run.ps1 -Band airband -Debug        # aviación + métricas
+.\scripts\run.ps1 -Band airband -d            # aviación + métricas
 .\scripts\run.ps1 -Check                      # verificar entorno
 ```
 
@@ -68,7 +90,7 @@ También: doble clic en `scripts\xyz-sdr.cmd`.
 | Parámetro | Efecto |
 |-----------|--------|
 | `-Sim` | Modo simulación |
-| `-Debug` | Métricas en panel log |
+| `-DebugMode` / `-d` | Métricas en panel log |
 | `-Band <id>` | Perfil: `fm_broadcast`, `airband`, `pmr446`, `hf_lsb` |
 | `-Check` / `-ListDev` | Diagnóstico / listar SDR |
 | `-Freq`, `-Mode`, `-Gain`, `-Driver` | Overrides CLI |
@@ -99,8 +121,13 @@ xyz-sdr/
 │   ├── xyz-sdr.cmd             # Doble clic
 │   ├── run.sh / test.sh
 │   └── test.ps1
+├── xyz-sdr.bat                 # Atajo raíz → run.ps1
+├── install-drivers.bat         # Atajo raíz → setup/install_drivers.ps1
+├── install-drivers.ps1
+├── resources/installers/win-x64/  # SDRplay API offline (opcional)
 ├── setup/
 │   ├── install_drivers.ps1     # Wizard drivers + venv
+│   ├── install_sdrplay_api.bat # Solo SDRplay API v3.15
 │   └── install_app.ps1         # Acceso directo escritorio
 ├── tui/
 └── docs/                       # Índice: docs/README.md
@@ -141,6 +168,7 @@ Ratón: clic y arrastre en timeline/espectro para PASS; rueda = scroll; `Ctrl+ru
 | Configuración TOML | [docs/configuration.md](docs/configuration.md) |
 | Arquitectura | [docs/architecture.md](docs/architecture.md) |
 | DSP / audio / display | [docs/dsp.md](docs/dsp.md), [docs/audio.md](docs/audio.md), [docs/display.md](docs/display.md) |
+| Plan de ruta (fases) | [docs/roadmap.md](docs/roadmap.md) |
 
 ---
 
