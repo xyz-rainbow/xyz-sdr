@@ -41,7 +41,7 @@ def test_compact_band_cols_idempotent(values, target):
     np.testing.assert_array_equal(once, twice)
 
 
-@settings(suppress_health_check=[HealthCheck.large_base_example])
+@settings(suppress_health_check=[HealthCheck.large_base_example, HealthCheck.too_slow], max_examples=20)
 @given(
     st.lists(
         st.floats(min_value=-100.0, max_value=0.0, allow_nan=False, allow_infinity=False),

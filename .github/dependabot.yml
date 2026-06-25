@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "updates": [
+    {
+      "packagePatterns": ["*"],
+      "schedule": {
+        "interval": "weekly",
+        "day": "monday",
+        "time": "04:00",
+        "timezone": "Europe/Madrid"
+      },
+      "open-pull-requests-limit": 10,
+      "rebase-strategy": "auto",
+      "commit-message": "chore(deps): update {dependency-name} to {new-version}",
+      "labels": ["dependencies", "automated"],
+      "groups": {
+        "runtime": {
+          "patterns": ["numpy", "scipy", "textual", "rich", "sounddevice", "soundfile", "tomli"],
+          "excludePatterns": ["pytest", "pytest-cov", "hypothesis"]
+        },
+        "dev": {
+          "patterns": ["pytest", "pytest-cov", "hypothesis", "ruff"]
+        }
+      }
+    }
+  ]
+}

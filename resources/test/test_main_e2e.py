@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_PY = REPO_ROOT / "main.py"
 
 
-def _run_main(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+def _run_main(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Invoca main.py con los args dados y devuelve el resultado."""
     return subprocess.run(
         [sys.executable, str(MAIN_PY), *args],
@@ -45,9 +45,10 @@ def test_main_function_exists():
     assert callable(main.main)
 
 
+@pytest.mark.slow
 def test_main_check_flag_exits_cleanly():
-    """`--check` debe ejecutarse sin levantar la app (validate env only)."""
-    result = _run_main("--check")
+    """`--check` debe ejecutarse sin levantar la app (validate env only). Marcado slow porque subprocess.run de main.py tarda en Windows."""
+    result = _run_main("--check", timeout=60)
     # Exit code 0 (entorno OK) o 1 (algo falta) — ambos son "se ejecutó"
     assert result.returncode in (0, 1), f"Unexpected exit: {result.returncode}\n{result.stdout}\n{result.stderr}"
     # Debe haber producido alguna salida diagnóstica
@@ -86,10 +87,11 @@ def test_main_unknown_flag_returns_nonzero():
     assert "flag-que-no-existe" in result.stderr or "unrecognized" in result.stderr.lower()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("band_id", ["fm_broadcast", "airband", "pmr446", "hf_lsb"])
 def test_main_band_profile_accepted(band_id, tmp_path):
-    """Cada band profile documentado debe ser aceptado por argparse."""
-    result = _run_main(f"--band={band_id}", "--check", "--sim")
+    """Cada band profile documentado debe ser aceptado por argparse. Marcado slow porque cada test hace subprocess.run de main.py (~30s en Windows)."""
+    result = _run_main(f"--band={band_id}", "--check", "--sim", timeout=60)
     # Si argparse aceptó el band id, llegamos a check_env (puede fallar por entorno
     # pero el flag fue parseado OK)
     assert "invalid choice" not in result.stderr.lower(), (

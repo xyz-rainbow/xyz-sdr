@@ -1,0 +1,28 @@
+# Release Please configuration — https://github.com/googleapis/release-please
+# Automatiza versionado semántico + CHANGELOG + release notes.
+# Configura Conventional Commits como fuente de la versión.
+
+release-please:
+  config:
+    release-type: python
+    package-name: xyz-sdr
+    changelog-path: CHANGELOG.md
+    include-component-in-tag: false
+    extra-files:
+      - pyproject.toml
+    # Conventional Commits → bump version:
+    #   feat: → MINOR (0.1.0 → 0.2.0)
+    #   fix: → PATCH (0.1.0 → 0.1.1)
+    #   feat!:, fix!:, BREAKING CHANGE: → MAJOR (0.1.0 → 1.0.0)
+    #   chore:, docs:, test:, refactor: → no bump (entran en CHANGELOG)
+  pull-request:
+    header: "chore(release): ${version}"
+    footer: |
+      **Releasing ${version}**
+
+      - Review CHANGELOG.md
+      - Approve and merge to trigger PyPI publish (via publish.yml)
+    labels:
+      - "autorelease: pending"
+      - "release: pending"
+    branch-name: "release-please--branches--main"

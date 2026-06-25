@@ -35,6 +35,7 @@
 | [logging.md](logging.md) | Logging seguro con Textual: `detach_console_logging`, `var/log/` |
 | [installer-i18n.md](installer-i18n.md) | Traducciones del instalador (es/en), API `t()`, añadir idioma |
 | [roadmap.md](roadmap.md) | Plan de ruta |
+| [onboarding.md](onboarding.md) | "Primeros 15 minutos" — tutorial paso a paso |
 
 ---
 
