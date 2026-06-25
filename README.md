@@ -1,8 +1,8 @@
 ![xyz-sdr Banner](resources/svg/header.svg)
 
-[![CI](https://github.com/<owner>/xyz-sdr/actions/workflows/test.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/test.yml)
-[![Lint](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml)
-[![codecov](https://codecov.io/gh/<owner>/xyz-sdr/graph/badge.svg)](https://codecov.io/gh/<owner>/xyz-sdr)
+[![CI](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/test.yml/badge.svg)](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/test.yml)
+[![Lint](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/lint.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml)
+[![codecov](https://codecov.io/gh/xyz-rainbow/xyz-sdr/graph/badge.svg)](https://codecov.io/gh/xyz-rainbow/xyz-sdr/xyz-sdr)
 
 > **Nota:** Reemplazar `<owner>` en los badges con el owner real del repositorio antes de mergear a `main`.
 
