@@ -45,6 +45,20 @@ def test_xyz_sdr_app_has_css():
     assert len(css) > 100, "XyzSDRApp.CSS parece demasiado corto"
 
 
+def test_xyz_sdr_app_has_quit_bindings():
+    """Salida debe estar en Q, Ctrl+Q y Ctrl+C."""
+    from tui.app import XyzSDRApp
+
+    quit_keys = {
+        key
+        for key, action, _label in XyzSDRApp.BINDINGS
+        if action == "quit"
+    }
+    assert "q" in quit_keys
+    assert "ctrl+q" in quit_keys
+    assert "ctrl+c" in quit_keys
+
+
 def test_xyz_sdr_app_key_actions_exist():
     """Acciones clave referenciadas en BINDINGS deben existir como métodos."""
     from tui.app import XyzSDRApp

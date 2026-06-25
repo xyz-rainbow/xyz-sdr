@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypeVar
 
 from core.console_utf8 import configure_console_encoding
@@ -113,7 +114,9 @@ def _clear_screen() -> None:
 
 
 def _restore_terminal() -> None:
-    _console_write("\033[0m\033[?25h")
+    from core.console_utf8 import restore_terminal_after_tui
+
+    restore_terminal_after_tui()
 
 
 def _banner_layout(width: int, height: int) -> tuple[int, list[str]]:
@@ -277,5 +280,62 @@ def print_shutdown_splash() -> None:
         time.sleep(0.05)
 
     time.sleep(0.35)
+    _restore_terminal()
+    _clear_screen()
+
+
+def print_crash_splash(
+    *,
+    log_path: str | Path | None = None,
+    reason: str = "Sesión terminada de forma inesperada",
+    tail_lines: int = 25,
+    animate: bool = True,
+) -> None:
+    """Splash de cierre tras crash + resumen del log de sesión."""
+    from core.session_log import tail_session_log
+
+    global _USE_UNICODE_SPLASH
+    _USE_UNICODE_SPLASH = configure_console_encoding()
+
+    _clear_screen()
+    width, height = _term_size()
+    v_padding, centered = _banner_layout(width, height)
+    _console_write(_render_banner_block(centered, v_padding))
+
+    error_line = f"{C_RESET}\033[91m{reason}{C_RESET}"
+    pad = max(0, (width - len(reason)) // 2)
+    _console_write("\n" + " " * pad + error_line + "\n")
+
+    log_text = ""
+    if log_path:
+        try:
+            path = Path(log_path)
+            if path.is_file():
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                log_text = "\n".join(lines[-tail_lines:])
+        except OSError:
+            pass
+    if not log_text:
+        tail = tail_session_log(tail_lines)
+        log_text = "\n".join(tail)
+
+    if log_path:
+        log_msg = f"Log: {log_path}"
+        _console_write(f"\n{C_DIM}{log_msg}{C_RESET}\n")
+
+    if log_text.strip():
+        _console_write(f"\n{C_DIM}--- últimas líneas del log ---{C_RESET}\n")
+        for line in log_text.splitlines()[-tail_lines:]:
+            _console_write(f"{C_DIM}{line}{C_RESET}\n")
+
+    if animate:
+        steps = 12
+        bar_width = 40
+        for i in range(steps + 1):
+            percent = int(100 * i / steps)
+            _draw_progress_bar(width, percent, bar_width=bar_width)
+            time.sleep(0.04)
+        _console_write("\n")
+
     _restore_terminal()
     _clear_screen()

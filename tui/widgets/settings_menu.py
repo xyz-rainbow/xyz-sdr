@@ -242,38 +242,20 @@ class SettingsScreen(ModalScreen):
         return us if us in opts else 50
 
     def compose(self) -> ComposeResult:
-        # 1. Obtener lista de dispositivos SDR disponibles para página Hardware
-        options = []
-        from core.device import SDRDevice
-        try:
-            devs = SDRDevice.list_devices()
-        except Exception:
-            devs = []
+        from core.device import build_driver_select_options
 
-        seen = set()
-        for d in devs:
-            drv = d.get("driver", "simulated")
-            lbl = d.get("label", f"{drv.upper()} Detectado")
-            options.append((lbl, drv))
-            seen.add(drv)
+        devs = list(getattr(self.app, "_cached_sdr_devices", None) or [])
 
-        # Opciones estándar de respaldo
-        defaults = [
-            ("Auto (primer dispositivo)", "auto"),
-            ("SDRplay RSP", "sdrplay"),
-            ("RTL-SDR Dongle", "rtlsdr"),
-            ("HackRF One", "hackrf"),
-            ("Airspy", "airspy"),
-            ("Simulación (Hardware)", "simulated")
-        ]
-        for lbl, drv in defaults:
-            if drv not in seen:
-                options.append((lbl, drv))
-                seen.add(drv)
-
-        current_driver = self.app.driver
-        if current_driver == "simulated" or current_driver == "sim":
-            current_driver = "simulated"
+        active_kwargs = (
+            self.app._device._device_kwargs
+            if self.app._device and self.app._device._device_kwargs
+            else None
+        )
+        driver_options, self._driver_select_map, selected_driver = build_driver_select_options(
+            devs,
+            current_driver=self.app.driver,
+            active_kwargs=active_kwargs,
+        )
 
         with Container(id="settings_card"):
             # ─── PÁGINA 1: MENÚ PRINCIPAL ───
@@ -301,7 +283,7 @@ class SettingsScreen(ModalScreen):
                 yield Label("📡 CONFIGURACIÓN HARDWARE", id="settings_title")
                 with Horizontal(classes="setting-row"):
                     yield Label("SDR Driver:")
-                    yield Select(options, value=current_driver, id="set_driver")
+                    yield Select(driver_options, value=selected_driver, id="set_driver")
                 with Horizontal(classes="setting-row"):
                     yield Label("Recepción (RX):")
                     yield Switch(value=self.app._rx_active, id="set_rx_active")
@@ -544,33 +526,46 @@ class SettingsScreen(ModalScreen):
             driver_val = self.query_one("#set_driver", Select).value
             rx_val = self.query_one("#set_rx_active", Switch).value
 
-            if driver_val in (None, Select.BLANK):
+            if not _valid_select_value(driver_val):
                 self.app.audio_effects.play_error()
                 self.app._log("[ERR]  Selecciona un driver SDR válido")
                 return
 
-            driver_ok = self.app.change_device_driver(str(driver_val))
+            token = str(driver_val)
+            target = getattr(self, "_driver_select_map", {}).get(token)
+            if target is None:
+                self.app.audio_effects.play_error()
+                self.app._log("[ERR]  Opción de driver desconocida")
+                return
+
+            desired_rx = bool(rx_val)
+            if isinstance(target, dict):
+                driver_ok = self.app.change_device(target, desired_rx=desired_rx)
+            else:
+                driver_ok = self.app.change_device_driver(str(target), desired_rx=desired_rx)
 
             if not driver_ok:
                 try:
-                    current = "simulated" if self.app.driver in ("sim", "simulated") else self.app.driver
-                    self.query_one("#set_driver", Select).value = current
+                    from core.device import build_driver_select_options
+
+                    active_kwargs = (
+                        self.app._device._device_kwargs
+                        if self.app._device and self.app._device._device_kwargs
+                        else None
+                    )
+                    _, _, selected = build_driver_select_options(
+                        getattr(self.app, "_cached_sdr_devices", None),
+                        current_driver=self.app.driver,
+                        active_kwargs=active_kwargs,
+                    )
+                    self.query_one("#set_driver", Select).value = selected
                 except Exception:
                     pass
-
-            if driver_ok and rx_val != self.app._rx_active:
-                if rx_val:
-                    self.app._start_rx()
-                else:
-                    self.app._stop_rx()
             else:
                 try:
-                    self.query_one("#set_rx_active", Switch).value = self.app._rx_active
+                    self.query_one("#set_rx_active", Switch).value = desired_rx
                 except Exception:
                     pass
-
-            if driver_ok:
-                self.app.audio_effects.play_chime()
 
             self.current_page = "main"
 

@@ -57,6 +57,9 @@ class RxWorkerHost(Protocol):
     _debug_demod_ms: list
     _debug_audio_samples: list
 
+    def consume_rx_warmup_samples(self, requested: int) -> int: ...
+    def ensure_audio_output(self) -> None: ...
+
 
 @dataclass
 class RxIterationResult:
@@ -106,8 +109,12 @@ def run_rx_iteration(host: RxWorkerHost) -> RxIterationResult | None:
         fft_size=fft_size,
     )
     num_samples = max(spec_samples, audio_iq_samples)
+    num_samples = host.consume_rx_warmup_samples(num_samples)
 
     samples = host._device.read_samples(num_samples)
+    ensure_audio = getattr(host, "ensure_audio_output", None)
+    if ensure_audio is not None:
+        ensure_audio()
     if not host._rx_active or host._bandwidth_changing:
         return None
 
