@@ -35,6 +35,7 @@ class MatrixRow:
     plugin_sha256: str = ""
     sdrplay_api_dll_path: str = ""
     sdrplay_api_dll_sha256: str = ""
+    dll_sha256: dict[str, str] = field(default_factory=dict)
     sdrplay_api_api_version: str = ""
     python_version: str = ""
     pip_freeze_file: str = ""
@@ -81,9 +82,13 @@ def _file_mtime_iso(path: str | None) -> str:
 def _probe_api_version() -> str:
     try:
         from core.soapy_runtime import _soapy_util_executable
+
         res = subprocess.run(
             [_soapy_util_executable(), "--probe=driver=sdrplay"],
-            capture_output=True, text=True, check=False, timeout=20,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
         )
         text = (res.stdout or "") + (res.stderr or "")
         match = re.search(r"sdrplay_api_api_version=([\d.]+)", text, re.IGNORECASE)
@@ -92,17 +97,38 @@ def _probe_api_version() -> str:
         return ""
 
 
+def _load_service_events(out_dir: Path) -> list[str]:
+    path = out_dir / "service-events.txt"
+    if not path.is_file():
+        env_path = os.environ.get("XYZ_SDR_MATRIX_SERVICE_EVENTS", "").strip()
+        if env_path and os.path.isfile(env_path):
+            path = Path(env_path)
+        else:
+            return []
+    try:
+        return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
 def collect_environment(*, pip_freeze_file: str = "var/log/pip-freeze.txt") -> dict[str, Any]:
     plugin = find_sdrplay_soapy_module()
     api_dll = find_sdrplay_api_dll()
+    plugin_hash = _sha256_file(plugin)
+    api_hash = _sha256_file(api_dll)
     return {
-        "python_version": platform.python_version(),
+        "python_version": sys.version.replace("\n", " "),
+        "python_version_short": platform.python_version(),
         "pip_freeze_file": pip_freeze_file,
         "plugin_path": plugin or "",
         "plugin_mtime": _file_mtime_iso(plugin),
-        "plugin_sha256": _sha256_file(plugin),
+        "plugin_sha256": plugin_hash,
         "sdrplay_api_dll_path": api_dll or "",
-        "sdrplay_api_dll_sha256": _sha256_file(api_dll),
+        "sdrplay_api_dll_sha256": api_hash,
+        "dll_sha256": {
+            "sdrPlaySupport.dll": plugin_hash,
+            "sdrplay_api.dll": api_hash,
+        },
         "sdrplay_api_api_version": _probe_api_version(),
     }
 
@@ -113,7 +139,10 @@ def _ensure_pip_freeze(out_dir: Path) -> str:
         try:
             res = subprocess.run(
                 [sys.executable, "-m", "pip", "freeze"],
-                capture_output=True, text=True, check=False, timeout=60,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
             )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(res.stdout or "", encoding="utf-8")
@@ -125,22 +154,72 @@ def _ensure_pip_freeze(out_dir: Path) -> str:
         return str(target)
 
 
-def _collect_event_log_snippet(minutes: int = 5) -> list[str]:
+def _ensure_python_version_file(out_dir: Path) -> None:
+    target = out_dir / "python-version.txt"
+    if target.is_file():
+        return
+    try:
+        res = subprocess.run(
+            [sys.executable, "-V"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        line = (res.stderr or res.stdout or sys.version).strip()
+        target.write_text(line + "\n" + sys.version + "\n", encoding="utf-8")
+    except Exception:
+        target.write_text(sys.version + "\n", encoding="utf-8")
+
+
+def _collect_event_log_snippet(minutes: int = 3) -> list[str]:
     if os.name != "nt":
         return []
     try:
         ps = (
             f"$start=(Get-Date).AddMinutes(-{minutes}); "
-            "Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=$start} -MaxEvents 15 "
-            "| ForEach-Object { $_.TimeCreated.ToString('o') + ' ' + $_.ProviderName + ' ' + $_.Id }"
+            "Get-WinEvent -FilterHashtable @{LogName='Application','System'; StartTime=$start} -MaxEvents 25 "
+            "| ForEach-Object { "
+            "$_.TimeCreated.ToString('o') + ' [' + $_.LogName + '] ' + $_.ProviderName "
+            "+ ' Id=' + $_.Id + ' ' + $_.Message.Substring(0,[Math]::Min(240,$_.Message.Length)) "
+            "}"
         )
         res = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True, text=True, check=False, timeout=30,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=45,
         )
-        return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()][:15]
+        return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()][:25]
     except Exception:
         return []
+
+
+def _find_recent_minidump(*, since: float, dumps_dir: Path) -> str:
+    candidates: list[tuple[float, str]] = []
+    search_roots = [
+        dumps_dir,
+        Path(os.environ.get("LOCALAPPDATA", "")) / "CrashDumps",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "xyz-sdr" / "dumps",
+    ]
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.dmp"):
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime >= since:
+                    candidates.append((mtime, str(path.resolve())))
+        except OSError:
+            continue
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def build_matrix_cases() -> list[MatrixRow]:
@@ -153,8 +232,7 @@ def build_matrix_cases() -> list[MatrixRow]:
     return cases
 
 
-def _run_case(row: MatrixRow, env_meta: dict[str, Any], *, timeout_s: float, service_events: list[str]) -> MatrixRow:
-    row.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _apply_env_meta(row: MatrixRow, env_meta: dict[str, Any], service_events: list[str]) -> None:
     row.python_version = env_meta.get("python_version", "")
     row.pip_freeze_file = env_meta.get("pip_freeze_file", "")
     row.plugin_path = env_meta.get("plugin_path", "")
@@ -162,51 +240,96 @@ def _run_case(row: MatrixRow, env_meta: dict[str, Any], *, timeout_s: float, ser
     row.plugin_sha256 = env_meta.get("plugin_sha256", "")
     row.sdrplay_api_dll_path = env_meta.get("sdrplay_api_dll_path", "")
     row.sdrplay_api_dll_sha256 = env_meta.get("sdrplay_api_dll_sha256", "")
+    row.dll_sha256 = dict(env_meta.get("dll_sha256") or {})
     row.sdrplay_api_api_version = env_meta.get("sdrplay_api_api_version", "")
     row.service_events = list(service_events)
+
+
+def _run_case(
+    row: MatrixRow,
+    env_meta: dict[str, Any],
+    *,
+    timeout_s: float,
+    service_events: list[str],
+    dumps_dir: Path,
+    run_started: float,
+) -> MatrixRow:
+    row.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _apply_env_meta(row, env_meta, service_events)
+
     if row.format != "CF32":
         row.result = "SKIP"
         row.stderr = f"format {row.format} planned Fase 0.1"
         return row
+
+    case_started = datetime.now(timezone.utc).timestamp()
     per_path = max(timeout_s / 2.0, 30.0)
     pre = run_preflight(row.stream_mode, per_path_timeout_s=per_path)
+
     row.exit_code = pre.returncode
     row.last_step = pre.last_step
-    detail = pre.detail or ""
-    row.stdout = detail
-    row.stderr = detail
+    row.stdout = pre.stdout or pre.detail or ""
+    row.stderr = pre.stderr or pre.detail or ""
+    if not row.stderr and pre.detail:
+        row.stderr = pre.detail
+
     if pre.ok:
         row.result = "OK"
     elif pre.segfault:
         row.result = "SEGFAULT"
+        row.event_log_entries = _collect_event_log_snippet(minutes=2)
+        dump = _find_recent_minidump(since=min(run_started, case_started - 5.0), dumps_dir=dumps_dir)
+        if dump:
+            row.minidump_path = dump
     elif pre.last_step == "timeout":
         row.result = "TIMEOUT"
     else:
         row.result = "FAIL"
+
     return row
 
 
-def run_matrix(*, out_dir: Path | None = None, timeout_s: float = DEFAULT_PREFLIGHT_TIMEOUT, dry_run: bool = False) -> MatrixReport:
+def run_matrix(
+    *,
+    out_dir: Path | None = None,
+    timeout_s: float = DEFAULT_PREFLIGHT_TIMEOUT,
+    dry_run: bool = False,
+) -> MatrixReport:
     log_dir = out_dir or (project_root() / "var" / "log")
     log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / "dumps").mkdir(parents=True, exist_ok=True)
+    dumps_dir = log_dir / "dumps"
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+
     pip_path = _ensure_pip_freeze(log_dir)
+    _ensure_python_version_file(log_dir)
     env_meta = collect_environment(pip_freeze_file=pip_path)
-    service_events = [f"{datetime.now(timezone.utc).isoformat()} matrix_start"]
-    event_snippet = _collect_event_log_snippet()
+    service_events = _load_service_events(log_dir) or [
+        f"{datetime.now(timezone.utc).isoformat()} matrix_start (no service-events.txt)"
+    ]
+    run_started = datetime.now(timezone.utc).timestamp()
+
     cases = build_matrix_cases()
     rows: list[MatrixRow] = []
+
     if dry_run:
         for case in cases:
             case.result = "PENDING"
             case.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _apply_env_meta(case, env_meta, service_events)
             rows.append(case)
     else:
         for case in cases:
-            row = _run_case(case, env_meta, timeout_s=timeout_s, service_events=service_events)
-            if event_snippet and row.result == "SEGFAULT":
-                row.event_log_entries = event_snippet
-            rows.append(row)
+            rows.append(
+                _run_case(
+                    case,
+                    env_meta,
+                    timeout_s=timeout_s,
+                    service_events=service_events,
+                    dumps_dir=dumps_dir,
+                    run_started=run_started,
+                )
+            )
+
     best_idx = next((i for i, r in enumerate(rows) if r.result == "OK"), None)
     return MatrixReport(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -243,6 +366,11 @@ def format_matrix_summary(report: MatrixReport) -> str:
         f"rows: {len(report.rows)}",
         "results: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
     ]
+    segfaults = [r for r in report.rows if r.result == "SEGFAULT"]
+    if segfaults:
+        lines.append(f"segfault_rows: {len(segfaults)} (event_log captured per row)")
+        if segfaults[0].minidump_path:
+            lines.append(f"minidump_example: {segfaults[0].minidump_path}")
     if report.best_row_index is not None:
         b = report.rows[report.best_row_index]
         lines.append(f"best: index={report.best_row_index} mode={b.stream_mode} rate={b.sample_rate}")
