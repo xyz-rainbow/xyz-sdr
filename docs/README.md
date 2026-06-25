@@ -30,6 +30,7 @@
 | [ai.md](ai.md) | Estado del módulo `ai/` (Fase 4–5 del roadmap, pendiente) |
 | [testing.md](testing.md) | Estructura de tests, mapeo test→módulo, fixtures, comandos |
 | [uv_runtime.md](uv_runtime.md) | Wrapper de `uv` para venv + pip install (core/uv_runtime.py) |
+| [requirements-locking.md](requirements-locking.md) | Lockfiles `requirements*.lock` con `--require-hashes` |
 | [logging.md](logging.md) | Logging seguro con Textual: `detach_console_logging`, `var/log/` |
 | [installer-i18n.md](installer-i18n.md) | Traducciones del instalador (es/en), API `t()`, añadir idioma |
 | [roadmap.md](roadmap.md) | Plan de ruta |

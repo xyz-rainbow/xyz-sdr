@@ -39,9 +39,14 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           python -m pip install --upgrade pip
-          # SoapySDR solo está en PyPI para algunas plataformas; si falla, continuar sin él
-          pip install -r requirements.txt || echo "::warning::requirements.txt falló (esperado si SoapySDR no está en wheel)"
-          pip install -r requirements-dev.txt
+          # Lockfile reproducible: requirements-dev.lock incluye runtime + dev
+          # SoapySDR se instala por separado (no en PyPI; viene de PothosSDR)
+          pip install --require-hashes -r requirements-dev.lock || echo "::warning::requirements-dev.lock falló (puede faltar Soapy)"
+          # Fallback: si hash check falla, instalación sin lockfile (legacy path)
+          if [ $? -ne 0 ]; then
+            echo "::notice::Usando requirements.txt sin hashes como fallback"
+            pip install -r requirements.txt -r requirements-dev.txt
+          fi
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
