@@ -22,7 +22,11 @@ env.toml
 
 # IDEs
 .idea/
-.cursor
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
 .mavis
 .vscode
 .vscode/*
