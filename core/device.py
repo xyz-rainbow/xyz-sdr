@@ -98,6 +98,10 @@ SDRPLAY_INITIAL_STREAM_MTU = 16_384
 SDRPLAY_PROBE_READ_SAMPLES = 4_096
 
 
+def _sdrplay_stream_mode() -> str:
+    return os.environ.get("XYZ_SDR_SDRPLAY_STREAM_MODE", "minimal").strip().lower()
+
+
 def _sdrplay_stream_format_name() -> str:
     return os.environ.get("XYZ_SDR_SDRPLAY_STREAM_FORMAT", "CF32").strip().upper()
 
@@ -743,6 +747,35 @@ class SDRDevice:
         )
         return int(getattr(sr, "ret", 0))
 
+    def _activate_stream_sdrplay_legacy(self) -> None:
+        """Activa stream SDRplay con tuning previo (ruta legacy)."""
+        apply_rate = self.sample_rate
+        if self.sample_rate > SAFE_START_SAMPLE_RATE:
+            self._sdrplay_pending_sample_rate = self.sample_rate
+            apply_rate = SAFE_START_SAMPLE_RATE
+        else:
+            self._sdrplay_pending_sample_rate = None
+
+        log_breadcrumb(f"device.sdrplay.legacy_activate begin apply_rate={apply_rate:.0f}")
+        
+        # 1. Tuning previo (legacy)
+        self._sdrplay_apply_tuning_unlocked(apply_rate, mode="stopped")
+        
+        # 2. Setup & Activate
+        if self._stream is None:
+            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, _sdrplay_soapy_stream_format())
+        self._try_set_stream_mtu_unlocked(SDRPLAY_INITIAL_STREAM_MTU)
+        self._sdr.activateStream(self._stream)
+        import time
+        time.sleep(0.05)
+        log_breadcrumb("device.sdrplay.legacy_activate activateStream ok")
+
+        # 3. Probe read
+        probe_ret = self._sdrplay_probe_read_unlocked()
+        log_breadcrumb(f"device.sdrplay.probe_read ok ret={probe_ret}")
+        
+        self._sdrplay_stream_bootstrapped = True
+
     def _activate_stream_sdrplay_minimal(self) -> None:
         """Activa stream SDRplay sin setSampleRate previo (evita segfault en arranque)."""
         apply_rate = self.sample_rate
@@ -815,7 +848,11 @@ class SDRDevice:
             and safe_sdrplay_start
             and not self._sdrplay_stream_bootstrapped
         ):
-            self._activate_stream_sdrplay_minimal()
+            mode = _sdrplay_stream_mode()
+            if mode == "legacy":
+                self._activate_stream_sdrplay_legacy()
+            else:
+                self._activate_stream_sdrplay_minimal()
             return
 
         iq_rate = self.sample_rate
