@@ -31,7 +31,7 @@ El script usa parámetros con nombre (PowerShell). Equivalente clásico `--flag`
 |-------|--------|
 | *(sin args)* | Lanzar TUI con hardware |
 | `-Sim` | Modo simulación (`--sim`) |
-| `-Debug` | Métricas RX/UI en panel log (`--debug`) |
+| `-DebugMode` / `-d` | Métricas RX/UI en panel log (`--debug`) |
 | `-Check` | Verificar entorno (`--check`) |
 | `-ListDev` | Listar dispositivos Soapy |
 | `-NoSplash` | Omitir splash de carga |
@@ -43,7 +43,7 @@ El script usa parámetros con nombre (PowerShell). Equivalente clásico `--flag`
 | `-Driver rtlsdr` | Forzar driver |
 
 ```powershell
-.\scripts\run.ps1 -Sim -Debug
+.\scripts\run.ps1 -Sim -d
 .\scripts\run.ps1 -Band fm_broadcast
 .\scripts\run.ps1 -Band airband -Freq 121.5
 .\scripts\run.ps1 -Check
