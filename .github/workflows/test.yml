@@ -73,13 +73,7 @@ jobs:
           PYTHONPYCACHEPREFIX: ${{ github.workspace }}/var/pycache
         run: |
           mkdir -p var/pycache var/pytest_cache var/pytest-tmp
-          python -m pytest resources/test -q -m "not slow" \
-            --cov=core --cov=setup --cov=tui \
-            --cov-report=xml \
-            --cov-report=term-missing \
-            --cov-fail-under=70 \
-            --durations=20 \
-            --durations-min=1.0
+          python -m pytest resources/test -q -m "not slow" --cov=core --cov=setup --cov=tui --cov-report=xml --cov-report=term-missing --cov-fail-under=70 --durations=20 --durations-min=1.0
 
       - name: Upload coverage report
         if: always()

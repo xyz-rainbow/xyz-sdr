@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -74,6 +75,10 @@ def test_provision_returns_existing_candidate():
     assert result.candidate == existing
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Pothos binding discovery asume rutas y herramientas Windows; ver tests equivalentes para Linux cuando aplique.",
+)
 def test_find_best_prefers_pothos_python_version():
     from core.python_runtime import PythonCandidate, find_best_soapy_python
 
@@ -92,6 +97,10 @@ def test_find_best_prefers_pothos_python_version():
     assert best.version_short == (3, 9)
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Test de integración con Pothos (rutas Windows).",
+)
 def test_use_pothos_bindings_when_versions_match():
     from core.python_runtime import _use_pothos_soapy_bindings
 
@@ -104,6 +113,10 @@ def test_use_pothos_bindings_when_versions_match():
                 assert _use_pothos_soapy_bindings("C:\\Python39\\python.exe") is True
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="reexec con python.exe es path Windows-only (uso de C:\\\\fake\\\\python.exe).",
+)
 def test_reexec_with_python_includes_script_and_args(tmp_path):
     from core.python_runtime import reexec_with_python
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+
+import pytest
 
 from core.sdrplay_service import (
     is_native_crash_exit_code,
@@ -37,6 +40,10 @@ def test_maybe_restart_skips_without_marker(monkeypatch):
     assert restarted is False
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Restart de SDRplayAPIService usa 'sc query'/'sc start', comandos Windows-only.",
+)
 def test_maybe_restart_after_abnormal(monkeypatch):
     calls: list[str] = []
 
@@ -90,6 +97,10 @@ def test_restart_treats_1056_as_ok_when_sc_query_lags(monkeypatch):
     assert "1056" in msg or "ejecución" in msg.lower()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Restart de SDRplayAPIService usa 'sc query'/'sc start', comandos Windows-only.",
+)
 def test_maybe_restart_no_warning_on_1056(monkeypatch):
     monkeypatch.setattr(
         "core.sdrplay_service.restart_sdrplay_service",

@@ -145,9 +145,9 @@ def test_storage_loads_initial_bookmarks(tmp_path: Path):
 
 def test_bookmarks_path_uses_project_root(tmp_path: Path):
     """bookmarks_path debe ser project_root / var / bookmarks.toml."""
-    host = _make_host(project_root=Path("/foo/bar"))
+    host = _make_host(project_root=tmp_path)
     storage = StorageController(host, _make_audio_effects(), PRESETS)
-    assert storage.bookmarks_path() == Path("/foo/bar/var/bookmarks.toml")
+    assert storage.bookmarks_path() == tmp_path / "var" / "bookmarks.toml"
 
 
 def test_save_bookmark_appends(tmp_path: Path):

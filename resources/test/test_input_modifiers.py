@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
+
+import pytest
 
 from core.input_modifiers import is_shift_pressed
 
@@ -16,6 +19,10 @@ def test_is_shift_pressed_false_without_event():
         assert is_shift_pressed(event_shift=False) is False
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="ctypes.windll solo existe en Windows; la rama Windows-only se cubre en Windows CI.",
+)
 def test_is_shift_pressed_windows_fallback():
     with patch("core.input_modifiers.sys.platform", "win32"):
         with patch("ctypes.windll.user32.GetAsyncKeyState", return_value=0x8000):

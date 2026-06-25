@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock
+
+import pytest
 
 from core.soapy_runtime import (
     _parse_sdrplay_find_stdout,
@@ -77,6 +80,10 @@ def test_check_sdrplay_service_running_detects_running(monkeypatch):
     assert check_sdrplay_service_running() is True
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="check_sdrplay_service_running usa 'sc query SDRplayAPIService', Windows-only.",
+)
 def test_check_sdrplay_service_running_detects_stopped(monkeypatch):
     mock_run = MagicMock(
         return_value=MagicMock(
@@ -99,6 +106,10 @@ def test_find_sdrplay_soapy_module_detects_dll(tmp_path, monkeypatch):
     assert found == str(module)
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Pothos installer y naming SoapySDRUtil.exe es Windows-only.",
+)
 def test_soapy_util_prefers_pothos_binary(tmp_path, monkeypatch):
     pothos = tmp_path / "PothosSDR"
     bin_dir = pothos / "bin"
@@ -106,6 +117,11 @@ def test_soapy_util_prefers_pothos_binary(tmp_path, monkeypatch):
     util = bin_dir / "SoapySDRUtil.exe"
     util.write_bytes(b"")
     monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: str(pothos))
+    # bundled_soapy_util debe devolver None para que la rama pothos sea la candidata.
+    # Sin este mock el bundled real (drivers/win-x64/soapy/SoapySDRUtil.exe) gana.
+    # NOTA: la función hace `from core.driver_runtime import bundled_soapy_util` dentro,
+    # así que el patch debe ir al módulo de origen.
+    monkeypatch.setattr("core.driver_runtime.bundled_soapy_util", lambda: None)
     assert _soapy_util_executable() == str(util)
 
 
