@@ -878,6 +878,10 @@ class XyzSDRApp(App):
         self.debug_mode = debug_mode
         self.band_profile = band_profile
         self.strict = strict
+        # ScannerEngine: la lógica de escaneo vive ahora en core/scanner.py.
+        # XyzSDRApp implementa ScannerHost vía propiedades y métodos.
+        from core.scanner import ScannerEngine
+        self._scanner = ScannerEngine(self)
         self._device: Optional[SDRDevice] = None
         self._hardware_ready = False
         self._pending_band_profile: str | None = None
@@ -1548,7 +1552,7 @@ class XyzSDRApp(App):
 
         floors, ceilings = self._compute_column_levels(cols, display_cfg)
 
-        if self._scanning:
+        if self._scanner.scanning:
             self._handle_scanner_step(frame, snr, floors, ceilings)
 
         try:
@@ -2383,9 +2387,9 @@ class XyzSDRApp(App):
 
     def action_toggle_scan(self) -> None:
         """Inicia, pausa/reanuda o detiene el escáner de banda."""
-        if self._scanning and self._scan_paused:
+        if self._scanner.scanning and self._scanner.paused:
             self._resume_scanning()
-        elif self._scanning:
+        elif self._scanner.scanning:
             self._stop_scanning()
         else:
             self._start_scanning()
@@ -2393,10 +2397,10 @@ class XyzSDRApp(App):
     def _update_scan_button_label(self) -> None:
         try:
             btn = self.query_one("#btn_scan", Button)
-            if not self._scanning:
+            if not self._scanner.scanning:
                 btn.label = "🔍 ESCANEAR BANDA"
                 btn.variant = "primary"
-            elif self._scan_paused:
+            elif self._scanner.paused:
                 btn.label = "▶ CONTINUAR ESCANEO"
                 btn.variant = "warning"
             else:
@@ -2405,14 +2409,27 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
+    # ── Métodos legacy que delegan a ScannerEngine ─────────────────────────
+    # Mantenidos para compatibilidad con cualquier llamador externo.
+
+    @property
+    def _scanning(self) -> bool:
+        return self._scanner.scanning
+
+    @property
+    def _scan_paused(self) -> bool:
+        return self._scanner.paused
+
     def _start_scanning(self) -> None:
         if not self._rx_active:
             self.audio_effects.play_error()
             self._log("[ERROR] Inicia RX antes de escanear")
             return
-
-        # Cargar parámetros actuales del escáner
+        # Delegar al engine
         scan_cfg = self.config.get("scanner", {})
+        self._scanner.configure(scan_cfg)
+        self._scanner.start()
+        # Sync legacy state for any external reads
         self._scan_start_hz = float(scan_cfg.get("freq_start", 88_000_000))
         self._scan_end_hz = float(scan_cfg.get("freq_end", 108_000_000))
         self._scan_step_hz = float(scan_cfg.get("freq_step", 200_000))
@@ -2420,141 +2437,61 @@ class XyzSDRApp(App):
         self._scan_min_snr = float(scan_cfg.get("min_snr_db", 10.0))
         self._scan_pause_on_signal = bool(scan_cfg.get("pause_on_signal", True))
         self._scan_pause_resume_snr = float(scan_cfg.get("pause_resume_snr_db", 7.0))
-
-        self._scanning = True
-        self._scan_paused = False
-        self._scan_pause_below_since = 0.0
         self._update_scan_button_label()
-
-        self._log(
-            f"[SCAN] Iniciando escaneo ({self._scan_start_hz / 1e6:.2f} - "
-            f"{self._scan_end_hz / 1e6:.2f} MHz, paso {self._scan_step_hz / 1e3:.1f} kHz)"
-        )
-
-        # Iniciar en la frecuencia de inicio
-        self._is_scanner_stepping = True
-        try:
-            self.tuned_frequency = self._scan_start_hz
-            self.passband_center_hz = self._scan_start_hz
-            self.viewport_center = self._scan_start_hz
-            self._apply_tuning()
-        finally:
-            self._is_scanner_stepping = False
-
-        self._scan_tuned_time = time.time()
-        self._scan_last_signal_time = 0.0
 
     def _stop_scanning(self) -> None:
-        if not self._scanning:
-            return
-        self._scanning = False
-        self._scan_paused = False
-        self._scan_pause_below_since = 0.0
+        self._scanner.stop()
         self._update_scan_button_label()
-        self._log("[SCAN] Escaneo detenido")
 
     def _pause_scan_on_signal(self, passband_snr: float) -> None:
-        if self._scan_paused:
-            return
-        self._scan_paused = True
-        self._scan_pause_below_since = 0.0
-        self.audio_effects.play_chime()
-        self._log(
-            f"[SCAN] Pausa — señal {passband_snr:.1f} dB en "
-            f"{self.tuned_frequency / 1e6:.4f} MHz"
-        )
+        self._scanner.pause(passband_snr)
         self._update_scan_button_label()
 
     def _resume_scanning(self) -> None:
-        if not self._scanning or not self._scan_paused:
-            return
-        self._scan_paused = False
-        self._scan_tuned_time = time.time()
-        self._scan_last_signal_time = 0.0
-        self._scan_pause_below_since = 0.0
-        self._log("[SCAN] Reanudando escaneo")
+        self._scanner.resume()
         self._update_scan_button_label()
 
     def _step_scanner(self) -> None:
-        next_freq = self.tuned_frequency + self._scan_step_hz
-        if next_freq > self._scan_end_hz:
-            next_freq = self._scan_start_hz
-
-        self._log(f"[SCAN] Sintonizando: {next_freq / 1e6:.4f} MHz")
+        """Avanza a la siguiente freq. Mantiene guard de recursión."""
         self._is_scanner_stepping = True
         try:
-            self.tuned_frequency = next_freq
-            self.passband_center_hz = next_freq
-            self.viewport_center = next_freq
+            self._scanner.step()
+        finally:
+            self._is_scanner_stepping = False
+
+    def _handle_scanner_step(self, frame, snr: float, floors: np.ndarray, ceilings: np.ndarray) -> None:
+        """Delegado a ScannerEngine.on_frame(). Mantenido por compat."""
+        self._scanner.on_frame(frame.center_hz, floors, ceilings)
+
+    # ── ScannerHost protocol: callbacks delegan a la app ───────────────────
+
+    def set_tuned_frequency(self, freq_hz: float) -> None:
+        """Callback del ScannerEngine: sincroniza freq + passband + viewport."""
+        self._is_scanner_stepping = True
+        try:
+            self.tuned_frequency = freq_hz
+            self.passband_center_hz = freq_hz
+            self.viewport_center = freq_hz
             self._apply_tuning()
         finally:
             self._is_scanner_stepping = False
 
-        self._scan_tuned_time = time.time()
-        self._scan_last_signal_time = 0.0
+    def log(self, message: str) -> None:
+        """Callback del ScannerEngine."""
+        self._log(message)
 
-    def _handle_scanner_step(self, frame, snr: float, floors: np.ndarray, ceilings: np.ndarray) -> None:
-        # 1. Verificar si la frecuencia central del frame coincide con la sintonizada
-        if abs(frame.center_hz - self.tuned_frequency) > 10.0:
-            return
+    def play_chime(self) -> None:
+        """Callback del ScannerEngine."""
+        self.audio_effects.play_chime()
 
-        # 2. Calcular SNR en el passband usando la estimación auto-level por columnas
-        band_w = self.passband_width_hz
-        left_hz = self.passband_center_hz - band_w / 2
-        right_hz = self.passband_center_hz + band_w / 2
-        col_l = freq_to_col(
-            left_hz,
-            widget_width=self._display_width,
-            viewport_center_hz=self.viewport_center,
-            visible_span_hz=self.visible_span,
-        )
-        col_r = freq_to_col(
-            right_hz,
-            widget_width=self._display_width,
-            viewport_center_hz=self.viewport_center,
-            visible_span_hz=self.visible_span,
-        )
-        pb_l, pb_r = min(col_l, col_r), max(col_l, col_r)
-        pb_l = max(0, min(pb_l, self._display_width - 1))
-        pb_r = max(0, min(pb_r, self._display_width - 1))
+    def play_error(self) -> None:
+        """Callback del ScannerEngine."""
+        self.audio_effects.play_error()
 
-        if pb_r >= pb_l:
-            passband_floors = floors[pb_l : pb_r + 1]
-            passband_ceilings = ceilings[pb_l : pb_r + 1]
-            passband_snr = float(np.max(passband_ceilings - passband_floors))
-        else:
-            passband_snr = 0.0
-
-        now = time.time()
-
-        if self._scan_paused:
-            if passband_snr < self._scan_pause_resume_snr:
-                if self._scan_pause_below_since == 0.0:
-                    self._scan_pause_below_since = now
-                elif now - self._scan_pause_below_since >= self._scan_dwell_s:
-                    self._resume_scanning()
-            else:
-                self._scan_pause_below_since = 0.0
-            return
-
-        if passband_snr >= self._scan_min_snr:
-            if self._scan_pause_on_signal:
-                self._pause_scan_on_signal(passband_snr)
-                return
-            if self._scan_last_signal_time == 0.0:
-                self._log(
-                    f"[SCAN] Señal en {self.tuned_frequency / 1e6:.4f} MHz "
-                    f"(SNR: {passband_snr:.1f} dB)"
-                )
-            self._scan_last_signal_time = now
-        else:
-            ref_time = (
-                self._scan_last_signal_time
-                if self._scan_last_signal_time > 0.0
-                else self._scan_tuned_time
-            )
-            if now - ref_time >= self._scan_dwell_s:
-                self._step_scanner()
+    @property
+    def display_width(self) -> int:
+        """Alias del ScannerHost protocol (la app usa _display_width)."""
+        return self._display_width
 
     def change_device(self, device_kwargs: dict, *, desired_rx: bool | None = None) -> bool:
         """Abre un dispositivo Soapy concreto por kwargs (label/serial únicos)."""
