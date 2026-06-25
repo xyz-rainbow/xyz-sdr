@@ -32,22 +32,8 @@ from core.device import (
     SampleRateError,
     _format_bandwidth_hz,
 )
-from core.config_store import (
-    patch_device_section,
-    patch_dsp_section,
-    patch_display_section,
-    persist_band_profile,
-    patch_recorder_section,
-    patch_scanner_section,
-)
+from core.config_store import persist_band_profile
 from core.auto_demod import resolve_auto_demod_mode
-from core.bookmarks import (
-    export_bookmarks,
-    import_bookmarks,
-    load_bookmarks,
-    merge_bookmarks,
-    save_bookmarks,
-)
 from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
 from core.band_buffer import BandFrameMailbox
 from core.stream_stats import StreamStats
@@ -65,7 +51,7 @@ from core.dsp_profiles import (
 )
 from core.audio_effects import AudioEffects
 from core.audio_output import AudioOutputQueue
-from core.recorder import SDRRecorder, resolve_recordings_dir, recording_targets
+from core.recorder import SDRRecorder  # type: ignore  # legacy: re-export alias
 
 from core.passband import (
     PASSBAND_KEYBOARD_STEP,
@@ -901,6 +887,11 @@ class XyzSDRApp(App):
         self._sdrplay_preflight_done = False
         self._sdrplay_preflight_ok = False
         self.audio_effects = AudioEffects()
+        # StorageController: grabación, bookmarks y persistencia de config
+        # viven ahora en tui/storage.py. XyzSDRApp implementa StorageHost
+        # vía propiedades y métodos delegantes.
+        from tui.storage import StorageController
+        self._storage = StorageController(self, self.audio_effects, PRESETS)
 
         # ── Estado del viewport ──
         self.tuned_frequency: float = float(center_freq)
@@ -971,12 +962,11 @@ class XyzSDRApp(App):
 
         rec_cfg = self.config.get("recorder", {})
         self._project_root = Path(self.config_path).resolve().parent.parent
-        self._bookmarks = self._load_bookmarks()
-        self._recordings_dir = resolve_recordings_dir(
-            rec_cfg.get("output_dir"),
-            project_root=self._project_root,
-        )
-        self._recorder = SDRRecorder(self._recordings_dir)
+        self._bookmarks = self._storage.bookmarks  # alias legacy (StorageController es owner)
+        # Legacy state — StorageController es el owner real; estos atributos
+        # se mantienen por compatibilidad con código externo que los lee.
+        self._recordings_dir: Path | None = None
+        self._recorder: object | None = None
 
         display_cfg_init = self.config.get("display", {})
         self.waterfall_auto_level = bool(display_cfg_init.get("waterfall_auto_level", True))
@@ -1033,13 +1023,11 @@ class XyzSDRApp(App):
             pass
 
     def _persist_display_config(self, *, waterfall_auto_level: bool | None = None) -> None:
-        try:
-            patch_display_section(
-                self.config_path,
-                waterfall_auto_level=waterfall_auto_level,
-            )
-        except Exception as exc:
-            self._log(f"[WARN] No se pudo guardar config display: {exc}")
+        """DEPRECATED: usa _storage.persist_config('display', ...)."""
+        self._persist_config(
+            "display",
+            waterfall_auto_level=waterfall_auto_level,
+        )
 
     def _persist_passband_width(self) -> None:
         mode = self._passband_mode()
@@ -1051,7 +1039,7 @@ class XyzSDRApp(App):
         elif mode == "am":
             kwargs["am_bandwidth"] = self.passband_width_hz
         if kwargs:
-            patch_dsp_section(self.config_path, **kwargs)
+            self._storage.persist_config("dsp", **kwargs)
 
     def _passband_mode(self) -> str:
         """Modo usado para límites PASS (resuelve AUTO)."""
@@ -1180,7 +1168,7 @@ class XyzSDRApp(App):
 
                 yield Label("-- PRESETS --", id="lbl_presets")
                 yield Select(
-                    [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks],
+                    [(name, f"{freq}:{mode}") for name, freq, mode in self._storage.bookmarks],
                     prompt="Emisora...",
                     id="sel_preset",
                 )
@@ -2119,73 +2107,16 @@ class XyzSDRApp(App):
         self._update_status()
 
     def action_record(self) -> None:
-        if self._recording:
-            self._stop_recording()
-        else:
-            self._start_recording()
+        """Toggle recording via StorageController."""
+        self._storage.toggle_recording()
 
     def _start_recording(self) -> None:
-        if not self._rx_active:
-            self.audio_effects.play_error()
-            self._log("[ERROR] Inicia RX antes de grabar")
-            return
-
-        rec_cfg = self.config.get("recorder", {})
-        self._recordings_dir = resolve_recordings_dir(
-            rec_cfg.get("output_dir"),
-            project_root=self._project_root,
-        )
-        self._recorder = SDRRecorder(self._recordings_dir)
-
-        dsp_cfg = self.config.get("dsp", {})
-        audio_rate = int(dsp_cfg.get("audio_rate", 48_000))
-        do_iq, do_audio = recording_targets(
-            self.active_demod_mode,
-            record_iq=bool(rec_cfg.get("record_iq", True)),
-            record_audio=bool(rec_cfg.get("record_audio", True)),
-        )
-
-        try:
-            iq_path, wav_path = self._recorder.start(
-                center_freq_hz=self.tuned_frequency,
-                sample_rate_hz=self.sample_rate,
-                demod_mode=self.active_demod_mode,
-                audio_rate=audio_rate,
-                record_iq=do_iq,
-                record_audio=do_audio,
-            )
-        except Exception as exc:
-            self.audio_effects.play_error()
-            self._log(f"[ERROR] No se pudo iniciar grabacion: {exc}")
-            return
-
-        self._recording = True
-        self.audio_effects.play_blip()
-        if iq_path:
-            self._log(f"[OK] Grabacion IQ: {iq_path}")
-        if wav_path:
-            self._log(f"[OK] Grabacion audio: {wav_path}")
-        if not iq_path and not wav_path:
-            self._recording = False
-            self._log("[ERROR] Nada que grabar con la config actual")
-        self._update_status()
+        """DEPRECATED: delega a StorageController.start_recording()."""
+        self._storage.start_recording()
 
     def _stop_recording(self, *, log_stopped: bool = True) -> None:
-        if not self._recording:
-            return
-
-        iq_path, wav_path = None, None
-        if self._recorder:
-            iq_path, wav_path = self._recorder.stop()
-
-        self._recording = False
-        if log_stopped:
-            self.audio_effects.play_blip()
-            if iq_path:
-                self._log(f"[OK] Grabacion IQ detenida: {iq_path}")
-            if wav_path:
-                self._log(f"[OK] Grabacion audio detenida: {wav_path}")
-        self._update_status()
+        """DEPRECATED: delega a StorageController.stop_recording()."""
+        self._storage.stop_recording(log_stopped=log_stopped)
 
     def action_show_settings(self) -> None:
         """Abre el panel modal de Ajustes de Hardware SDR."""
@@ -2205,30 +2136,29 @@ class XyzSDRApp(App):
         self._graceful_shutdown = True
         self.exit()
 
+    def _persist_config(self, section: str, **updates) -> bool:
+        """Unificado: delega a StorageController.persist_config().
+
+        Mantenido como wrapper para tests legacy. La forma preferida es
+        llamar directamente a ``self._storage.persist_config(section, **updates)``.
+        """
+        return self._storage.persist_config(section, **updates)
+
     def _persist_device_config(
         self,
         *,
         driver: str | None = None,
         sample_rate: float | None = None,
     ) -> None:
-        """Guarda driver y/o sample_rate en el TOML de configuración."""
-        try:
-            patch_device_section(
-                self.config_path,
-                driver=driver,
-                sample_rate=sample_rate,
-                center_freq=self.tuned_frequency,
-                gain=self.gain_value,
-            )
-            device_cfg = self.config.setdefault("device", {})
-            if driver is not None:
-                device_cfg["driver"] = driver
-            if sample_rate is not None:
-                device_cfg["sample_rate"] = int(sample_rate)
-            device_cfg["center_freq"] = int(self.tuned_frequency)
-            device_cfg["gain"] = float(self.gain_value)
-        except Exception as exc:
-            self._log(f"[WARN] No se pudo guardar config: {exc}")
+        """DEPRECATED: usa _storage.persist_config('device', ...)."""
+        # Mantenemos side-effects legacy: center_freq y gain siempre se persisten
+        self._persist_config(
+            "device",
+            driver=driver,
+            sample_rate=sample_rate,
+            center_freq=self.tuned_frequency,
+            gain=self.gain_value,
+        )
 
     def _persist_dsp_config(
         self,
@@ -2240,32 +2170,16 @@ class XyzSDRApp(App):
         fm_deemphasis_us: float | None = None,
         fm_agc_enabled: bool | None = None,
     ) -> None:
-        """Guarda ajustes DSP (squelch, volumen, FM) en el TOML."""
-        try:
-            patch_dsp_section(
-                self.config_path,
-                squelch_enabled=squelch_enabled,
-                squelch_threshold=squelch_threshold,
-                squelch_hang_ms=squelch_hang_ms,
-                volume=volume,
-                fm_deemphasis_us=fm_deemphasis_us,
-                fm_agc_enabled=fm_agc_enabled,
-            )
-            dsp_cfg = self.config.setdefault("dsp", {})
-            if squelch_enabled is not None:
-                dsp_cfg["squelch_enabled"] = squelch_enabled
-            if squelch_threshold is not None:
-                dsp_cfg["squelch_threshold"] = int(squelch_threshold)
-            if squelch_hang_ms is not None:
-                dsp_cfg["squelch_hang_ms"] = int(squelch_hang_ms)
-            if volume is not None:
-                dsp_cfg["volume"] = float(volume)
-            if fm_deemphasis_us is not None:
-                dsp_cfg["fm_deemphasis_us"] = int(fm_deemphasis_us)
-            if fm_agc_enabled is not None:
-                dsp_cfg["fm_agc_enabled"] = fm_agc_enabled
-        except Exception as exc:
-            self._log(f"[WARN] No se pudo guardar config DSP: {exc}")
+        """DEPRECATED: usa _storage.persist_config('dsp', ...)."""
+        self._persist_config(
+            "dsp",
+            squelch_enabled=squelch_enabled,
+            squelch_threshold=squelch_threshold,
+            squelch_hang_ms=squelch_hang_ms,
+            volume=volume,
+            fm_deemphasis_us=fm_deemphasis_us,
+            fm_agc_enabled=fm_agc_enabled,
+        )
 
     def _persist_recorder_config(
         self,
@@ -2273,20 +2187,12 @@ class XyzSDRApp(App):
         record_iq: bool | None = None,
         record_audio: bool | None = None,
     ) -> None:
-        """Guarda ajustes de grabación en el TOML de configuración."""
-        try:
-            patch_recorder_section(
-                self.config_path,
-                record_iq=record_iq,
-                record_audio=record_audio,
-            )
-            rec_cfg = self.config.setdefault("recorder", {})
-            if record_iq is not None:
-                rec_cfg["record_iq"] = record_iq
-            if record_audio is not None:
-                rec_cfg["record_audio"] = record_audio
-        except Exception as exc:
-            self._log(f"[WARN] No se pudo guardar config de grabacion: {exc}")
+        """DEPRECATED: usa _storage.persist_config('recorder', ...)."""
+        self._persist_config(
+            "recorder",
+            record_iq=record_iq,
+            record_audio=record_audio,
+        )
 
     def _persist_scanner_config(
         self,
@@ -2299,91 +2205,41 @@ class XyzSDRApp(App):
         pause_on_signal: bool | None = None,
         pause_resume_snr_db: float | None = None,
     ) -> None:
-        """Guarda ajustes del escáner en el TOML de configuración."""
-        try:
-            patch_scanner_section(
-                self.config_path,
-                freq_start=freq_start,
-                freq_end=freq_end,
-                freq_step=freq_step,
-                dwell_ms=dwell_ms,
-                min_snr_db=min_snr_db,
-                pause_on_signal=pause_on_signal,
-                pause_resume_snr_db=pause_resume_snr_db,
-            )
-            scan_cfg = self.config.setdefault("scanner", {})
-            if freq_start is not None:
-                scan_cfg["freq_start"] = int(freq_start)
-            if freq_end is not None:
-                scan_cfg["freq_end"] = int(freq_end)
-            if freq_step is not None:
-                scan_cfg["freq_step"] = int(freq_step)
-            if dwell_ms is not None:
-                scan_cfg["dwell_ms"] = int(dwell_ms)
-            if min_snr_db is not None:
-                scan_cfg["min_snr_db"] = float(min_snr_db)
-            if pause_on_signal is not None:
-                scan_cfg["pause_on_signal"] = pause_on_signal
-            if pause_resume_snr_db is not None:
-                scan_cfg["pause_resume_snr_db"] = float(pause_resume_snr_db)
-        except Exception as exc:
-            self._log(f"[WARN] No se pudo guardar config de escaneo: {exc}")
+        """DEPRECATED: usa _storage.persist_config('scanner', ...)."""
+        self._persist_config(
+            "scanner",
+            freq_start=freq_start,
+            freq_end=freq_end,
+            freq_step=freq_step,
+            dwell_ms=dwell_ms,
+            min_snr_db=min_snr_db,
+            pause_on_signal=pause_on_signal,
+            pause_resume_snr_db=pause_resume_snr_db,
+        )
 
     def _bookmarks_path(self) -> Path:
-        return self._project_root / "var" / "bookmarks.toml"
+        """DEPRECATED: usa _storage.bookmarks_path()."""
+        return self._storage.bookmarks_path()
 
     def _resolve_bookmark_io_path(self, path_str: str) -> Path:
-        path = Path(path_str.strip())
-        if not path.is_absolute():
-            path = self._project_root / path
-        return path
+        """DEPRECATED: ya no es necesario (StorageController resuelve internamente)."""
+        return self._storage._resolve_bookmark_io_path(path_str)
 
     def _refresh_preset_select(self) -> None:
         try:
             sel = self.query_one("#sel_preset", Select)
-            options = [(name, f"{freq}:{mode}") for name, freq, mode in self._bookmarks]
+            options = [(name, f"{freq}:{mode}") for name, freq, mode in self._storage.bookmarks]
             sel.update(options)
         except Exception as exc:
             logger.debug("No se pudo actualizar sel_preset: %s", exc)
 
     def export_bookmarks_to_path(self, path_str: str) -> bool:
-        """Exporta bookmarks actuales a un archivo TOML."""
-        dest = self._resolve_bookmark_io_path(path_str)
-        try:
-            export_bookmarks(self._bookmarks, dest)
-            self._log(f"[OK] Bookmarks exportados ({len(self._bookmarks)}) → {dest}")
-            self.audio_effects.play_chime()
-            return True
-        except Exception as exc:
-            self._log(f"[ERROR] Export bookmarks: {exc}")
-            self.audio_effects.play_error()
-            return False
+        """DEPRECATED: usa _storage.export_bookmarks_to()."""
+        return self._storage.export_bookmarks_to(path_str)
 
     def import_bookmarks_from_path(self, path_str: str, merge: bool) -> bool:
-        """Importa bookmarks desde TOML; opcionalmente fusiona con los actuales."""
-        src = self._resolve_bookmark_io_path(path_str)
-        try:
-            imported = import_bookmarks(src, PRESETS)
-            if merge:
-                self._bookmarks = merge_bookmarks(self._bookmarks, imported)
-            else:
-                self._bookmarks = list(imported)
-            save_bookmarks(self._bookmarks_path(), self._bookmarks)
-            self._refresh_preset_select()
-            self._log(
-                f"[OK] Bookmarks importados ({len(self._bookmarks)} entradas"
-                f"{' — fusionados' if merge else ''})"
-            )
-            self.audio_effects.play_chime()
-            return True
-        except FileNotFoundError:
-            self._log(f"[ERROR] No se encontró archivo: {src}")
-            self.audio_effects.play_error()
-            return False
-        except Exception as exc:
-            self._log(f"[ERROR] Import bookmarks: {exc}")
-            self.audio_effects.play_error()
-            return False
+        """DEPRECATED: usa _storage.import_bookmarks_from()."""
+        return self._storage.import_bookmarks_from(path_str, merge=merge)
 
     def action_toggle_scan(self) -> None:
         """Inicia, pausa/reanuda o detiene el escáner de banda."""
@@ -2477,21 +2333,27 @@ class XyzSDRApp(App):
             self._is_scanner_stepping = False
 
     def log(self, message: str) -> None:
-        """Callback del ScannerEngine."""
+        """Callback del ScannerEngine / StorageController."""
         self._log(message)
 
     def play_chime(self) -> None:
-        """Callback del ScannerEngine."""
+        """Callback del ScannerEngine / StorageController."""
         self.audio_effects.play_chime()
 
     def play_error(self) -> None:
-        """Callback del ScannerEngine."""
+        """Callback del ScannerEngine / StorageController."""
         self.audio_effects.play_error()
 
     @property
     def display_width(self) -> int:
         """Alias del ScannerHost protocol (la app usa _display_width)."""
         return self._display_width
+
+    # ── StorageHost protocol: callbacks delegan a la app ───────────────────
+
+    def refresh_preset_select(self) -> None:
+        """Callback del StorageController tras import_bookmarks_from."""
+        self._refresh_preset_select()
 
     def change_device(self, device_kwargs: dict, *, desired_rx: bool | None = None) -> bool:
         """Abre un dispositivo Soapy concreto por kwargs (label/serial únicos)."""
@@ -2871,22 +2733,24 @@ class XyzSDRApp(App):
             self._set_waterfall_speed(speed_val)
 
     def _action_save_bookmark(self) -> None:
-        """Guarda la frecuencia y el modo actuales en la lista de favoritos."""
+        """DEPRECATED: usa _storage.save_current_as_bookmark().
+
+        Mantenido por compat con event handlers; preserva el formato del nombre
+        legacy (e.g. "100.600 MHz (WBFM)") y la lógica de duplicados con
+        warning + play_error.
+        """
         freq_mhz = self.tuned_frequency / 1e6
         mode = self.demod_mode.upper()
         name = f"{freq_mhz:.3f} MHz ({mode})"
 
-        exists = any(abs(b[1] - self.tuned_frequency) < 1.0 and b[2] == self.demod_mode for b in self._bookmarks)
-        if exists:
+        bookmark = self._storage.save_current_as_bookmark(name=name)
+        if bookmark is None:
+            # Duplicado
             self._log(f"[WARN] Bookmark ya existe para {freq_mhz:.3f} MHz en modo {mode}")
             self.audio_effects.play_error()
-            return
-
-        self._bookmarks.append((name, self.tuned_frequency, self.demod_mode))
-        save_bookmarks(self._bookmarks_path(), self._bookmarks)
-        self._refresh_preset_select()
-
-        self._log(f"[OK] Guardado bookmark: {name}")
+        else:
+            self._refresh_preset_select()
+            self._log(f"[OK] Guardado bookmark: {bookmark[0]}")
 
     def _set_waterfall_speed(self, speed: int) -> None:
         """Establece la velocidad de la cascada (FPS) y actualiza los estilos de los botones."""
@@ -3225,8 +3089,8 @@ class XyzSDRApp(App):
             pass
 
     def _load_bookmarks(self) -> list[tuple[str, float, str]]:
-        """Carga la lista de favoritos/presets desde var/bookmarks.toml o del fallback."""
-        return load_bookmarks(self._bookmarks_path(), PRESETS)
+        """DEPRECATED: usa _storage.bookmarks (StorageController carga al init)."""
+        return self._storage.bookmarks
 
 
 # ─── Utilidades ──────────────────────────────────────────────────────────────
