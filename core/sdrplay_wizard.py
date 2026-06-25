@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from core.driver_runtime import bundled_platform, bundled_soapy_dll_dir, drivers_root
+from core.driver_runtime import bundled_platform, bundled_soapy_dll_dir, drivers_root, resolve_bundled_sdrplay_plugin
 from core.soapy_runtime import assess_sdrplay_soapy_module, bootstrap_soapy, find_sdrplay_soapy_module
 from core.sdrplay_enumerate import has_sdrplay_in_devices, recover_sdrplay_enumeration, sdrplay_find_ok
 from core.sdrplay_service import check_sdrplay_service_running
@@ -51,8 +51,16 @@ def collect_sdrplay_wizard_snapshot(
             if label:
                 labels.append(label)
 
-    plugin = find_sdrplay_soapy_module(status.pothos_root)
-    plugin_status = status.sdrplay_plugin_status or assess_sdrplay_soapy_module(plugin)
+    plugin = status.sdrplay_plugin_module
+    plugin_status = status.sdrplay_plugin_status
+    if plugin_status == "missing" or not plugin:
+        bundled = resolve_bundled_sdrplay_plugin()
+        if bundled is not None:
+            plugin = str(bundled)
+            plugin_status = assess_sdrplay_soapy_module(plugin)
+    if not plugin:
+        plugin = find_sdrplay_soapy_module(status.pothos_root)
+        plugin_status = assess_sdrplay_soapy_module(plugin)
     soapy_dir = bundled_soapy_dll_dir()
     find_ok = has_sdrplay_in_devices(status.devices) or sdrplay_find_ok(status=status)
 

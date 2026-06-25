@@ -12,6 +12,7 @@ from textual.containers import Vertical, Horizontal, Container
 from textual.widgets import Label, Select, Button, Switch, Input, Static
 from textual.reactive import reactive
 
+from tui.widgets.busy_overlay import BusyOverlay
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 
 
@@ -31,20 +32,27 @@ class SettingsScreen(ModalScreen):
     """Pantalla modal de ajustes general con navegación interna por páginas."""
 
     current_page = reactive("main")
+    _busy_active = False
+    _busy_timer = None
+    _busy_percent = 0
 
     DEFAULT_CSS = """
     SettingsScreen {
         align: center middle;
         background: rgba(9, 13, 22, 0.85);
+        padding: 2 1;
+        layers: base modal_overlay;
     }
 
     #settings_card {
-        width: 100;
-        max-width: 98%;
+        width: 82;
+        max-width: 96%;
+        max-height: 86%;
         height: auto;
         background: #0b0f19;
         border: round #6366f1;
-        padding: 0 1;
+        padding: 1 2;
+        margin: 2 0;
     }
 
     #settings_title {
@@ -152,26 +160,29 @@ class SettingsScreen(ModalScreen):
     }
 
     /* ── Estilos de los botones de navegación ── */
-    #page_main .nav-grid-row {
-        layout: horizontal;
-        height: auto;
-        margin-top: 0;
-    }
-
-    #page_main .nav-grid-main {
-        height: 3;
-    }
-
     #page_main Button.nav-btn {
-        width: 1fr;
-        min-width: 14;
-        margin-top: 0;
-        margin-right: 1;
+        width: 100%;
+        margin-top: 1;
         background: #1e1b4b;
         color: #a5b4fc;
         border: round #4338ca;
         height: 3;
         padding: 0 1;
+    }
+
+    #page_main #btn_quit_app {
+        width: 100%;
+        margin-top: 2;
+        background: #7f1d1d;
+        color: #fecaca;
+        border: round #ef4444;
+        height: 3;
+    }
+
+    #page_main #btn_quit_app:hover {
+        background: #991b1b;
+        color: #ffffff;
+        border: round #f87171;
     }
 
     #page_main .main-footer-row {
@@ -349,6 +360,13 @@ class SettingsScreen(ModalScreen):
     .settings-actions Button {
         margin-left: 1;
     }
+
+    #busy_overlay {
+        layer: modal_overlay;
+        dock: top;
+        width: 100%;
+        height: 100%;
+    }
     """
 
     BINDINGS = [("escape", "dismiss", "Cerrar")]
@@ -370,6 +388,58 @@ class SettingsScreen(ModalScreen):
             self.add_class("show-scanner")
         elif new_page == "bookmarks":
             self.add_class("show-bookmarks")
+
+    def _set_hw_action_buttons_disabled(self, disabled: bool) -> None:
+        for btn_id in (
+            "btn_refresh_sdr_wizard",
+            "btn_restart_sdrplay_service",
+            "btn_run_sdrplay_diagnose",
+        ):
+            try:
+                self.query_one(f"#{btn_id}", Button).disabled = disabled
+            except Exception:
+                pass
+
+    def show_busy(self, label: str) -> None:
+        """Muestra overlay con barra estilo splash."""
+        if self._busy_active:
+            return
+        self._busy_active = True
+        self._busy_percent = 0
+        self._set_hw_action_buttons_disabled(True)
+        try:
+            overlay = self.query_one(BusyOverlay)
+            overlay.label = label
+            overlay.percent = 0
+            overlay.display = True
+        except Exception:
+            pass
+
+        def _tick() -> None:
+            if not self._busy_active:
+                return
+            self._busy_percent = min(95, self._busy_percent + 4)
+            try:
+                overlay = self.query_one(BusyOverlay)
+                overlay.percent = self._busy_percent
+            except Exception:
+                pass
+
+        self._busy_timer = self.set_interval(0.25, _tick)
+
+    def hide_busy(self) -> None:
+        """Oculta overlay de carga."""
+        if self._busy_timer is not None:
+            self._busy_timer.stop()
+            self._busy_timer = None
+        self._busy_active = False
+        self._set_hw_action_buttons_disabled(False)
+        try:
+            overlay = self.query_one(BusyOverlay)
+            overlay.percent = 100
+            overlay.display = False
+        except Exception:
+            pass
 
     def _refresh_bookmarks_count_label(self) -> None:
         try:
@@ -459,12 +529,11 @@ class SettingsScreen(ModalScreen):
             # ─── PÁGINA 1: MENÚ PRINCIPAL ───
             with Container(id="page_main"):
                 yield Label("⚙️ AJUSTES", id="settings_title_compact")
-                with Horizontal(classes="nav-grid-row nav-grid-main"):
-                    yield Button("📡 HW", id="btn_go_hardware", classes="nav-btn")
-                    yield Button("🔊 Audio", id="btn_go_noise", classes="nav-btn")
-                    yield Button("💾 IQ/WAV", id="btn_go_recording", classes="nav-btn")
-                    yield Button("🔍 Scan", id="btn_go_scanner", classes="nav-btn")
-                    yield Button("📋 Marks", id="btn_go_bookmarks", classes="nav-btn")
+                yield Button("📡 Hardware SDR", id="btn_go_hardware", classes="nav-btn")
+                yield Button("🔊 Audio FM / Noise", id="btn_go_noise", classes="nav-btn")
+                yield Button("💾 Ajustes de Grabación", id="btn_go_recording", classes="nav-btn")
+                yield Button("🔍 Ajustes del Escáner", id="btn_go_scanner", classes="nav-btn")
+                yield Button("📋 Bookmarks", id="btn_go_bookmarks", classes="nav-btn")
                 with Horizontal(classes="main-footer-row"):
                     yield Label("FX:")
                     yield Switch(value=self.app.audio_effects.enabled, id="sw_sound_effects")
@@ -474,6 +543,7 @@ class SettingsScreen(ModalScreen):
                         id="sw_waterfall_auto_level",
                     )
                     yield Button("Cerrar", id="btn_close_settings")
+                yield Button("Salir", id="btn_quit_app", variant="error")
 
             # ─── PÁGINA 2: CONFIGURACIÓN HARDWARE ───
             with Container(id="page_hardware"):
@@ -495,9 +565,9 @@ class SettingsScreen(ModalScreen):
                             yield Switch(value=self.app._rx_active, id="set_rx_active")
                         yield Static("…", id="sdr_diagnose_panel")
                         with Horizontal(classes="settings-actions compact-actions"):
-                            yield Button("↻", id="btn_refresh_sdr_wizard")
-                            yield Button("API", id="btn_restart_sdrplay_service")
-                            yield Button("Diag", id="btn_run_sdrplay_diagnose")
+                            yield Button("↻ Actualizar", id="btn_refresh_sdr_wizard")
+                            yield Button("↻ Reiniciar API", id="btn_restart_sdrplay_service")
+                            yield Button("Diagnóstico", id="btn_run_sdrplay_diagnose")
 
                 with Horizontal(classes="settings-actions"):
                     yield Button("Atrás", id="btn_back_to_main_hw")
@@ -641,6 +711,14 @@ class SettingsScreen(ModalScreen):
                 with Horizontal(classes="settings-actions"):
                     yield Button("Atrás", id="btn_back_to_main_bm")
 
+        yield BusyOverlay(id="busy_overlay")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#busy_overlay", BusyOverlay).display = False
+        except Exception:
+            pass
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         # Efectos de sonido al pulsar botones
         if event.button.id in ("btn_apply_noise", "btn_apply_recording", "btn_apply_scanner"):
@@ -654,13 +732,14 @@ class SettingsScreen(ModalScreen):
         if event.button.id == "btn_go_hardware":
             self.current_page = "hardware"
         elif event.button.id == "btn_refresh_sdr_wizard":
-            self._refresh_hardware_page(attempt_recover=True)
+            self.show_busy("Actualizando diagnóstico…")
+            self.app._refresh_sdrplay_wizard_async(attempt_recover=True)
         elif event.button.id == "btn_restart_sdrplay_service":
+            self.show_busy("Reiniciando SDRplay API…")
             self.app._restart_sdrplay_service_async()
-            self.app._log("[INFO] Reiniciando SDRplayAPIService…")
         elif event.button.id == "btn_run_sdrplay_diagnose":
+            self.show_busy("Ejecutando diagnóstico…")
             self.app._run_sdrplay_diagnose_async()
-            self.app._log("[INFO] Diagnóstico SDRplay en segundo plano…")
         elif event.button.id == "btn_go_noise":
             self.current_page = "noise"
         elif event.button.id == "btn_go_recording":
@@ -680,6 +759,9 @@ class SettingsScreen(ModalScreen):
             self.current_page = "main"
         elif event.button.id == "btn_close_settings":
             self.dismiss()
+        elif event.button.id == "btn_quit_app":
+            self.dismiss()
+            self.app.action_quit()
 
         # Acciones - Aplicar Grabación
         elif event.button.id == "btn_apply_recording":

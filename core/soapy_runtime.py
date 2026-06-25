@@ -388,7 +388,7 @@ def is_sdrplay_soapy_module_ok(pothos_root: str | None = None) -> bool:
     return assess_sdrplay_soapy_module(module) == "present"
 
 
-def _configure_soapy_plugin_path(pothos_root: str) -> None:
+def _configure_soapy_plugin_path(pothos_root: str | None, *, allow_pothos: bool = True) -> None:
     from core.driver_runtime import resolve_bundled_sdrplay_plugin
 
     user_dir = user_soapy_plugin_dir()
@@ -402,8 +402,13 @@ def _configure_soapy_plugin_path(pothos_root: str) -> None:
     if bundled is not None and assess_sdrplay_soapy_module(str(bundled)) == "present":
         _prepend_soapy_plugin_dir(str(bundled.parent))
         logger.info("SOAPY plugin path: bundled %s", bundled.parent)
-        if not _allow_pothos_plugins():
+        if not allow_pothos:
             return
+
+    if not allow_pothos or not pothos_root:
+        if os.path.isdir(user_dir):
+            _prepend_soapy_plugin_dir(user_dir)
+        return
 
     mod_dir = _soapy_modules_dir(pothos_root)
     if mod_dir:
@@ -428,6 +433,14 @@ def _configure_soapy_plugin_path(pothos_root: str) -> None:
 
     if os.path.isdir(user_dir):
         _prepend_soapy_plugin_dir(user_dir)
+
+
+def _apply_sdrplay_plugin_status(status: SoapyStatus, pothos_root: str | None, *, allow_pothos: bool) -> None:
+    """Configura SOAPY_SDR_PLUGIN_PATH y rellena módulo/estado del plugin sdrplay."""
+    use_pothos = bool(allow_pothos and pothos_root)
+    _configure_soapy_plugin_path(pothos_root if use_pothos else None, allow_pothos=allow_pothos)
+    status.sdrplay_plugin_module = find_sdrplay_soapy_module(pothos_root if use_pothos else None)
+    status.sdrplay_plugin_status = assess_sdrplay_soapy_module(status.sdrplay_plugin_module)
 
 
 def _prepend_soapy_plugin_dir(mod_dir: str) -> None:
@@ -566,15 +579,13 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
         _register_dll_directory(api_bin)
 
     pothos_root = find_pothos_install()
+    use_pothos_plugins = (not use_bundled_soapy) or allow_pothos
     if pothos_root and (not use_bundled_soapy or allow_pothos):
         status.pothos_root = pothos_root
         bin_dir = os.path.join(pothos_root, "bin")
         status.pothos_bin = bin_dir
         _prepend_path(bin_dir)
         _register_dll_directory(bin_dir)
-        _configure_soapy_plugin_path(pothos_root)
-        status.sdrplay_plugin_module = find_sdrplay_soapy_module(pothos_root)
-        status.sdrplay_plugin_status = assess_sdrplay_soapy_module(status.sdrplay_plugin_module)
         if not os.path.isfile(user_api):
             sync_sdrplay_api_dll_to_pothos(pothos_root)
 
@@ -590,6 +601,8 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
                     "Pothos bindings en %s (Python distinto); usar pip SoapySDR.",
                     embedded,
                 )
+
+    _apply_sdrplay_plugin_status(status, pothos_root, allow_pothos=use_pothos_plugins)
 
     try:
         import SoapySDR  # noqa: WPS433

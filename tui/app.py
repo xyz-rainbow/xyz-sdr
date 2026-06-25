@@ -2233,6 +2233,32 @@ class XyzSDRApp(App):
         return format_wizard_lines(snapshot, cached_sdrplay=sdrplay_cached)
 
     @work(thread=True)
+    def _refresh_sdrplay_wizard_async(self, *, attempt_recover: bool = False) -> None:
+        try:
+            from core.sdrplay_enumerate import recover_sdrplay_enumeration
+
+            if attempt_recover:
+                recover_sdrplay_enumeration(restart_if_missing=True)
+            self.call_from_thread(self._on_sdrplay_wizard_refreshed)
+        except Exception as exc:
+            self.call_from_thread(self._on_sdrplay_wizard_failed, str(exc))
+
+    def _on_sdrplay_wizard_refreshed(self) -> None:
+        self._refresh_enumerated_devices_if_safe()
+        screen = self.screen
+        if hasattr(screen, "_refresh_hardware_page"):
+            screen._refresh_hardware_page(attempt_recover=False)
+        if hasattr(screen, "hide_busy"):
+            screen.hide_busy()
+        self._log("[OK] Diagnóstico SDRplay actualizado")
+
+    def _on_sdrplay_wizard_failed(self, message: str) -> None:
+        screen = self.screen
+        if hasattr(screen, "hide_busy"):
+            screen.hide_busy()
+        self._log(f"[ERROR] Actualizar diagnóstico: {message}")
+
+    @work(thread=True)
     def _restart_sdrplay_service_async(self) -> None:
         from core.sdrplay_enumerate import recover_sdrplay_enumeration
 
@@ -2246,6 +2272,8 @@ class XyzSDRApp(App):
         screen = self.screen
         if hasattr(screen, "_refresh_hardware_page"):
             screen._refresh_hardware_page(attempt_recover=False)
+        if hasattr(screen, "hide_busy"):
+            screen.hide_busy()
 
     @work(thread=True)
     def _run_sdrplay_diagnose_async(self) -> None:
@@ -2268,6 +2296,8 @@ class XyzSDRApp(App):
         screen = self.screen
         if hasattr(screen, "_refresh_hardware_page"):
             screen._refresh_hardware_page(attempt_recover=False)
+        if hasattr(screen, "hide_busy"):
+            screen.hide_busy()
 
     def action_quit(self) -> None:
         """Salida limpia con pantalla de cierre."""
