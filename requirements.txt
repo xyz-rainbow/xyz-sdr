@@ -10,7 +10,8 @@
 # ─── Core SDR ────────────────────────────────────────────────────────────────
 SoapySDR               # Abstracción hardware SDR (requiere PothosSDR instalado)
 numpy~=1.24            # Operaciones numéricas / IQ data
-scipy~=1.10            # Filtros, FFT, procesado de señal
+# scipy pinned to >=1.14 for cp313 wheels (scipy 1.13.x lacks py3.13 wheels)
+scipy~=1.14            # Filtros, FFT, procesado de señal
 
 # ─── Audio ───────────────────────────────────────────────────────────────────
 sounddevice~=0.4       # Reproducción de audio demodulado
