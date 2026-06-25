@@ -310,6 +310,14 @@ def user_xyz_sdr_bin_dir() -> str:
     return os.path.join(base, "xyz-sdr", "bin")
 
 
+def _allow_pothos_plugins() -> bool:
+    return os.environ.get("XYZ_SDR_ALLOW_POTHOS_PLUGINS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def soapy_plugin_search_dirs(pothos_root: str | None = None) -> list[str]:
     """Directorios donde buscar módulos Soapy (SOAPY_SDR_PLUGIN_PATH, usuario, Pothos)."""
     from core.driver_runtime import bundled_plugins_dir, legacy_bundled_plugins_dir
@@ -394,7 +402,8 @@ def _configure_soapy_plugin_path(pothos_root: str) -> None:
     if bundled is not None and assess_sdrplay_soapy_module(str(bundled)) == "present":
         _prepend_soapy_plugin_dir(str(bundled.parent))
         logger.info("SOAPY plugin path: bundled %s", bundled.parent)
-        return
+        if not _allow_pothos_plugins():
+            return
 
     mod_dir = _soapy_modules_dir(pothos_root)
     if mod_dir:
@@ -534,7 +543,10 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
     from core.driver_runtime import bundled_soapy_dll_dir
 
     soapy_bundled = bundled_soapy_dll_dir()
-    if soapy_bundled is not None:
+    use_bundled_soapy = soapy_bundled is not None
+    allow_pothos = _allow_pothos_plugins()
+
+    if use_bundled_soapy:
         soapy_path = str(soapy_bundled)
         _prepend_path(soapy_path)
         _register_dll_directory(soapy_path)
@@ -554,7 +566,7 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
         _register_dll_directory(api_bin)
 
     pothos_root = find_pothos_install()
-    if pothos_root:
+    if pothos_root and (not use_bundled_soapy or allow_pothos):
         status.pothos_root = pothos_root
         bin_dir = os.path.join(pothos_root, "bin")
         status.pothos_bin = bin_dir

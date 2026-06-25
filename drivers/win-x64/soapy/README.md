@@ -2,4 +2,10 @@
 
 Placeholder for a minimal portable Soapy runtime (`SoapySDR.dll`, deps, optional `SoapySDRUtil.exe`).
 
-Populate via `scripts/stage_soapy_runtime.ps1` (roadmap Fase 3).
+Populate via:
+
+```powershell
+.\scripts\stage_soapy_runtime.ps1
+```
+
+Optional: `XYZ_SDR_ALLOW_POTHOS_PLUGINS=1` to also load plugins from Pothos after bundled paths.

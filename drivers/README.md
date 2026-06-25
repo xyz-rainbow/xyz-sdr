@@ -33,6 +33,15 @@ Instalador offline API: [resources/installers/win-x64/](../resources/installers/
 3. Pothos `Program Files` (fallback)
 4. `%LOCALAPPDATA%\xyz-sdr\` (cache usuario)
 
+## Stage Soapy subset (Fase 3)
+
+```powershell
+.\scripts\stage_soapy_runtime.ps1          # copy from Pothos bin
+.\scripts\stage_soapy_runtime.ps1 -DryRun  # preview only
+```
+
+Set `XYZ_SDR_ALLOW_POTHOS_PLUGINS=1` to fall back to Pothos module dirs when bundled runtime is staged.
+
 Implementación: [core/driver_runtime.py](../core/driver_runtime.py) + [core/soapy_runtime.py](../core/soapy_runtime.py).
 
 ---

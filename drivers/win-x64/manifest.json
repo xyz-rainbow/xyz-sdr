@@ -8,5 +8,39 @@
   "sha256": "a7da4a19efb398efdbf60587624a837be5d260e726068855b18fb327eeefa38d",
   "built_at": "2026-06-25T09:49:25Z",
   "source_repo": "https://github.com/pothosware/SoapySDRPlay3.git",
-  "source_commit": "abc123"
+  "source_commit": "abc123",
+  "soapy_subset": {
+    "path": "soapy",
+    "staged_at": "2026-06-25T10:00:04Z",
+    "source_bin": "C:\\Program Files\\PothosSDR\\bin",
+    "artifacts": [
+      {
+        "name": "SoapySDR.dll",
+        "size_bytes": 486400,
+        "sha256": "55bee94962583c168629239a69ab42fc98659f7373b97a880255e759d22bb92f",
+        "source": "C:\\Program Files\\PothosSDR\\bin\\SoapySDR.dll"
+      },
+      {
+        "name": "SoapySDRUtil.exe",
+        "size_bytes": 135168,
+        "sha256": "30cffd896f9670c541619e3b51ffc0e278944541f0400aecb42467f62f2eccb9",
+        "source": "C:\\Program Files\\PothosSDR\\bin\\SoapySDRUtil.exe"
+      },
+      {
+        "name": "pthreadVC2.dll",
+        "size_bytes": 83456,
+        "sha256": "26351398759299d5bb1f56a611fb7a69b249c858e6c25febb5608f0d34f42201",
+        "source": "C:\\Program Files\\PothosSDR\\bin\\pthreadVC2.dll"
+      },
+      {
+        "name": "libusb-1.0.dll",
+        "size_bytes": 166912,
+        "sha256": "08317af15d3763821c1c28aefaf33657512316dd0430d16923e237eda921db2e",
+        "source": "C:\\Program Files\\PothosSDR\\bin\\libusb-1.0.dll"
+      }
+    ],
+    "missing_optional": [
+      "libwinpthread-1.dll"
+    ]
+  }
 }

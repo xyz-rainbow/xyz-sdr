@@ -1,14 +1,23 @@
 {
   "schema": "xyz-sdr-runtime-manifest-v1",
   "platform": "win-x64",
-  "status": "template",
+  "status": "staged",
   "notes": "Populate after stage_soapy_runtime.ps1 or publish-bundled plugin.",
   "components": {
     "soapy_subset": {
       "path": "drivers/win-x64/soapy",
-      "required_dlls": ["SoapySDR.dll"],
-      "optional": ["SoapySDRUtil.exe"],
-      "artifacts": []
+      "required_dlls": [
+        "SoapySDR.dll"
+      ],
+      "optional": [
+        "SoapySDRUtil.exe"
+      ],
+      "artifacts": [
+        "SoapySDR.dll",
+        "SoapySDRUtil.exe",
+        "pthreadVC2.dll",
+        "libusb-1.0.dll"
+      ]
     },
     "sdrplay_plugin": {
       "path": "drivers/win-x64/plugins",
