@@ -6,11 +6,36 @@ import os
 from pathlib import Path
 
 from core.runtime_paths import (
+    bootstrap_project_caches,
     configure_pycache_prefix,
     get_tests_cache_dir,
     install_venv_pycache_hook,
     pycache_dir,
+    pytest_basetemp_dir,
+    remove_stray_project_caches,
 )
+
+
+def test_bootstrap_project_caches(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    pycache, pytest_cache, basetemp = bootstrap_project_caches(tmp_path)
+    assert pycache == tmp_path / "var" / "pycache"
+    assert pytest_cache == tmp_path / "var" / "pytest_cache"
+    assert basetemp == tmp_path / "var" / "pytest-tmp"
+    for directory in (pycache, pytest_cache, basetemp):
+        assert directory.is_dir()
+
+
+def test_remove_stray_project_caches(tmp_path: Path):
+    stray_pytest = tmp_path / ".pytest_cache"
+    stray_pycache = tmp_path / "__pycache__"
+    stray_pytest.mkdir()
+    stray_pycache.mkdir()
+    removed = remove_stray_project_caches(tmp_path)
+    assert stray_pytest in removed
+    assert stray_pycache in removed
+    assert not stray_pytest.exists()
+    assert not stray_pycache.exists()
 
 
 def test_configure_pycache_prefix(tmp_path: Path, monkeypatch):
