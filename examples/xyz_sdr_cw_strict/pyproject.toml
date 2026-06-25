@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xyz-sdr-cw-strict"
+version = "0.1.0"
+description = "Plugin de ejemplo para xyz-sdr: demodulador CW con filtro ultra-estrecho (50 Hz)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "xyz-sdr contributors" }]
+# Sin deps de runtime — este plugin asume que xyz-sdr ya está instalado
+# en el mismo Python (es un plugin, no una lib standalone).
+
+[project.entry-points."xyz_sdr.demodulators"]
+cw_strict = "xyz_sdr_cw_strict:make_cw_strict"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xyz_sdr_cw_strict*"]

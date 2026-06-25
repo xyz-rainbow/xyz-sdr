@@ -1,32 +1,46 @@
 # Python (cachés centralizados en var/ vía runtime_paths y scripts)
 __pycache__/
 .pytest_cache/
+.hypothesis/
+*.egg-info/
 *.pyc
 *.pyo
 *.pyd
 .Python
-env/
-venv/
-.venv/
 pip-log.txt
 pip-delete-this-directory.txt
 .toast
 .ipynb_checkpoints
 
 # Environment variables
+env/
+venv/
+.venv/
 .env
 .venv
 env.toml
 
 # IDEs
 .idea/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
+.mavis
+.vscode
 .vscode/*
 !.vscode/settings.json
 *.swp
 *.swo
 
+# Test artifacts
+resources/test/*.bak
+resources/test/*.tmp
+resources/test/*.toml.tmp
+
 # Project specific
-var/
+config/local.toml
 scratch/
 recordings/
 *.sigmf-data
@@ -36,3 +50,12 @@ recordings/
 *.raw
 *.bin
 *.log
+
+# Installation logs (produced by setup/install_drivers.ps1)
+var/
+var/log/
+var/log/*.log
+var/log/install-*.log
+
+# Large optional offline installers (keep manifest.json in repo)
+# resources/installers/**/*.exe

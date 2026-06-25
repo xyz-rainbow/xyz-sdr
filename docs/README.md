@@ -2,6 +2,8 @@
 
 Índice de la documentación técnica. El [README](../README.md) cubre instalación, atajos y visión general.
 
+> **Política de idioma:** Esta documentación está escrita mayoritariamente en español, salvo los archivos `architecture.md`, `dsp.md`, `installer.md`, `audio.md` y `audio-presets-research.md` que están en inglés por motivos históricos.
+
 ---
 
 ## Guías por tema
@@ -21,9 +23,19 @@
 | [display.md](display.md) | Paleta, auto-level, ColumnLevelTracker |
 | [widgets.md](widgets.md) | Timeline, espectro RLE, cascada |
 | [configuration.md](configuration.md) | Referencia `defaults.toml`, `[app]`, bandas, bookmarks |
-| [dsp.md](dsp.md) | Demod CW/DSB/RAW/AUTO, pipeline IQ |
+| [recorder.md](recorder.md) | Grabación IQ SigMF + audio WAV: pipeline, formatos, naming, manual (`R` / `(o) GRABAR IQ`) |
+| [scanner.md](scanner.md) | Escáner de banda: paso, dwell, SNR passband, histéresis, botón `🔍 ESCANEAR BANDA` |
+| [bookmarks.md](bookmarks.md) | Favoritos de frecuencia: `var/bookmarks.toml`, export/import, botón **Guardar Bookmark** |
 | [customization.md](customization.md) | Temas CSS, tuning |
+| [ai.md](ai.md) | Estado del módulo `ai/` (Fase 4–5 del roadmap, pendiente) |
+| [plugins.md](plugins.md) | Sistema de plugins versionado: demodulators, band profiles, drivers |
+| [testing.md](testing.md) | Estructura de tests, mapeo test→módulo, fixtures, comandos |
+| [uv_runtime.md](uv_runtime.md) | Wrapper de `uv` para venv + pip install (core/uv_runtime.py) |
+| [requirements-locking.md](requirements-locking.md) | Lockfiles `requirements*.lock` con `--require-hashes` |
+| [logging.md](logging.md) | Logging seguro con Textual: `detach_console_logging`, `var/log/` |
+| [installer-i18n.md](installer-i18n.md) | Traducciones del instalador (es/en), API `t()`, añadir idioma |
 | [roadmap.md](roadmap.md) | Plan de ruta |
+| [onboarding.md](onboarding.md) | "Primeros 15 minutos" — tutorial paso a paso |
 
 ---
 
@@ -35,9 +47,12 @@ setup/install_app.ps1            → dx-packaging.md, installer.md
 core/stream_stats.py             → observability.md
 core/band_profiles.py            → dx-packaging.md, configuration.md
 core/config_store.py             → configuration.md (persist_band_profile)
+core/recorder.py                 → recorder.md, configuration.md
+core/bookmarks.py                → bookmarks.md, configuration.md
 core/device.py                   → observability.md, bandwidth.md, hardware.md
 main.py --band                   → dx-packaging.md, configuration.md
 tui/app.py (DROP, debug)         → observability.md, display.md
+tui/app.py (action_toggle_scan)  → scanner.md, configuration.md
 ```
 
 ---

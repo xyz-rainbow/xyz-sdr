@@ -11,8 +11,8 @@ New-Item -ItemType Directory -Force -Path $Pycache | Out-Null
 $env:PYTHONPYCACHEPREFIX = $Pycache
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 
-if (Test-Path $VenvPy) {
-    & $VenvPy (Join-Path $PSScriptRoot "install_drivers.py") @args
+if (Test-Path -LiteralPath $VenvPy) {
+    & "$VenvPy" (Join-Path $PSScriptRoot "install_drivers.py") @args
     exit $LASTEXITCODE
 }
 

@@ -49,7 +49,14 @@ Bottom to top:
 
 1. **SDRplay API v3** — device driver / service (`sdrplay_api`)
 2. **PothosSDR** — `C:\Program Files\PothosSDR\bin` on PATH (SoapySDR + plugins)
-3. **SoapySDR plugin `sdrplay`** — `SoapySDRUtil --find=driver=sdrplay`
+3. **SoapySDR plugin `sdrplay`** — `SoapySDRUtil --find=driver=sdrplay`  
+   PothosSDR 2021.07.25 ships a **legacy** `sdrPlaySupport.dll` (July 2021) incompatible with SDRplay API **v3.15+**. If `--find=driver=sdrplay` is empty but the RSP appears in Device Manager, build **SoapySDRPlay3**:
+
+```powershell
+.\setup\install_drivers.ps1 → [1] Reparar todo   # copia plugin embebido; compila solo si falla
+.\setup\install_soapy_sdrplay3.ps1               # mismo flujo (--build para forzar compilación)
+```
+
 4. **Project `.venv`** — Python **3.9** (Pothos embedded bindings) or **3.11/3.12** (`pip install SoapySDR`)
 
 The launcher ensures the correct interpreter and re-exec (see below).
@@ -78,9 +85,86 @@ SoapySDRUtil --find=driver=sdrplay
 
 Expect at least one entry with `driver=sdrplay` (not only `simulated`).
 
+### SDRplay diagnostic (crash / stream issues)
+
+Structured audit of API DLL, Soapy plugin, enumerate, probe, and optional stream test:
+
+```powershell
+.\scripts\diagnose_sdrplay.ps1
+python main.py --diagnose-sdrplay
+python main.py --diagnose-sdrplay --stream-timeout 90
+python main.py --diagnose-sdrplay --no-probe
+$env:XYZ_SDR_PREFLIGHT_TIMEOUT = "90"
+.\scripts\diagnose_sdrplay.ps1
+.\scripts\diagnose_sdrplay.ps1 --no-probe
+```
+
+If **probe DEGRADED** kills the API service, skip probe and test stream only:
+
+```powershell
+Start-Service SDRplayAPIService
+Start-Sleep -Seconds 10
+.\scripts\diagnose_sdrplay.ps1 --no-probe
+```
+
+**Before diagnose:** close xyz-sdr and SDRuno — the RSP1 allows only **one** open handle. Running diagnose while the TUI holds the device causes stream test timeout or `no available RSP devices`.
+
+**Reading probe results:** if the report shows `SoapySDRUtil --probe sdrplay: DEGRADED` and the stdout lists `hardware=RSP1`, the plugin identified your device but crashed on cleanup (known quirk). The **stream test** (minimal vs legacy) is the definitive RX check. Diagnose restarts `SDRplayAPIService` automatically between probe and stream test.
+
+**Timeout:** default stream preflight is **60s total** (30s per path). On slow USB/API, set `XYZ_SDR_PREFLIGHT_TIMEOUT=90` or pass `--stream-timeout 90`.
+
+Session logs (breadcrumbs for open/activate/readStream and TUI lifecycle) are written to `var/log/xyz-sdr-*.log`. After an unexpected exit, `run.ps1` shows a crash splash and reads `var/log/.last-session.json`. On the **next** launch (non-`--sim`), xyz-sdr restarts `SDRplayAPIService` automatically if the previous session ended with a native crash or abnormal exit. Native segfaults in Soapy/sdrplay are **not** catchable in Python; use the log tail + diagnose script to see the last operation before crash.
+
+### Safe SDRplay RX startup (crash on INICIAR RX)
+
+If the TUI closes ~5–10 s after pressing **INICIAR RX** (`S`), check the session log for `device.start_stream` / `setSampleRate` — this is a **native plugin crash**, not audio or waterfall.
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Preflight as sdrplay_preflight
+    participant Device as core/device
+    participant Soapy as SoapySDR_native
+
+    TUI->>Preflight: subprocess minimal vs legacy
+    alt segfault in child
+        Preflight-->>TUI: ERR (TUI stays open)
+    else preflight OK
+        TUI->>Device: start_stream minimal_activate
+        Device->>Soapy: setupStream → activateStream
+        Device->>Soapy: readStream probe
+        Device->>Soapy: setSampleRate / setFrequency
+        TUI->>TUI: audio starts after 1st readStream
+    end
+```
+
+| Symptom | Log hint | Action |
+|---------|----------|--------|
+| TUI dies on **INICIAR RX** | `device.start_stream` then `setSampleRate`; `.last-session.json` → `native_crash` | `.\scripts\diagnose_sdrplay.ps1` — check **stream test recommended path** (`minimal` vs `legacy`) |
+| TUI stays open, RX error panel | `[ERR] SDRplay: el plugin crashea al configurar RX` | Close SDRuno; `Restart-Service SDRplayAPIService`; re-run `.\setup\install_sdrplay_api.bat` |
+| Probe **DEGRADED** (RSP1 listed, segfault on exit) | `diagnose_sdrplay.ps1` probe line | Usually OK if **stream test minimal** passes; not fatal by itself |
+| Stream test **timeout** | `stream test last step: timeout` | Close xyz-sdr/SDRuno; restart service; `$env:XYZ_SDR_PREFLIGHT_TIMEOUT='90'` |
+| Preflight SEGFAULT | `sdrplay_rx_preflight: SEGFAULT` in `check_env --verbose` | Reinstall **API** via `.\setup\install_sdrplay_api.bat` (not plugin alone); then `install_soapy_sdrplay3.ps1` if needed |
+| Find OK + stream SEGFAULT at `open` | `install_soapy_sdrplay3.ps1` already run | API/service issue — `.\setup\install_sdrplay_api.bat`; verify SDRuno opens RSP1 |
+
+Manual service restart before RX: set `XYZ_SDR_SDRPLAY_RESTART=1` or rely on auto-restart after a prior native crash.
+
+SDRplay API installer (used by `setup/install_drivers.ps1`): [SDRplay_RSP_API-Windows-3.15.exe](https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.exe)
+
+Offline copy: `resources/installers/win-x64/SDRplay_RSP_API-Windows-3.15.exe` (or `%USERPROFILE%\Downloads\`, `U:\Downloads\`). Install via:
+
+```powershell
+.\setup\install_sdrplay_api.bat
+.\setup\install_drivers.ps1    # → [A] Avanzado → [1] SDRplay API
+```
+
+**SoapyVOLK warning** (`no VOLK config file found. Run volk_profile…`): harmless Pothos/Soapy SIMD notice. It does **not** cause SDRplay segfaults. Optional: run `volk_profile` from `C:\Program Files\PothosSDR\bin` once to silence it; xyz-sdr does not require it.
+
 ### Launch
 
 ```powershell
+.\xyz-sdr.bat
+.\xyz-sdr.ps1
 .\scripts\run.ps1
 .\scripts\run.ps1 --driver sdrplay --freq 100.6 --gain 40
 .\scripts\run.ps1 --debug              # RX/UI metrics in log panel every ~3 s
@@ -156,10 +240,10 @@ On real hardware, narrow zoom can scale FFT up to ~65k samples and `band_cache_c
 
 ```toml
 [dsp]
-fft_size = 4096          # default 8192
-band_cache_cols = 512    # default 1024
-fft_avg_windows = 4      # default 8
-display_fps = 15         # default 20
+fft_size = 4096          # default ver configuration.md §[dsp]
+band_cache_cols = 512    # default ver configuration.md §[dsp]
+fft_avg_windows = 4      # default ver configuration.md §[dsp]
+display_fps = 15         # default ver configuration.md §[dsp]
 ```
 
 Test with **wide zoom** (span = full IQ bandwidth) first, then zoom in.
@@ -182,6 +266,9 @@ Only change defaults when you observe problems — no tuning is required for a h
 | Choppy demod audio | Saturated `AudioOutputQueue` + CPU load | Lower FFT / avg / zoom; see [audio.md](audio.md) |
 | PATH not active | Terminal opened before install | New terminal or `install_drivers.ps1` [1] |
 | Driver change fails at runtime | Device open error | Esc menu rollback to previous driver or `simulated` |
+| TUI crash / unexpected exit | Native Soapy crash or abnormal exit | `var/log/xyz-sdr-*.log` (breadcrumbs). `.\scripts\diagnose_sdrplay.ps1` for DLL/plugin audit. Crash splash via `run.ps1` finally. Manual: `.\scripts\restore_terminal.ps1` |
+| TUI crash ~6 s on **INICIAR RX** (SDRplay) | Native crash in `setSampleRate` before/during stream activate | See [Safe SDRplay RX startup](#safe-sdrplay-rx-startup-crash-on-iniciar-rx). `diagnose_sdrplay.ps1` reports `minimal` vs `legacy` stream path |
+| RX error, TUI stays open | Preflight caught segfault in subprocess | Close SDRuno; restart `SDRplayAPIService`; `setup/install_sdrplay_api.bat` |
 
 **Runtime rollback:** Esc → change driver; on failure the app reverts to the previous driver or simulation ([bandwidth.md](bandwidth.md)).
 

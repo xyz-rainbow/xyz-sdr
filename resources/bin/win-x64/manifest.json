@@ -1,0 +1,10 @@
+{
+  "artifact": "sdrPlaySupport.dll",
+  "platform": "win-x64",
+  "target": "PothosSDR 2021.07.25 / SoapySDR 0.8",
+  "size_bytes": 119296,
+  "sha256": "c7c4cd3b209bd18591b4f3f7f55650e727f9530bf027d635b6491419e234d00a",
+  "built_at": "2026-06-25T01:40:36Z",
+  "source_repo": "https://github.com/pothosware/SoapySDRPlay3.git",
+  "source_commit": null
+}

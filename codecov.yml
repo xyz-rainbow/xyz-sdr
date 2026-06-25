@@ -1,0 +1,40 @@
+# Codecov configuration — https://docs.codecov.com/docs/codecov-yaml
+# Requires Codecov account; if not yet set up, delete this file and use Coveralls instead.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    after_n_builds: 2  # matches matrix size (3.11 + 3.12)
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...90"
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 2%
+        if_ci_failed: error
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+
+  ignore:
+    - "resources/test/*"
+    - "var/**"
+    - ".venv/**"
+    - "**/__pycache__/**"
+    - "setup/install_drivers.py"   # Windows installer wizard, not testable in CI
+    - "main.py"                    # entry point only
+
+comment:
+  layout: "header, diff, flags, components, files, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+github_checks:
+  annotations: true

@@ -13,6 +13,7 @@ from setup.install_actions import (
     install_pothos,
     install_python_env,
     install_sdrplay,
+    install_soapy_sdrplay3,
     run_repo_update_action,
 )
 from setup.install_guidance import format_action, drivers_row_status, hardware_row_status, python_row_status
@@ -127,9 +128,10 @@ def _run_advanced_menu(
         _menu_line("1", t(lang, "menu_opt_sdrplay"))
         _menu_line("2", t(lang, "menu_opt_pothos"))
         _menu_line("3", t(lang, "menu_opt_py"))
-        _menu_line("4", t(lang, "menu_diag_full"))
-        _menu_line("5", t(lang, "menu_opt_update"))
-        _menu_line("6", t(lang, "menu_opt_lang"))
+        _menu_line("4", t(lang, "menu_opt_soapy_sdrplay3"))
+        _menu_line("5", t(lang, "menu_diag_full"))
+        _menu_line("6", t(lang, "menu_opt_update"))
+        _menu_line("7", t(lang, "menu_opt_lang"))
         _menu_line("0", t(lang, "menu_advanced_back"))
         opc = input(f"\n {C_BOLD}{t(lang, 'select_option')}{C_RESET}").strip()
         state = probe_environment(bootstrap_soapy=False)
@@ -157,13 +159,16 @@ def _run_advanced_menu(
                 install_python_env(ctx)
             _pause(lang)
         elif opc == "4":
+            install_soapy_sdrplay3(ctx, force=True)
+            _pause(lang)
+        elif opc == "5":
             from setup.check_env import run_check
             run_check(verbose=True, lang=lang)
             _pause(lang)
-        elif opc == "5":
+        elif opc == "6":
             run_repo_update_action(ctx)
             _pause(lang)
-        elif opc == "6":
+        elif opc == "7":
             set_lang("en" if lang == "es" else "es")
             lang = "en" if lang == "es" else "es"
             ctx = InstallContext(lang=lang, say=ctx.say, confirm=ctx.confirm, temp_dir=temp_dir)

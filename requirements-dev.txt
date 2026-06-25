@@ -1,2 +1,6 @@
 pytest>=7.0
 pytest-cov>=4.0
+hypothesis>=6.0
+invoke>=5.0
+# pytest-textual-snapshot para regresiones visuales (Fase 2 item 34)
+# pytest-textual-snapshot>=0.4

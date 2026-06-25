@@ -30,6 +30,7 @@ def test_next_action_env_ready_no_device():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_plugin_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,
@@ -46,6 +47,7 @@ def test_next_action_all_ready():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_plugin_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,
@@ -69,11 +71,25 @@ def test_next_action_pothos_path():
     assert "pothos_path" in action.blockers
 
 
+def test_next_action_soapy_sdrplay3():
+    state = _state(
+        sdrplay_ok=True,
+        pothos_installed=True,
+        path_in_process=True,
+        sdrplay_plugin_ok=False,
+        blockers=["soapy_sdrplay3"],
+    )
+    action = next_action(state, "es")
+    assert action.id == "repair_all"
+    assert action.reason_key == "next_reason_soapy_sdrplay3"
+
+
 def test_env_ready_property():
     state = _state(
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_plugin_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,

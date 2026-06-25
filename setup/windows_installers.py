@@ -6,7 +6,7 @@ import os
 import subprocess
 import urllib.request
 
-SDRPLAY_INSTALLER_URL = "https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.1.exe"
+SDRPLAY_INSTALLER_URL = "https://www.sdrplay.com/software/SDRplay_RSP_API-Windows-3.15.exe"
 POTHOS_INSTALLER_URL = "https://downloads.myriadrf.org/builds/PothosSDR/PothosSDR-2021.07.25-vc16-x64.exe"
 
 
@@ -146,6 +146,14 @@ def refresh_windows_environment() -> bool:
     except OSError:
         pass
 
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            plugin_path, _ = winreg.QueryValueEx(key, "SOAPY_SDR_PLUGIN_PATH")
+            if plugin_path:
+                os.environ["SOAPY_SDR_PLUGIN_PATH"] = str(plugin_path)
+    except OSError:
+        pass
+
     for bin_dir in (r"C:\Program Files\PothosSDR\bin", r"C:\Program Files\SoapySDR\bin"):
         if os.path.isdir(bin_dir):
             try:
@@ -216,6 +224,81 @@ def configure_path() -> tuple[bool, list[str] | str | None]:
         if added:
             return True, added
         return True, None
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if key is not None:
+            try:
+                import winreg
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+
+
+def configure_user_bin_path() -> tuple[bool, str | None]:
+    """Añade %LOCALAPPDATA%\\xyz-sdr\\bin al PATH del usuario."""
+    if os.name != "nt":
+        return False, "OS incompatible"
+
+    from core.soapy_runtime import user_xyz_sdr_bin_dir
+
+    bin_dir = os.path.normpath(user_xyz_sdr_bin_dir())
+    os.makedirs(bin_dir, exist_ok=True)
+
+    key = None
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS)
+        try:
+            current_path, _ = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current_path = ""
+
+        path_list = [p.strip() for p in current_path.split(";") if p.strip()]
+        if not any(os.path.normcase(x) == os.path.normcase(bin_dir) for x in path_list):
+            path_list.insert(0, bin_dir)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_SZ, ";".join(path_list))
+
+        refresh_windows_environment()
+        return True, bin_dir
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if key is not None:
+            try:
+                import winreg
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+
+
+def configure_soapy_plugin_path(plugin_dir: str) -> tuple[bool, str | None]:
+    """Registra SOAPY_SDR_PLUGIN_PATH en el entorno del usuario (HKCU)."""
+    if os.name != "nt":
+        return False, "OS incompatible"
+
+    plugin_dir = os.path.normpath(plugin_dir)
+    if not os.path.isdir(plugin_dir):
+        return False, "Plugin directory not found"
+
+    key = None
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS)
+        try:
+            current, _ = winreg.QueryValueEx(key, "SOAPY_SDR_PLUGIN_PATH")
+        except FileNotFoundError:
+            current = ""
+
+        parts = [p.strip() for p in str(current).split(";") if p.strip()]
+        norm_new = os.path.normcase(plugin_dir)
+        parts = [p for p in parts if os.path.normcase(os.path.normpath(p)) != norm_new]
+        parts.insert(0, plugin_dir)
+        winreg.SetValueEx(key, "SOAPY_SDR_PLUGIN_PATH", 0, winreg.REG_SZ, ";".join(parts))
+        refresh_windows_environment()
+        return True, plugin_dir
     except Exception as exc:
         return False, str(exc)
     finally:

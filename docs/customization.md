@@ -192,11 +192,13 @@ Si hay lag o audio entrecortado en hardware real:
 
 ```toml
 [dsp]
-fft_size = 4096          # default 8192
-band_cache_cols = 512    # default 1024
-fft_avg_windows = 4      # default 8
-display_fps = 15         # default 20
+fft_size = 4096          # default ver configuration.md §[dsp]
+band_cache_cols = 512    # default ver configuration.md §[dsp]
+fft_avg_windows = 4      # default ver configuration.md §[dsp]
+display_fps = 15         # default ver configuration.md §[dsp]
 ```
+
+> Los valores por defecto canónicos (incluidos `fft_size`, `band_cache_cols`, `fft_avg_windows`, `display_fps`) están en [`configuration.md`](configuration.md) §`[dsp]`. Los ejemplos anteriores usan la mitad del valor canónico como punto de partida para reducir carga.
 
 ### Audio FM
 
@@ -205,7 +207,7 @@ display_fps = 15         # default 20
 fm_deemphasis_us = 50    # 50 EU / 75 US
 fm_agc_enabled = true
 audio_rate = 48_000
-wbfm_bandwidth = 200_000 # PASS audible WBFM
+wbfm_bandwidth = 200_000 # PASS audible WBFM (default: ver configuration.md §[dsp])
 ```
 
 UI alternativa: **Esc → Audio FM / Noise**.

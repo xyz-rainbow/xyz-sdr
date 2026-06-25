@@ -31,7 +31,7 @@ Launcher alternativo: `scripts\xyz-sdr.cmd` (doble clic sin abrir PowerShell man
 **Run shortcuts** (`scripts\run.ps1`):
 
 ```powershell
-.\scripts\run.ps1 -Sim -Debug
+.\scripts\run.ps1 -Sim -d
 .\scripts\run.ps1 -Band fm_broadcast
 .\scripts\run.ps1 -Band airband -Freq 121.5
 .\scripts\run.ps1 -Check

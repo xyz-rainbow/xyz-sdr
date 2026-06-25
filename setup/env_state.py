@@ -60,7 +60,7 @@ class EnvironmentState:
 
     @property
     def drivers_ready(self) -> bool:
-        return self.sdrplay_ok and self.pothos_ready
+        return self.sdrplay_ok and self.pothos_ready and self.sdrplay_plugin_ok
 
     @property
     def env_ready(self) -> bool:
@@ -86,6 +86,7 @@ class EnvironmentState:
             "sdrplay_api",
             "pothos",
             "pothos_path",
+            "soapy_sdrplay3",
             "venv",
             "python_libs",
             "soapysdr",
@@ -211,6 +212,7 @@ def probe_environment(*, bootstrap_soapy: bool = True) -> EnvironmentState:
         check_sdrplay_api,
         check_sdrplay_plugin,
         find_pothos_install,
+        is_sdrplay_soapy_module_ok,
     )
 
     state = EnvironmentState()
@@ -264,7 +266,9 @@ def probe_environment(*, bootstrap_soapy: bool = True) -> EnvironmentState:
                 state.device_count = len(devices)
                 state.has_devices = state.device_count > 0
 
-    state.sdrplay_plugin_ok = check_sdrplay_plugin()
+    state.sdrplay_plugin_ok = is_sdrplay_soapy_module_ok()
+    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_plugin_ok:
+        blockers.append("soapy_sdrplay3")
 
     state.blockers = blockers
     return state

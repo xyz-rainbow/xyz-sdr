@@ -147,19 +147,25 @@ Used for squelch and status display.
 
 ## Configuration (`config/defaults.toml` → `[dsp]`)
 
+Ver [`configuration.md`](configuration.md) §`[dsp] — procesado y audio` para la tabla canónica de claves, tipos y valores por defecto. Las claves aquí son las que la app carga al arrancar; cualquier duplicación numérica en otros docs se considera obsoleta.
+
+Resumen rápido de las claves más usadas en el pipeline DSP (valores tomados de `configuration.md` — no dupliques):
+
 | Key | Default | Description |
 |-----|---------|-------------|
-| `fft_size` | 8192 | Base FFT size |
-| `fft_avg_windows` | 8 | PSD averaging windows |
-| `fft_overlap` | 0.5 | FFT overlap |
-| `band_cache_cols` | 1024 | Internal band grid |
-| `display_fps` | 20 | UI refresh cap |
-| `audio_rate` | 48000 | Audio output rate |
-| `demod_mode` | wbfm | Initial mode |
-| `wbfm_bandwidth` | 147540 | PASS default WBFM (persisted from UI) |
-| `fm_deemphasis_us` | 50 | FM de-emphasis |
-| `fm_agc_enabled` | true | Post-demod AGC |
-| `squelch_enabled` | false | Squelch gate |
+| `fft_size` | *2048* | Base FFT size (escala al zoom in) |
+| `fft_avg_windows` | *4* | PSD averaging windows |
+| `fft_overlap` | *0.5* | FFT overlap |
+| `band_cache_cols` | *1024* | Internal band grid |
+| `display_fps` | *20* | UI refresh cap |
+| `audio_rate` | *48000* | Audio output rate |
+| `demod_mode` | *wbfm* | Initial mode |
+| `wbfm_bandwidth` | *80_000* | PASS default WBFM |
+| `fm_deemphasis_us` | *50* | FM de-emphasis |
+| `fm_agc_enabled` | *true* | Post-demod AGC |
+| `squelch_enabled` | *false* | Squelch gate |
+
+\* Valores en cursiva: referencia rápida; la fuente canónica es [`configuration.md`](configuration.md) §`[dsp]`.
 
 Display-only keys (`display_level_mode`, waterfall auto-level, etc.) live in `[display]` — see [configuration.md](configuration.md) and [display.md](display.md).
 

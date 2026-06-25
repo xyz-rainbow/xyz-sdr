@@ -1,4 +1,4 @@
-"""Tests de funciones SDR: demod extendido, AUTO, bookmarks y config patch."""
+"""Tests de funciones SDR: demod extendido, AUTO y config patch (sin TUI/Textual)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from core.auto_demod import resolve_auto_demod_mode
+from core.bookmarks import parse_bookmarks_data, save_bookmarks
 from core.config_store import patch_recorder_section, patch_scanner_section
 from core.dsp import demodulate
 
@@ -69,16 +70,24 @@ def test_patch_recorder_and_scanner_config(tmp_path: Path):
     text = path.read_text(encoding="utf-8")
     assert "record_iq = false" in text
     assert "record_audio = false" in text
-    assert "freq_start = 90_000_000" in text
-    assert "freq_end = 100_000_000" in text
-    assert "freq_step = 100_000" in text
-    assert "dwell_ms = 1_000" in text
+    # tomli_w normaliza: sin underscores en números
+    assert "freq_start = 90000000" in text
+    assert "freq_end = 100000000" in text
+    assert "freq_step = 100000" in text
+    assert "dwell_ms = 1000" in text
     assert "min_snr_db = 15.5" in text
     assert "pause_on_signal = false" in text
     assert "pause_resume_snr_db = 5.0" in text
 
 
 def test_bookmarks_toml_roundtrip(tmp_path: Path):
+    bookmarks = [
+        ("Cadena 100", 100.6e6, "wbfm"),
+        ("Airband ATC", 121.5e6, "nbfm"),
+    ]
+    bookmarks_path = tmp_path / "bookmarks.toml"
+    save_bookmarks(bookmarks_path, bookmarks)
+
     import sys
 
     if sys.version_info >= (3, 11):
@@ -86,31 +95,7 @@ def test_bookmarks_toml_roundtrip(tmp_path: Path):
     else:
         import tomli as tomllib
 
-    bookmarks = [
-        ("Cadena 100", 100.6e6, "wbfm"),
-        ("Airband ATC", 121.5e6, "nbfm"),
-    ]
-
-    lines = ["# xyz-sdr | var/bookmarks.toml", ""]
-    for name, freq, mode in bookmarks:
-        lines.extend(
-            [
-                "[[bookmarks]]",
-                f'name = "{name}"',
-                f"freq_hz = {int(freq)}",
-                f'mode = "{mode}"',
-                "",
-            ]
-        )
-
-    bookmarks_path = tmp_path / "bookmarks.toml"
-    bookmarks_path.write_text("\n".join(lines), encoding="utf-8")
-
     with bookmarks_path.open("rb") as handle:
         data = tomllib.load(handle)
 
-    loaded = [
-        (item.get("name", ""), float(item.get("freq_hz", 0.0)), item.get("mode", ""))
-        for item in data.get("bookmarks", [])
-    ]
-    assert loaded == bookmarks
+    assert parse_bookmarks_data(data) == bookmarks

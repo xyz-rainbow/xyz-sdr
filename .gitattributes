@@ -1,0 +1,40 @@
+# Normalize line endings across platforms (Windows-friendly defaults)
+# Source: https://help.github.com/articles/dealing-with-line-endings/
+
+# Default: detect text, normalize to LF on commit
+* text=auto eol=lf
+
+# Shell scripts MUST be LF (executables fail on Windows CRLF when sourced from WSL)
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows scripts: keep CRLF for native PowerShell/cmd compatibility
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Documentation and config: LF
+*.md text eol=lf
+*.rst text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+
+# Python: LF (PEP 8 / Windows cross-platform sanity)
+*.py text eol=lf
+*.pyi text eol=lf
+
+# SVG: keep as-is (binary-ish in parts)
+*.svg binary
+
+# Office docs: binary
+*.docx binary
+*.xlsx binary
+*.pdf binary
+
+# Git attributes
+.gitattributes text eol=lf
+.gitignore text eol=lf

@@ -8,22 +8,79 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # Windows es first-class porque el proyecto es Windows-first (PothosSDR + SDRplay)
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.12"
+          # macOS SoapySDR no está en PyPI pero corremos los tests de core/setup que
+          # no requieren hardware ni Soapy.
+          - os: macos-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies (Linux/macOS)
+        if: matrix.os != 'windows-latest'
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-      - name: Run tests with coverage
+          # Lockfile reproducible: requirements-dev.lock incluye runtime + dev
+          # SoapySDR se instala por separado (no en PyPI; viene de PothosSDR)
+          pip install --require-hashes -r requirements-dev.lock || echo "::warning::requirements-dev.lock falló (puede faltar Soapy)"
+          # Fallback: si hash check falla, instalación sin lockfile (legacy path)
+          if [ $? -ne 0 ]; then
+            echo "::notice::Usando requirements.txt sin hashes como fallback"
+            pip install -r requirements.txt -r requirements-dev.txt
+          fi
+
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage (gate >=70%)
+        env:
+          PYTHONPYCACHEPREFIX: ${{ github.workspace }}/var/pycache
+        run: |
+          mkdir -p var/pycache var/pytest_cache var/pytest-tmp
           python -m pytest resources/test -q -m "not slow" \
             --cov=core --cov=setup --cov=tui \
-            --cov-report=term-missing
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            --durations=20 \
+            --durations-min=1.0
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 30
+
+      - name: Upload to Codecov (Linux only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: false

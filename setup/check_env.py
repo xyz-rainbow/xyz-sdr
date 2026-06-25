@@ -179,12 +179,72 @@ def run_check(*, verbose: bool = True, lang: str = "es") -> int:
     if state.sdrplay_plugin_ok:
         ok("SoapySDRUtil --find=driver=sdrplay OK")
     else:
-        from core.soapy_runtime import check_sdrplay_service_running
+        from core.soapy_runtime import (
+            assess_sdrplay_soapy_module,
+            bootstrap_soapy,
+            check_sdrplay_service_running,
+            find_sdrplay_soapy_module,
+        )
 
-        warn("Plugin sdrplay no visible vía SoapySDRUtil.")
+        plugin_status = status or bootstrap_soapy(force=True)
+        module_path = plugin_status.sdrplay_plugin_module or find_sdrplay_soapy_module()
+        module_state = plugin_status.sdrplay_plugin_status or assess_sdrplay_soapy_module(module_path)
+        if module_state == "legacy":
+            warn(
+                "Módulo Soapy sdrplay de Pothos 2021 (sdrPlaySupport.dll) — incompatible con API v3.15+."
+            )
+            warn("Compila SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo")
+        elif module_path:
+            warn(
+                f"Módulo Soapy sdrplay en disco ({os.path.basename(module_path)}) "
+                "pero no enumera dispositivo."
+            )
+            warn("¿RSP conectado? Cierra SDRuno y reinicia SDRplayAPIService.")
+        else:
+            warn("Módulo Soapy sdrplay no encontrado en PothosSDR/lib/SoapySDR/modules*.")
+            warn("Compila SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo")
+        if plugin_status.sdrplay_api_bin and "arm64" in plugin_status.sdrplay_api_bin.lower():
+            warn(f"API SDRplay en ruta arm64 ({plugin_status.sdrplay_api_bin}) — se requiere x64.")
         if state.sdrplay_ok and not check_sdrplay_service_running():
             warn("Servicio SDRplayAPIService detenido — inícialo o reinícialo.")
-        warn("Comprueba PATH (PothosSDR\\bin), USB y que SDRuno esté cerrado.")
+        warn("Comprueba USB y ejecuta: SoapySDRUtil --find=driver=sdrplay")
+
+    step("SDRplay RX preflight")
+    skip_preflight = os.environ.get("XYZ_SDR_SKIP_RX_PREFLIGHT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if skip_preflight:
+        warn("sdrplay_rx_preflight: SKIP (XYZ_SDR_SKIP_RX_PREFLIGHT)")
+    elif state.sdrplay_plugin_ok and state.sdrplay_ok and state.has_devices:
+        from core.sdrplay_preflight import preflight_status_label, resolve_preflight_timeout, run_preflight_best
+
+        try:
+            preflight_result = run_preflight_best(timeout=resolve_preflight_timeout())
+            label = preflight_status_label(preflight_result)
+            if preflight_result.ok:
+                ok(
+                    f"sdrplay_rx_preflight: {label} "
+                    f"(path={preflight_result.path}, step={preflight_result.last_step})"
+                )
+            elif preflight_result.segfault:
+                fail(
+                    f"sdrplay_rx_preflight: {label} "
+                    f"(path={preflight_result.path}, step={preflight_result.last_step})"
+                )
+                errors.append("sdrplay_rx_preflight")
+            else:
+                warn(
+                    f"sdrplay_rx_preflight: {label} "
+                    f"(path={preflight_result.path}, step={preflight_result.last_step})"
+                )
+        except Exception as exc:
+            warn(f"sdrplay_rx_preflight: SKIP ({exc})")
+    elif state.sdrplay_plugin_ok and state.sdrplay_ok:
+        warn("sdrplay_rx_preflight: SKIP (sin dispositivo SDR enumerado)")
+    else:
+        warn("sdrplay_rx_preflight: SKIP (plugin o API no listos)")
 
     step("Librerías Python")
     if state.python_libs_ok:

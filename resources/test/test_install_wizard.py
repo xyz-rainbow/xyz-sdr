@@ -22,6 +22,7 @@ def test_wizard_skips_ready_python(monkeypatch):
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_plugin_ok=True,
         venv_path=__import__("pathlib").Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,
@@ -32,6 +33,7 @@ def test_wizard_skips_ready_python(monkeypatch):
     monkeypatch.setattr("setup.install_wizard.ensure_repo_updated_for_wizard", lambda *a, **k: None)
     monkeypatch.setattr("setup.install_wizard.install_sdrplay", lambda ctx: calls.append("sdrplay"))
     monkeypatch.setattr("setup.install_wizard.install_pothos", lambda ctx: calls.append("pothos"))
+    monkeypatch.setattr("setup.install_wizard.install_soapy_sdrplay3", lambda ctx: calls.append("soapy3"))
     monkeypatch.setattr("setup.install_wizard.install_python_env", fake_install_python)
     monkeypatch.setattr("setup.check_env.run_check", lambda **k: 0)
 

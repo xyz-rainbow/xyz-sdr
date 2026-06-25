@@ -21,6 +21,10 @@ POTHOS_CANDIDATES = (
     r"C:\Program Files (x86)\PothosSDR",
 )
 
+_SDRPLAY_SOAPY_MODULE_HINTS = ("sdrplay", "sdrplay3")
+# Pothos 2021.07.25 incluye sdrPlaySupport.dll antiguo (jul 2021); API v3.15+ requiere SoapySDRPlay3.
+_LEGACY_SDRPLAY_MODULE_CUTOFF = 1_650_000_000  # ~2022-04-15
+
 
 @dataclass
 class SoapyStatus:
@@ -34,10 +38,17 @@ class SoapyStatus:
     python_bindings_path: str | None = None
     sdrplay_api_ok: bool = False
     sdrplay_plugin_ok: bool = False
+    sdrplay_api_bin: str | None = None
+    sdrplay_plugin_module: str | None = None
+    sdrplay_plugin_status: str = "missing"  # missing | legacy | present
 
     @property
     def has_devices(self) -> bool:
         return bool(self.devices)
+
+    @property
+    def sdrplay_plugin_module_ok(self) -> bool:
+        return self.sdrplay_plugin_status == "present"
 
 
 _bootstrap_done = False
@@ -141,6 +152,307 @@ def _prepend_sys_path(path: str) -> None:
         sys.path.insert(0, path)
 
 
+def _preferred_sdrplay_api_subdirs() -> tuple[str, ...]:
+    if is_python_64bit():
+        return ("x64", "amd64", "win64", "bin", "lib")
+    return ("x86", "win32", "bin", "lib")
+
+
+def _score_sdrplay_api_dir(dirpath: str) -> int:
+    lower = dirpath.lower().replace("\\", "/")
+    if "arm64" in lower or "aarch64" in lower:
+        return -100
+    score = 0
+    for idx, token in enumerate(_preferred_sdrplay_api_subdirs()):
+        if f"/{token}/" in f"{lower}/" or lower.endswith(f"/{token}"):
+            score = max(score, 100 - idx)
+    return score
+
+
+def find_sdrplay_api_bin() -> str | None:
+    """Directorio con sdrplay_api.dll; en Windows amd64 prioriza API\\x64 sobre arm64."""
+    candidates: list[tuple[int, str]] = []
+    for root in (r"C:\Program Files\SDRplay", r"C:\Program Files (x86)\SDRplay"):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            if any(name.lower() == "sdrplay_api.dll" for name in files):
+                candidates.append((_score_sdrplay_api_dir(dirpath), dirpath))
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_path = candidates[0]
+        if best_score >= 0:
+            return best_path
+    if os.path.isfile(r"C:\Windows\System32\sdrplay_api.dll"):
+        return r"C:\Windows\System32"
+    return None
+
+
+def find_sdrplay_api_dll() -> str | None:
+    api_bin = find_sdrplay_api_bin()
+    if not api_bin:
+        return None
+    path = os.path.join(api_bin, "sdrplay_api.dll")
+    return path if os.path.isfile(path) else None
+
+
+def assess_sdrplay_soapy_module(module_path: str | None) -> str:
+    """Clasifica el módulo Soapy sdrplay: missing | legacy | present."""
+    if not module_path or not os.path.isfile(module_path):
+        return "missing"
+    name = os.path.basename(module_path).lower()
+    if name == "soapy sdrplay3.dll":
+        return "present"
+    try:
+        if os.path.getmtime(module_path) < _LEGACY_SDRPLAY_MODULE_CUTOFF:
+            return "legacy"
+    except OSError:
+        pass
+    return "present"
+
+
+def sync_sdrplay_api_dll_to_pothos(pothos_root: str | None = None) -> bool:
+    """
+    Sincroniza sdrplay_api.dll x64 al runtime de Soapy.
+    Prioriza bin de Pothos; si no hay permisos, usa %LOCALAPPDATA%\\xyz-sdr\\bin.
+    """
+    src = find_sdrplay_api_dll()
+    if not src:
+        return False
+
+    updated = False
+    root = pothos_root or find_pothos_install()
+    if root:
+        dest = os.path.join(root, "bin", "sdrplay_api.dll")
+        if _copy_if_newer(src, dest):
+            updated = True
+        else:
+            _disable_stale_pothos_api_dll(dest)
+
+    user_bin = user_xyz_sdr_bin_dir()
+    os.makedirs(user_bin, exist_ok=True)
+    user_dest = os.path.join(user_bin, "sdrplay_api.dll")
+    if _copy_if_newer(src, user_dest):
+        updated = True
+        _prepend_path(user_bin)
+        _register_dll_directory(user_bin)
+
+    plugin_dir = user_soapy_plugin_dir()
+    os.makedirs(plugin_dir, exist_ok=True)
+    plugin_dest = os.path.join(plugin_dir, "sdrplay_api.dll")
+    if _copy_if_newer(src, plugin_dest):
+        updated = True
+        _register_dll_directory(plugin_dir)
+
+    return updated or os.path.isfile(user_dest)
+
+
+def _disable_stale_pothos_api_dll(dest: str) -> None:
+    """Renombra sdrplay_api.dll antigua en Pothos si no se pudo actualizar."""
+    if not os.path.isfile(dest):
+        return
+    try:
+        src = find_sdrplay_api_dll()
+        if src and os.path.getsize(dest) == os.path.getsize(src):
+            return
+    except OSError:
+        pass
+    disabled = dest + ".pothos-legacy"
+    if os.path.isfile(disabled):
+        return
+    try:
+        os.rename(dest, disabled)
+        logger.info("Desactivada API legacy en Pothos: %s", disabled)
+    except OSError as exc:
+        logger.warning("No se pudo renombrar API legacy en Pothos: %s", exc)
+
+
+def _copy_if_newer(src: str, dest: str) -> bool:
+    try:
+        src_size = os.path.getsize(src)
+        if os.path.isfile(dest) and os.path.getsize(dest) == src_size:
+            return True
+        import shutil
+
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(src, dest)
+        logger.info("Actualizado %s desde %s", dest, src)
+        return True
+    except OSError as exc:
+        logger.warning("No se pudo copiar %s → %s: %s", src, dest, exc)
+        return False
+
+
+def _soapy_modules_dir(pothos_root: str) -> str | None:
+    lib_soapy = os.path.join(pothos_root, "lib", "SoapySDR")
+    if not os.path.isdir(lib_soapy):
+        return None
+    candidates: list[str] = []
+    for name in os.listdir(lib_soapy):
+        if name.startswith("modules"):
+            path = os.path.join(lib_soapy, name)
+            if os.path.isdir(path):
+                candidates.append(path)
+    if not candidates:
+        return None
+    return sorted(candidates, reverse=True)[0]
+
+
+def user_soapy_plugin_dir() -> str:
+    """Directorio escribible para el plugin Soapy sdrplay (sin permisos de admin)."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+    return os.path.join(base, "xyz-sdr", "SoapySDR", "modules0.8")
+
+
+def user_xyz_sdr_bin_dir() -> str:
+    """Bin escribible para DLLs de runtime (p. ej. sdrplay_api.dll)."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+    return os.path.join(base, "xyz-sdr", "bin")
+
+
+def _allow_pothos_plugins() -> bool:
+    return os.environ.get("XYZ_SDR_ALLOW_POTHOS_PLUGINS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def soapy_plugin_search_dirs(pothos_root: str | None = None) -> list[str]:
+    """Directorios donde buscar módulos Soapy (SOAPY_SDR_PLUGIN_PATH, usuario, Pothos)."""
+    from core.driver_runtime import bundled_plugins_dir, legacy_bundled_plugins_dir
+
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path: str | None) -> None:
+        if not path:
+            return
+        norm = os.path.normcase(os.path.normpath(path))
+        if norm in seen or not os.path.isdir(path):
+            return
+        seen.add(norm)
+        dirs.append(path)
+
+    for part in os.environ.get("SOAPY_SDR_PLUGIN_PATH", "").split(os.pathsep):
+        _add(part.strip())
+
+    _add(str(bundled_plugins_dir()))
+    _add(str(legacy_bundled_plugins_dir()))
+    _add(user_soapy_plugin_dir())
+
+    root = pothos_root or find_pothos_install()
+    if root:
+        _add(_soapy_modules_dir(root))
+
+    return dirs
+
+
+def _iter_sdrplay_module_paths(search_dirs: list[str]) -> list[str]:
+    paths: list[str] = []
+    for mod_dir in search_dirs:
+        try:
+            names = os.listdir(mod_dir)
+        except OSError:
+            continue
+        for filename in names:
+            lower = filename.lower()
+            if not lower.endswith(".dll"):
+                continue
+            if any(hint in lower for hint in _SDRPLAY_SOAPY_MODULE_HINTS):
+                paths.append(os.path.join(mod_dir, filename))
+    return paths
+
+
+def find_sdrplay_soapy_module(pothos_root: str | None = None) -> str | None:
+    """Ruta al .dll del módulo SoapySDR para SDRplay (prioriza no-legacy)."""
+    candidates = _iter_sdrplay_module_paths(soapy_plugin_search_dirs(pothos_root))
+    if not candidates:
+        return None
+
+    def sort_key(path: str) -> tuple[int, float]:
+        state = assess_sdrplay_soapy_module(path)
+        rank = 0 if state == "present" else 1 if state == "legacy" else 2
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0.0
+        return rank, -mtime
+
+    return sorted(candidates, key=sort_key)[0]
+
+
+def is_sdrplay_soapy_module_ok(pothos_root: str | None = None) -> bool:
+    """True si hay un módulo Soapy sdrplay instalado y no es legacy."""
+    module = find_sdrplay_soapy_module(pothos_root)
+    return assess_sdrplay_soapy_module(module) == "present"
+
+
+def _configure_soapy_plugin_path(pothos_root: str) -> None:
+    from core.driver_runtime import resolve_bundled_sdrplay_plugin
+
+    user_dir = user_soapy_plugin_dir()
+    user_module = os.path.join(user_dir, "sdrPlaySupport.dll")
+    if os.path.isfile(user_module) and assess_sdrplay_soapy_module(user_module) == "present":
+        _prepend_soapy_plugin_dir(user_dir)
+        logger.info("SOAPY plugin path: user dir %s", user_dir)
+        return
+
+    bundled = resolve_bundled_sdrplay_plugin()
+    if bundled is not None and assess_sdrplay_soapy_module(str(bundled)) == "present":
+        _prepend_soapy_plugin_dir(str(bundled.parent))
+        logger.info("SOAPY plugin path: bundled %s", bundled.parent)
+        if not _allow_pothos_plugins():
+            return
+
+    mod_dir = _soapy_modules_dir(pothos_root)
+    if mod_dir:
+        has_non_legacy_sdrplay = False
+        try:
+            for name in os.listdir(mod_dir):
+                lower = name.lower()
+                if not lower.endswith(".dll"):
+                    continue
+                if not any(hint in lower for hint in _SDRPLAY_SOAPY_MODULE_HINTS):
+                    continue
+                full = os.path.join(mod_dir, name)
+                if assess_sdrplay_soapy_module(full) != "legacy":
+                    has_non_legacy_sdrplay = True
+                    break
+        except OSError:
+            has_non_legacy_sdrplay = True
+        if has_non_legacy_sdrplay:
+            _prepend_soapy_plugin_dir(mod_dir)
+        else:
+            logger.warning("Omitiendo directorio Pothos con plugin sdrplay legacy: %s", mod_dir)
+
+    if os.path.isdir(user_dir):
+        _prepend_soapy_plugin_dir(user_dir)
+
+
+def _prepend_soapy_plugin_dir(mod_dir: str) -> None:
+    norm_mod = os.path.normcase(os.path.normpath(mod_dir))
+    current = os.environ.get("SOAPY_SDR_PLUGIN_PATH", "")
+    parts = [part for part in current.split(os.pathsep) if part]
+    if any(os.path.normcase(os.path.normpath(part)) == norm_mod for part in parts):
+        return
+    os.environ["SOAPY_SDR_PLUGIN_PATH"] = mod_dir + (os.pathsep + current if current else "")
+
+
+def _soapy_util_executable() -> str:
+    from core.driver_runtime import bundled_soapy_util
+
+    util = bundled_soapy_util()
+    if util is not None:
+        return str(util)
+    pothos = find_pothos_install()
+    if pothos:
+        util = os.path.join(pothos, "bin", "SoapySDRUtil.exe")
+        if os.path.isfile(util):
+            return util
+    return "SoapySDRUtil"
+
+
 def check_sdrplay_api() -> bool:
     """Comprueba SDRplay API v3 (carpeta, DLL o servicio)."""
     for root in (r"C:\Program Files\SDRplay", r"C:\Program Files (x86)\SDRplay"):
@@ -200,7 +512,7 @@ def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
     """True si SoapySDRUtil enumera al menos un dispositivo con driver sdrplay."""
     try:
         res = subprocess.run(
-            ["SoapySDRUtil", "--find=driver=sdrplay"],
+            [_soapy_util_executable(), "--find=driver=sdrplay"],
             capture_output=True,
             text=True,
             check=False,
@@ -228,13 +540,43 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
 
     status = SoapyStatus(sdrplay_api_ok=check_sdrplay_api())
 
+    from core.driver_runtime import bundled_soapy_dll_dir
+
+    soapy_bundled = bundled_soapy_dll_dir()
+    use_bundled_soapy = soapy_bundled is not None
+    allow_pothos = _allow_pothos_plugins()
+
+    if use_bundled_soapy:
+        soapy_path = str(soapy_bundled)
+        _prepend_path(soapy_path)
+        _register_dll_directory(soapy_path)
+        logger.info("Soapy bundled runtime: %s", soapy_path)
+
+    sync_sdrplay_api_dll_to_pothos()
+    user_bin = user_xyz_sdr_bin_dir()
+    user_api = os.path.join(user_bin, "sdrplay_api.dll")
+    if os.path.isfile(user_api):
+        _prepend_path(user_bin)
+        _register_dll_directory(user_bin)
+
+    api_bin = find_sdrplay_api_bin()
+    if api_bin:
+        status.sdrplay_api_bin = api_bin
+        _prepend_path(api_bin)
+        _register_dll_directory(api_bin)
+
     pothos_root = find_pothos_install()
-    if pothos_root:
+    if pothos_root and (not use_bundled_soapy or allow_pothos):
         status.pothos_root = pothos_root
         bin_dir = os.path.join(pothos_root, "bin")
         status.pothos_bin = bin_dir
         _prepend_path(bin_dir)
         _register_dll_directory(bin_dir)
+        _configure_soapy_plugin_path(pothos_root)
+        status.sdrplay_plugin_module = find_sdrplay_soapy_module(pothos_root)
+        status.sdrplay_plugin_status = assess_sdrplay_soapy_module(status.sdrplay_plugin_module)
+        if not os.path.isfile(user_api):
+            sync_sdrplay_api_dll_to_pothos(pothos_root)
 
         site_packages = _python_site_packages(pothos_root)
         if site_packages:
@@ -325,7 +667,31 @@ def format_hardware_help(status: SoapyStatus) -> str:
         if not status.sdrplay_api_ok:
             lines.append("  SDRplay API no detectada. Instala opción [1] en install_drivers.")
         if not status.sdrplay_plugin_ok:
-            lines.append("  Plugin sdrplay no enumera dispositivos. Prueba: SoapySDRUtil --find=driver=sdrplay")
+            if status.sdrplay_plugin_status == "legacy":
+                lines.append(
+                    "  Módulo Soapy sdrplay de Pothos 2021 (sdrPlaySupport.dll) — incompatible con SDRplay API v3.15+."
+                )
+                lines.append(
+                    "  Instala SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo"
+                )
+            elif status.sdrplay_plugin_module:
+                lines.append(
+                    f"  Módulo Soapy sdrplay presente ({os.path.basename(status.sdrplay_plugin_module)}) "
+                    "pero no enumera RSP."
+                )
+                lines.append("  ¿RSP conectado por USB? Cierra SDRuno y reinicia SDRplayAPIService.")
+            else:
+                lines.append(
+                    "  Módulo Soapy sdrplay no encontrado en PothosSDR/lib/SoapySDR/modules*."
+                )
+                lines.append(
+                    "  Instala SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo"
+                )
+            lines.append("  Prueba: SoapySDRUtil --find=driver=sdrplay")
+            if status.sdrplay_api_bin and "arm64" in status.sdrplay_api_bin.lower():
+                lines.append(
+                    f"  AVISO: API en ruta arm64 ({status.sdrplay_api_bin}) — debe usarse x64 en Windows amd64."
+                )
             if not check_sdrplay_service_running():
                 lines.append("  Servicio SDRplayAPIService detenido — Start-Service o Restart-Service.")
         lines.append("  Comprueba USB, cierra SDRuno/SDRUno y reinicia el servicio SDRplay.")

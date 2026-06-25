@@ -57,14 +57,18 @@ If stutter occurs: lower FFT/display load ([hardware.md](hardware.md)) or reduce
 
 **Esc → Audio FM / Noise**
 
-| Setting | TOML key | Default | Notes |
-|---------|----------|---------|-------|
-| De-emphasis | `fm_deemphasis_us` | `50` | 50 µs EU / 75 µs US |
-| FM AGC | `fm_agc_enabled` | `true` | WBFM/NBFM post-demod |
-| Squelch | `squelch_enabled` | `false` | SNR threshold mute |
-| Squelch threshold | `squelch_threshold` | `15` | dB (UI scale) |
-| Volume | `volume` | `75` | Output % |
-| Audio rate | `audio_rate` | `48000` | Must match `AudioOutputQueue` |
+Valores por defecto canónicos en [`configuration.md`](configuration.md) §`[dsp] — procesado y audio`. No los dupliques aquí; este resumen solo lista las claves disponibles desde el menú **Esc → Audio FM / Noise**:
+
+| Setting | TOML key | Default\* | Notes |
+|---------|----------|-----------|-------|
+| De-emphasis | `fm_deemphasis_us` | *50* | 50 µs EU / 75 µs US |
+| FM AGC | `fm_agc_enabled` | *true* | WBFM/NBFM post-demod |
+| Squelch | `squelch_enabled` | *false* | SNR threshold mute |
+| Squelch threshold | `squelch_threshold` | *5* | dB (UI scale) |
+| Volume | `volume` | *75.0* | Output % |
+| Audio rate | `audio_rate` | *48000* | Must match `AudioOutputQueue` |
+
+\* Valores en cursiva: referencia rápida; la fuente canónica es [`configuration.md`](configuration.md) §`[dsp]`.
 
 De-emphasis uses IIR with chunk-to-chunk state (`FmDemodState.deemph_zi`).
 

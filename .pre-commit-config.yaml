@@ -1,0 +1,41 @@
+# xyz-sdr — pre-commit hooks
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# Update versions: pre-commit autoupdate
+
+repos:
+  # Generic file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        exclude: ^(\.github/workflows/.*\.yml|resources/installers/.*)$
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: ["--markdown-linebreak-ext=md"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: detect-private-key
+
+  # Python lint + format (replaces black, flake8, isort)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+      - id: ruff-format
+
+  # Project-local quick test smoke (skips slow tests, no coverage for speed)
+  - repo: local
+    hooks:
+      - id: pytest-quick
+        name: pytest (quick subset)
+        entry: .venv/Scripts/python.exe -m pytest resources/test/ -q -m "not slow" -x --no-cov
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [manual]  # opt-in: run with `pre-commit run --hook-stage manual pytest-quick`
