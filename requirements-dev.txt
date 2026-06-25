@@ -4,8 +4,8 @@ hypothesis>=6.0
 # invoke: pinned <4 porque la rama 4/5 nunca se publicó en PyPI
 # (último estable real = 3.0.3 a 2026-06). Ver commit 7cd334ad.
 invoke>=2,<4
-# tomli_w: TOML writer requerido por core/config_store.py (persist_config).
-# Necesario para tests del config_store; sin esto CI rompe en collect-time.
-tomli_w>=1.0
+# tomli_w: TOML writer. Declarado en runtime (requirements.txt) porque
+# core/config_store.py lo importa incondicionalmente y main.py / tui/app.py /
+# tui/storage.py lo usan en arranque. Solo dev para tests / lint.
 # pytest-textual-snapshot para regresiones visuales (Fase 2 item 34)
 # pytest-textual-snapshot>=0.4

@@ -9,9 +9,9 @@
 
 # ─── Core SDR ────────────────────────────────────────────────────────────────
 SoapySDR               # Abstracción hardware SDR (requiere PothosSDR instalado)
-numpy~=1.24            # Operaciones numéricas / IQ data
+numpy~=2.1             # Operaciones numéricas / IQ data (numpy 2.1+ requiere py3.10+ y soporta cp313)
 # scipy pinned to >=1.14 for cp313 wheels (scipy 1.13.x lacks py3.13 wheels)
-scipy~=1.14            # Filtros, FFT, procesado de señal
+scipy~=1.14            # Filtros, FFT, procesado de señal (compatible con numpy 2.x y cp313)
 
 # ─── Audio ───────────────────────────────────────────────────────────────────
 sounddevice~=0.4       # Reproducción de audio demodulado
@@ -24,5 +24,6 @@ rich~=13.0             # Estilos y colores en terminal
 # ─── Configuración ───────────────────────────────────────────────────────────
 tomli>=2.0; python_version < "3.11"   # TOML parser (Python < 3.11)
 # tomllib es built-in desde Python 3.11
+tomli_w>=1.0           # TOML writer — usado por core/config_store en runtime (import incondicional)
 
 # Dependencias IA opcionales: requirements-ai.txt
