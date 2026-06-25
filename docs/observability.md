@@ -99,8 +99,8 @@ Ejemplo de línea:
 | `audio u/d` | Underruns / chunks descartados (`AudioOutputQueue`) |
 
 ```powershell
-.\scripts\run.ps1 -Debug
-.\scripts\run.ps1 -Band fm_broadcast -Debug
+.\scripts\run.ps1 -DebugMode
+.\scripts\run.ps1 -Band fm_broadcast -d
 ```
 
 ---
