@@ -24,7 +24,14 @@ from textual.widgets import (
 from textual.reactive import reactive
 from textual import work, events
 
-from core.device import SDRDevice, SampleRateError, BANDWIDTH_PRESETS, HardwareInitializationError, _format_bandwidth_hz
+from core.device import (
+    BANDWIDTH_PRESETS,
+    HardwareInitializationError,
+    SAFE_START_SAMPLE_RATE,
+    SDRDevice,
+    SampleRateError,
+    _format_bandwidth_hz,
+)
 from core.config_store import (
     patch_device_section,
     patch_dsp_section,
@@ -42,6 +49,7 @@ from core.bookmarks import (
     save_bookmarks,
 )
 from core.band_profiles import list_band_profiles, load_band_profile, merge_configs
+from core.band_buffer import BandFrameMailbox
 from core.stream_stats import StreamStats
 from core.dsp import (
     apply_squelch_with_state,
@@ -827,7 +835,9 @@ class XyzSDRApp(App):
         ("shift+down",  "scroll_history_older", "WF ↓"),
         ("r",           "record",        "Grabar"),
         ("escape",      "show_settings", "Ajustes"),
-        ("q",           "quit",          "Salir"),
+        ("q",             "quit",          "Salir"),
+        ("ctrl+q",        "quit",          "Salir"),
+        ("ctrl+c",        "quit",          "Salir"),
     ]
 
     TITLE = "xyz-sdr -- Terminal SDR Controller"
@@ -853,17 +863,26 @@ class XyzSDRApp(App):
         debug_mode: bool = False,
         startup_logs: list[str] | None = None,
         band_profile: str | None = None,
+        enumerated_devices: list[dict] | None = None,
+        previous_session_marker: dict | None = None,
+        strict: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._startup_logs: list[str] = list(startup_logs or [])
+        self._previous_session_marker: dict | None = previous_session_marker
         self.driver = driver
         self.demod_mode = demod_mode
         self.config = config or {}
         self.config_path = config_path
         self.debug_mode = debug_mode
         self.band_profile = band_profile
+        self.strict = strict
         self._device: Optional[SDRDevice] = None
+        self._hardware_ready = False
+        self._pending_band_profile: str | None = None
+        self._cached_sdr_devices: list[dict] = list(enumerated_devices or [])
+        self._rx_warmup_iters_left = 0
         self._rx_active = False
         self._recording = False
         self._recorder: Optional[SDRRecorder] = None
@@ -874,6 +893,9 @@ class XyzSDRApp(App):
         self._scan_last_signal_time = 0.0
         self._squelch_open = True
         self._audio_output: Optional[AudioOutputQueue] = None
+        self._audio_started = False
+        self._sdrplay_preflight_done = False
+        self._sdrplay_preflight_ok = False
         self.audio_effects = AudioEffects()
 
         # ── Estado del viewport ──
@@ -899,7 +921,9 @@ class XyzSDRApp(App):
         self.volume_value: float = float(volume)
         self._last_snr: float = 0.0
         self._graceful_shutdown = False
+        self._shutting_down = False
         self._bandwidth_changing = False
+        self._driver_changing = False
         self._rx_stop_event = threading.Event()
         self._rx_stop_event.set()
         self._display_width: int = 120
@@ -1158,15 +1182,16 @@ class XyzSDRApp(App):
                 )
                 yield Button("📌 Guardar Bookmark", id="btn_save_bookmark", classes="-textual-compact")
 
-                band_options = list_band_profiles()
-                if band_options:
+                band_profiles = list_band_profiles()
+                if band_profiles:
                     yield Label("-- BANDA --", id="lbl_band_profiles")
+                    band_options = [(label, profile_id) for profile_id, label in band_profiles]
                     band_select_kwargs: dict = {
                         "prompt": "Perfil de banda...",
                         "id": "sel_band",
                     }
-                    if band_profile and band_profile in dict(band_options):
-                        band_select_kwargs["value"] = band_profile
+                    if self.band_profile and self.band_profile in dict(band_options):
+                        band_select_kwargs["value"] = self.band_profile
                     yield Select(band_options, **band_select_kwargs)
 
             # Panel derecho — visualizacion
@@ -1221,20 +1246,68 @@ class XyzSDRApp(App):
 
     @work(thread=True)
     def _init_hardware_async(self) -> None:
-        """Abre el SDR en segundo plano para no bloquear el primer frame de Textual."""
+        """Abre el SDR en segundo plano para no bloquear el primer frame de Textual.
+
+        Cuando ``self.strict`` es True, NO se hace fallback a simulated en caso de
+        error; se propaga la excepción al hilo principal vía _on_hardware_ready.
+        """
+        from core.session_log import log_breadcrumb
+
+        log_breadcrumb(f"hardware.init start driver={self.driver!r}")
         device = SDRDevice(driver=self.driver)
         hw_open_error: str | None = None
+        used_fallback = False
         try:
             device.open()
         except HardwareInitializationError as exc:
             hw_open_error = str(exc)
+            log_breadcrumb(f"hardware.init FAIL: {exc}")
+            if self.strict:
+                # --strict: propagar el error sin fallback a simulated
+                self.call_from_thread(
+                    self._on_hardware_ready,
+                    None,
+                    f"[STRICT] {exc}",
+                )
+                return
+            # Fallback silencioso a simulated (modo por defecto)
             device = SDRDevice(driver="simulated")
             device.open()
-            self.call_from_thread(self._apply_simulated_fallback)
-        self.call_from_thread(self._on_hardware_ready, device, hw_open_error)
+            used_fallback = True
+        else:
+            log_breadcrumb(f"hardware.init ok simulated={device.is_simulated}")
+
+        # Una sola llamada: entrega resultado consolidado al main thread.
+        self.call_from_thread(
+            self._on_hardware_complete,
+            (device, hw_open_error, used_fallback),
+        )
 
     def _apply_simulated_fallback(self) -> None:
+        """DEPRECATED: la lógica está consolidada en _on_hardware_complete."""
         self.driver = "simulated"
+
+    def _on_hardware_complete(
+        self,
+        payload: tuple[SDRDevice | None, str | None, bool],
+    ) -> None:
+        """Callback unificado desde _init_hardware_async.
+
+        Args:
+            payload: tupla ``(device, hw_open_error, used_fallback)``.
+                - ``device``: el SDRDevice ya abierto (o None en --strict fail).
+                - ``hw_open_error``: mensaje de error si lo hubo.
+                - ``used_fallback``: True si se cayó a simulated.
+        """
+        device, hw_open_error, used_fallback = payload
+        if used_fallback:
+            self.driver = "simulated"
+        if device is None:
+            # --strict y falló la apertura: notificar y dejar la app en estado error
+            self._log(f"[FATAL] --strict: {hw_open_error}")
+            return
+        # Reusar la lógica existente
+        self._on_hardware_ready(device, hw_open_error)
 
     def _on_hardware_ready(
         self,
@@ -1249,8 +1322,20 @@ class XyzSDRApp(App):
         cfg_rate = self.config.get("device", {}).get("sample_rate")
         if cfg_rate is not None:
             cfg_rate = float(cfg_rate)
-            if abs(cfg_rate - self.sample_rate) > 1.0 and self._device.is_sample_rate_supported(cfg_rate):
-                self.change_bandwidth(cfg_rate)
+            if abs(cfg_rate - self.sample_rate) > 1.0:
+                if self._device.is_sample_rate_supported(cfg_rate):
+                    if not self.change_bandwidth(cfg_rate):
+                        self._log(
+                            f"[WARN] Bandwidth objetivo {_format_bandwidth_hz(cfg_rate)} no aplicado; "
+                            f"usando {_format_bandwidth_hz(self.sample_rate)}"
+                        )
+                else:
+                    self._log(
+                        f"[WARN] Bandwidth {_format_bandwidth_hz(cfg_rate)} no soportado; "
+                        f"usando {_format_bandwidth_hz(self.sample_rate)}"
+                    )
+                    self._rebuild_zoom_levels()
+                    self._adapt_viewport_to_bandwidth()
             else:
                 self._rebuild_zoom_levels()
                 self._adapt_viewport_to_bandwidth()
@@ -1266,19 +1351,33 @@ class XyzSDRApp(App):
         log = self.query_one("#log_panel", Log)
         if hw_open_error:
             log.write_line(f"[ERR]  Hardware no disponible: {hw_open_error}")
-            log.write_line("[WARN] Modo SIMULACION activado (servicio SDRplay no responde o dispositivo ocupado)")
-            log.write_line("[INFO] Para restaurar RX real: 1) Cierra SDRuno  2) Verifica servicio SDRplay  3) Reinicia la app")
+            log.write_line("[WARN] Modo SIMULACION activado")
+            if "sdrplay" in hw_open_error.lower():
+                log.write_line("[INFO] SDRplay: SoapySDRUtil --find=driver=sdrplay debe listar tu RSP")
+                log.write_line("[INFO] Cierra SDRuno, verifica SDRplayAPIService, .\\setup\\install_drivers.ps1")
+            else:
+                log.write_line("[INFO] Para restaurar RX real: cierra otras apps SDR y reinicia la app")
         elif self._device.is_simulated:
             log.write_line("[WARN] Hardware no detectado -- Modo SIMULACION activado")
             log.write_line("[INFO] Para usar hardware real instala PothosSDR + SDRplay API")
         else:
             log.write_line(f"[OK]   Dispositivo abierto: driver={self.driver}")
+            if self.driver == "sdrplay" and not self._device.is_simulated:
+                log.write_line(
+                    "[INFO] SDRplay: frecuencia/BW se aplican al pulsar INICIAR RX "
+                    "(evita crash nativo al abrir)"
+                )
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
         log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | [ ] ancho PASS")
         log.write_line("[INFO] Ratón: clic+arrastre en timeline/espectro = banda audible simétrica")
         if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
+        self._hardware_ready = True
+        pending = self._pending_band_profile
+        self._pending_band_profile = None
+        if pending:
+            self._apply_band_profile(pending)
         self._update_status()
 
     def _invalidate_band_cache(self) -> None:
@@ -1294,17 +1393,37 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
+    def _resolve_band_profile_id(self, value: str) -> str | None:
+        """Normaliza id o etiqueta del Select de perfiles de banda."""
+        raw = str(value).strip()
+        if not raw:
+            return None
+        profiles = list_band_profiles()
+        by_id = {profile_id: label for profile_id, label in profiles}
+        if raw in by_id:
+            return raw
+        for profile_id, label in profiles:
+            if raw == label:
+                return profile_id
+        return raw
+
     def _apply_band_profile(self, profile_id: str) -> None:
         """Aplica un perfil TOML de config/bands/ (frecuencia, modo, BW IQ, display)."""
+        resolved = self._resolve_band_profile_id(profile_id)
+        if not resolved:
+            return
+        if not self._hardware_ready:
+            self._pending_band_profile = resolved
+            return
         try:
-            profile = load_band_profile(profile_id)
+            profile = load_band_profile(resolved)
         except FileNotFoundError as exc:
             self._log(f"[ERROR] {exc}")
             self.audio_effects.play_error()
             return
 
         self.config = merge_configs(self.config, profile)
-        self.band_profile = profile_id
+        self.band_profile = resolved
         dev = profile.get("device", {})
         dsp = profile.get("dsp", {})
         display = profile.get("display", {})
@@ -1356,10 +1475,10 @@ class XyzSDRApp(App):
         self._sync_passband_widgets()
         self._update_status()
         try:
-            persist_band_profile(self.config_path, profile_id, profile)
+            persist_band_profile(self.config_path, resolved, profile)
         except Exception as exc:
             logger.warning("No se pudo persistir perfil de banda: %s", exc)
-        self._log(f"[BAND] Perfil {profile_id} aplicado (guardado en {self.config_path})")
+        self._log(f"[BAND] Perfil {resolved} aplicado (guardado en {self.config_path})")
         self.audio_effects.play_chime()
 
     def _compute_column_levels(
@@ -1568,6 +1687,15 @@ class XyzSDRApp(App):
             self._audio_output = None
         if self._device:
             self._device.close()
+        self._restore_console()
+
+    def _restore_console(self) -> None:
+        try:
+            from core.console_utf8 import restore_terminal_after_tui
+
+            restore_terminal_after_tui()
+        except Exception:
+            pass
 
     # ── Zoom dinámico / bandwidth viewport ───────────────────────────────────
 
@@ -1752,8 +1880,111 @@ class XyzSDRApp(App):
         else:
             self._start_rx()
 
+    def _maybe_restart_sdrplay_before_rx(self) -> None:
+        """Reinicia SDRplayAPIService si la sesión anterior crasheó o env lo pide."""
+        import os
+
+        from core.sdrplay_service import (
+            previous_session_needs_service_restart,
+            restart_sdrplay_service,
+        )
+
+        if os.name != "nt":
+            return
+        if not self._device or self._device.driver != "sdrplay" or self._device.is_simulated:
+            return
+        force = os.environ.get("XYZ_SDR_SDRPLAY_RESTART", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if not force and not previous_session_needs_service_restart(self._previous_session_marker):
+            return
+        ok, msg = restart_sdrplay_service()
+        if ok:
+            self._log("[INFO] SDRplayAPIService reiniciado antes de RX")
+        else:
+            self._log(f"[WARN] Reinicio SDRplayAPIService: {msg}")
+
+    def _ensure_sdrplay_rx_preflight(self) -> bool:
+        """Preflight RX en subproceso; evita segfault nativo en el proceso TUI."""
+        from core.session_log import log_breadcrumb
+
+        if not self._device or self._device.is_simulated or self._device.driver != "sdrplay":
+            return True
+
+        # El RSP solo admite un handle: si la TUI ya abrió el dispositivo, el hijo
+        # no puede volver a abrirlo ("no available RSP devices found"). Usar
+        # minimal_activate in-process en start_stream().
+        if self._device._sdr is not None:
+            log_breadcrumb("sdrplay preflight skipped: device already open in parent")
+            if not self._sdrplay_preflight_done:
+                self._log(
+                    "[INFO] Preflight omitido: dispositivo ya abierto; "
+                    "prueba RX = start_stream minimal"
+                )
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = True
+            return True
+
+        if self._sdrplay_preflight_done:
+            return self._sdrplay_preflight_ok
+
+        from core.sdrplay_preflight import (
+            preflight_user_message,
+            resolve_preflight_timeout,
+            run_preflight_best,
+        )
+        from core.sdrplay_service import restart_sdrplay_service
+
+        timeout = resolve_preflight_timeout()
+        result = run_preflight_best(timeout=timeout)
+        if result.segfault:
+            restart_sdrplay_service()
+            result = run_preflight_best(timeout=timeout)
+
+        self._sdrplay_preflight_done = True
+        self._sdrplay_preflight_ok = result.ok
+        if not result.ok:
+            msg = preflight_user_message(result)
+            if msg:
+                self._log(msg)
+            if result.detail:
+                self._log(
+                    f"[ERR] Preflight ({result.path}, {result.last_step}): "
+                    f"{result.detail[:240]}"
+                )
+        return result.ok
+
+    def ensure_audio_output(self) -> None:
+        """Inicia audio tras la primera lectura IQ (worker RX)."""
+        if self._audio_output is not None or not self._rx_active:
+            return
+        self.call_from_thread(self._start_audio_output_main)
+
+    def _start_audio_output_main(self) -> None:
+        if self._audio_output is not None or not self._rx_active:
+            return
+        try:
+            self._audio_output = AudioOutputQueue(sample_rate=self._audio_rate)
+            self._audio_output.set_volume(self.volume_value / 100.0)
+            self._audio_output.start()
+            self._audio_started = True
+            self._log(f"[OK]   Salida de audio iniciada ({self._audio_rate} Hz, callback)")
+        except Exception as e:
+            self._audio_output = None
+            self._log(f"[WARN] Sin salida de audio: {e}")
+
     def _start_rx(self) -> None:
         if self._rx_active:
+            return
+
+        if self._driver_changing:
+            self._log("[WARN] Cambio de driver en curso; espera antes de iniciar RX")
+            return
+
+        if not self._hardware_ready:
+            self._log("[WARN] Hardware aún inicializándose; espera unos segundos")
             return
 
         if not self._device:
@@ -1768,28 +1999,15 @@ class XyzSDRApp(App):
         self._rx_active = True
         self._rx_stop_event.clear()
 
-        try:
-            self._device.start_stream()
-        except Exception as e:
-            self._rx_active = False
-            self._rx_stop_event.set()
-            self._log(f"[ERROR] No se pudo iniciar stream RX: {e}")
-            try:
-                btn = self.query_one("#btn_rx", Button)
-                btn.label = ">> INICIAR RX"
-                btn.variant = "success"
-            except Exception:
-                pass
-            return
+        from core.rx_warmup import RX_WARMUP_ITERS
 
-        try:
-            self._audio_output = AudioOutputQueue(sample_rate=self._audio_rate)
-            self._audio_output.set_volume(self.volume_value / 100.0)
-            self._audio_output.start()
-            self._log(f"[OK]   Salida de audio iniciada ({self._audio_rate} Hz, callback)")
-        except Exception as e:
-            self._audio_output = None
-            self._log(f"[WARN] Sin salida de audio: {e}")
+        self._rx_warmup_iters_left = RX_WARMUP_ITERS
+        self._audio_started = False
+        self._audio_output = None
+        self._sdrplay_preflight_done = False
+        self._sdrplay_preflight_ok = False
+
+        self._maybe_restart_sdrplay_before_rx()
 
         try:
             btn = self.query_one("#btn_rx", Button)
@@ -1798,6 +2016,16 @@ class XyzSDRApp(App):
         except Exception:
             pass
         self._log("RX iniciado")
+        if (
+            self._device
+            and not self._device.is_simulated
+            and self._device.driver == "sdrplay"
+            and self.sample_rate > SAFE_START_SAMPLE_RATE
+        ):
+            self._log(
+                f"[INFO] SDRplay: arranque a {_format_bandwidth_hz(SAFE_START_SAMPLE_RATE)} "
+                f"→ {_format_bandwidth_hz(self.sample_rate)} tras warmup"
+            )
         self._stream_stats_snapshot = StreamStats()
         self._invalidate_band_cache()
         self._fm_demod_state.reset()
@@ -1810,24 +2038,18 @@ class XyzSDRApp(App):
 
         self._rx_active = False
 
-        if self._device and not self._device.is_simulated:
-            try:
-                self._device.stop_stream()
-            except Exception as exc:
-                logger.warning("Error deteniendo stream RX: %s", exc)
+        if not self._rx_stop_event.wait(timeout=3.0):
+            self._log("[WARN] Timeout esperando fin del worker RX")
+            self._rx_stop_event.set()
 
-        # Detener salida de audio
         if self._audio_output:
             try:
                 self._audio_output.stop()
             except Exception:
                 pass
             self._audio_output = None
+            self._audio_started = False
             self._log("[INFO] Salida de audio detenida")
-
-        if not self._rx_stop_event.wait(timeout=3.0):
-            self._log("[WARN] Timeout esperando fin del worker RX")
-            self._rx_stop_event.set()
 
         try:
             btn = self.query_one("#btn_rx", Button)
@@ -1964,12 +2186,18 @@ class XyzSDRApp(App):
     def action_show_settings(self) -> None:
         """Abre el panel modal de Ajustes de Hardware SDR."""
         from tui.widgets.settings_menu import SettingsScreen
-        self.push_screen(SettingsScreen())
+
+        try:
+            self.push_screen(SettingsScreen())
+        except Exception as exc:
+            logger.exception("No se pudo abrir ajustes: %s", exc)
+            self._log(f"[ERROR] No se pudo abrir ajustes: {exc}")
 
     def action_quit(self) -> None:
         """Salida limpia con pantalla de cierre."""
         if self._recording:
             self._stop_recording(log_stopped=False)
+        self._prepare_for_exit()
         self._graceful_shutdown = True
         self.exit()
 
@@ -2328,38 +2556,244 @@ class XyzSDRApp(App):
             if now - ref_time >= self._scan_dwell_s:
                 self._step_scanner()
 
-    def change_device_driver(self, new_driver: str) -> bool:
+    def change_device(self, device_kwargs: dict, *, desired_rx: bool | None = None) -> bool:
+        """Abre un dispositivo Soapy concreto por kwargs (label/serial únicos)."""
+        kwargs = dict(device_kwargs)
+        driver = str(kwargs.get("driver", "")).lower()
+        if driver in ("simulated", "sim"):
+            return self.change_device_driver("simulated", desired_rx=desired_rx)
+        if self._device and self._device.same_device_as(kwargs):
+            return True
+        self.driver = driver or self.driver
+        return self._schedule_reopen_device(
+            device_kwargs=kwargs,
+            desired_rx=desired_rx,
+        )
+
+    def change_device_driver(
+        self,
+        new_driver: str,
+        *,
+        desired_rx: bool | None = None,
+    ) -> bool:
         """Cambia dinámicamente el driver del dispositivo SDR en tiempo real."""
         if new_driver == "sim":
             new_driver = "simulated"
 
-        if new_driver == self.driver:
-            return True
+        if new_driver == self.driver and self._device:
+            if new_driver in ("simulated", "sim") or self._device._device_kwargs:
+                return True
+
+        self.driver = new_driver
+        return self._schedule_reopen_device(desired_rx=desired_rx)
+
+    def _schedule_reopen_device(
+        self,
+        *,
+        device_kwargs: dict | None = None,
+        desired_rx: bool | None = None,
+    ) -> bool:
+        """Programa cambio de driver en hilo worker (no bloquea la TUI)."""
+        if self._driver_changing:
+            self._log("[WARN] Cambio de driver ya en curso; espera a que termine")
+            return False
 
         previous_driver = self.driver
+        previous_kwargs = (
+            dict(self._device._device_kwargs)
+            if self._device and self._device._device_kwargs
+            else None
+        )
+        was_active = self._rx_active
+        if was_active:
+            self._stop_rx()
+
+        target_label = (
+            str(device_kwargs.get("label", previous_driver))
+            if device_kwargs
+            else previous_driver
+        )
+        target_driver = self.driver
+        self._driver_changing = True
+        self._log(f"[INFO] Cambiando driver a {target_label}…")
+
+        device_to_close = self._device
+        self._device = None
+
+        self._reopen_device_async(
+            target_driver=target_driver,
+            device_kwargs=device_kwargs,
+            device_to_close=device_to_close,
+            previous_driver=previous_driver,
+            previous_kwargs=previous_kwargs,
+            was_active=was_active,
+            desired_rx=desired_rx,
+            tuned_frequency=self.tuned_frequency,
+            gain_value=self.gain_value,
+        )
+        return True
+
+    @work(thread=True)
+    def _reopen_device_async(
+        self,
+        *,
+        target_driver: str,
+        device_kwargs: dict | None,
+        device_to_close: SDRDevice | None,
+        previous_driver: str,
+        previous_kwargs: dict | None,
+        was_active: bool,
+        desired_rx: bool | None,
+        tuned_frequency: float,
+        gain_value: float,
+    ) -> None:
+        """Cierra y abre SDR fuera del hilo UI (enumerate/open pueden tardar o crashear)."""
+        device: SDRDevice | None = None
+        error: str | None = None
+        restored_previous = False
+        resolved_driver = target_driver
+
+        if device_to_close:
+            try:
+                device_to_close.close()
+            except Exception as exc:
+                logger.warning("Error cerrando dispositivo previo: %s", exc)
+
+        try:
+            device = SDRDevice(driver=target_driver)
+            if device_kwargs:
+                device.open(device_kwargs)
+            else:
+                device.open()
+            resolved_driver = device.driver
+            device.set_frequency(tuned_frequency)
+            device.set_gain(gain_value)
+        except HardwareInitializationError as exc:
+            error = str(exc)
+            self.call_from_thread(self._log, f"[ERR]  {error}")
+            self.call_from_thread(self.audio_effects.play_error)
+            fallback_driver = previous_driver or "simulated"
+            try:
+                device = SDRDevice(driver=fallback_driver)
+                if previous_kwargs and fallback_driver not in ("simulated", "sim"):
+                    device.open(previous_kwargs)
+                else:
+                    device.open()
+                resolved_driver = device.driver
+                device.set_frequency(tuned_frequency)
+                device.set_gain(gain_value)
+                restored_previous = True
+                fb_label = "SIMULACION" if device.is_simulated else resolved_driver.upper()
+                self.call_from_thread(
+                    self._log,
+                    f"[INFO] Restaurado driver: {fb_label}",
+                )
+            except Exception as restore_exc:
+                device = None
+                self.call_from_thread(
+                    self._log,
+                    f"[ERR]  No se pudo restaurar el driver: {restore_exc}",
+                )
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("Cambio de driver falló: %s", exc)
+
+        self.call_from_thread(
+            self._on_driver_reopen_complete,
+            device,
+            resolved_driver,
+            error,
+            was_active,
+            desired_rx,
+            restored_previous,
+        )
+
+    def _on_driver_reopen_complete(
+        self,
+        device: SDRDevice | None,
+        resolved_driver: str,
+        error: str | None,
+        was_active: bool,
+        desired_rx: bool | None,
+        restored_previous: bool,
+    ) -> None:
+        """Hilo principal: sincroniza UI tras cambio de driver async."""
+        self._driver_changing = False
+        self._device = device
+        self.driver = resolved_driver if device is not None else self.driver
+        self._sdrplay_preflight_done = False
+        self._sdrplay_preflight_ok = False
+
+        if device is None:
+            self._update_status()
+            return
+
+        if error is None and not restored_previous:
+            self._persist_device_config(driver=self.driver, sample_rate=device.sample_rate)
+
+        self._apply_driver_change(was_active=False)
+
+        if desired_rx is not None:
+            if desired_rx and not self._rx_active:
+                self._start_rx()
+            elif not desired_rx and self._rx_active:
+                self._stop_rx()
+        elif was_active and error is None:
+            self._start_rx()
+
+        if error is None:
+            self.audio_effects.play_chime()
+
+        if error is not None and restored_previous:
+            try:
+                from core.device import build_driver_select_options
+
+                active_kwargs = device._device_kwargs if device._device_kwargs else None
+                _, _, selected = build_driver_select_options(
+                    getattr(self, "_cached_sdr_devices", None),
+                    current_driver=self.driver,
+                    active_kwargs=active_kwargs,
+                )
+                self.query_one("#set_driver", Select).value = selected
+            except Exception:
+                pass
+
+    def _reopen_device(self, open_fn) -> bool:
+        """Legacy sync path (tests); producción usa _schedule_reopen_device."""
+        previous_driver = self.driver
+        previous_kwargs = (
+            dict(self._device._device_kwargs)
+            if self._device and self._device._device_kwargs
+            else None
+        )
         was_active = self._rx_active
         if was_active:
             self._stop_rx()
 
         if self._device:
             self._device.close()
-
-        def _try_open(driver: str) -> None:
-            self.driver = driver
-            self._device = SDRDevice(driver=self.driver)
-            self._device.open()
-            self._device.set_frequency(self.tuned_frequency)
-            self._device.set_gain(self.gain_value)
+            self._device = None
 
         try:
-            _try_open(new_driver)
+            self._device = SDRDevice(driver=self.driver)
+            open_fn(self._device)
+            self.driver = self._device.driver
+            self._device.set_frequency(self.tuned_frequency)
+            self._device.set_gain(self.gain_value)
         except HardwareInitializationError as exc:
             self._log(f"[ERR]  {exc}")
             self.audio_effects.play_error()
-            fallback = previous_driver or "simulated"
+            fallback_driver = previous_driver or "simulated"
             try:
-                _try_open(fallback)
-                fb_label = "SIMULACION" if self._device.is_simulated else fallback.upper()
+                self._device = SDRDevice(driver=fallback_driver)
+                if previous_kwargs and fallback_driver not in ("simulated", "sim"):
+                    self._device.open(previous_kwargs)
+                else:
+                    self._device.open()
+                self.driver = self._device.driver
+                self._device.set_frequency(self.tuned_frequency)
+                self._device.set_gain(self.gain_value)
+                fb_label = "SIMULACION" if self._device.is_simulated else self.driver.upper()
                 self._log(f"[INFO] Restaurado driver: {fb_label}")
             except Exception as restore_exc:
                 self._device = None
@@ -2372,6 +2806,17 @@ class XyzSDRApp(App):
         self._apply_driver_change(was_active)
         self._persist_device_config(driver=self.driver, sample_rate=self.sample_rate)
         return True
+
+    def _refresh_enumerated_devices_if_safe(self) -> None:
+        """Re-enumerar Soapy solo sin dispositivo abierto (sdrplay crashea si no)."""
+        if self._device is not None:
+            return
+        try:
+            from core.device import SDRDevice, filter_sdr_devices
+
+            self._cached_sdr_devices = filter_sdr_devices(SDRDevice.list_devices())
+        except Exception as exc:
+            logger.debug("No se pudo refrescar lista SDR: %s", exc)
 
     def _apply_driver_change(self, was_active: bool) -> None:
         """Sincroniza UI y viewport tras abrir un driver."""
@@ -2660,6 +3105,25 @@ class XyzSDRApp(App):
 
     # ── RX Worker ────────────────────────────────────────────────────────────
 
+    def consume_rx_warmup_samples(self, requested: int) -> int:
+        """Limita el chunk IQ durante las primeras iteraciones RX (warmup)."""
+        from core.rx_warmup import cap_rx_warmup_samples
+
+        prev_warmup = self._rx_warmup_iters_left
+        capped, remaining = cap_rx_warmup_samples(requested, self._rx_warmup_iters_left)
+        self._rx_warmup_iters_left = remaining
+        if prev_warmup > 0 and remaining == 0 and self._device and not self._device.is_simulated:
+            try:
+                if self._device.maybe_ramp_sdrplay_sample_rate():
+                    self.call_from_thread(
+                        self._log,
+                        f"[OK]   SDRplay: bandwidth {_format_bandwidth_hz(self.sample_rate)} activo",
+                    )
+            except Exception as exc:
+                logger.warning("SDRplay ramp sample rate: %s", exc)
+                self.call_from_thread(self._log, f"[WARN] SDRplay subida BW: {exc}")
+        return capped
+
     def _on_rx_worker_crashed(self) -> None:
         """Restaura la UI del botón RX cuando el worker salió por error (hilo principal)."""
         try:
@@ -2673,8 +3137,33 @@ class XyzSDRApp(App):
     @work(thread=True)
     def _rx_worker(self) -> None:
         """Loop de recepcion en hilo separado."""
+        from core.session_log import log_breadcrumb
+
         logger.info("RX worker iniciado")
+        log_breadcrumb("rx.worker start")
+        stream_started = False
+        worker_error_handled = False
         try:
+            if self._device and not self._device.is_simulated:
+                if not self._ensure_sdrplay_rx_preflight():
+                    worker_error_handled = True
+                    self.call_from_thread(self._on_rx_worker_crashed)
+                    return
+                try:
+                    log_breadcrumb("rx.worker before start_stream")
+                    self._device.start_stream()
+                    stream_started = True
+                    log_breadcrumb("rx.worker start_stream ok")
+                except Exception as exc:
+                    logger.exception("No se pudo iniciar stream RX: %s", exc)
+                    worker_error_handled = True
+                    self.call_from_thread(
+                        self._log,
+                        f"[ERROR] No se pudo iniciar stream RX: {exc}",
+                    )
+                    self.call_from_thread(self._on_rx_worker_crashed)
+                    return
+
             while self._rx_active:
                 try:
                     run_rx_iteration(self)
@@ -2685,9 +3174,15 @@ class XyzSDRApp(App):
                     self.call_from_thread(self._log, f"[ERROR] RX: {e}")
                     break
         finally:
+            if stream_started and self._device and not self._device.is_simulated:
+                try:
+                    self._device.stop_stream()
+                except Exception as exc:
+                    logger.warning("Error deteniendo stream RX: %s", exc)
             if self._rx_active:
                 self._rx_active = False
-                self.call_from_thread(self._on_rx_worker_crashed)
+                if not worker_error_handled:
+                    self.call_from_thread(self._on_rx_worker_crashed)
             self._rx_stop_event.set()
             logger.info("RX worker detenido")
 
@@ -2837,10 +3332,6 @@ def find_zoom_index(span: float, spans: list[float]) -> int:
 
 
 def _format_hz(hz: float) -> str:
-    """Formatea Hz a cadena legible (kHz, MHz)."""
-    if hz >= 1e6:
-        return f"{hz / 1e6:.1f}M"
-    elif hz >= 1e3:
-        return f"{hz / 1e3:.0f}k"
-    else:
-        return f"{hz:.0f}Hz"
+    """DEPRECATED: usa core.formatting.format_hz_compact()."""
+    from core.formatting import format_hz_compact
+    return format_hz_compact(hz)

@@ -28,6 +28,7 @@
 | [bookmarks.md](bookmarks.md) | Favoritos de frecuencia: `var/bookmarks.toml`, export/import, botón **Guardar Bookmark** |
 | [customization.md](customization.md) | Temas CSS, tuning |
 | [ai.md](ai.md) | Estado del módulo `ai/` (Fase 4–5 del roadmap, pendiente) |
+| [plugins.md](plugins.md) | Sistema de plugins versionado: demodulators, band profiles, drivers |
 | [testing.md](testing.md) | Estructura de tests, mapeo test→módulo, fixtures, comandos |
 | [uv_runtime.md](uv_runtime.md) | Wrapper de `uv` para venv + pip install (core/uv_runtime.py) |
 | [requirements-locking.md](requirements-locking.md) | Lockfiles `requirements*.lock` con `--require-hashes` |

@@ -8,14 +8,24 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Optional
 
 import numpy as np
 
+from core.sdr_io import run_sdr_io
 from core.soapy_runtime import bootstrap_soapy, get_soapy_module
 from core.stream_stats import StreamStats
 
+try:
+    from core.session_log import log_breadcrumb
+except ImportError:
+    def log_breadcrumb(_msg: str, **kwargs) -> None:
+        pass
+
 logger = logging.getLogger(__name__)
+
+_sdr_devices_open = 0
 
 _soapy_mod: Any | None = None
 SOAPY_SDR_RX: Any = None
@@ -73,15 +83,21 @@ BANDWIDTH_PRESETS: tuple[float, ...] = (
     8_000_000,
 )
 
+# Tasa IQ inicial al abrir hardware real (evita readStream agresivo antes del warmup).
+SAFE_START_SAMPLE_RATE = 500_000.0
+# MTU inicial conservador para plugins sdrplay (sube tras warmup en read_samples).
+SDRPLAY_INITIAL_STREAM_MTU = 16_384
+SDRPLAY_PROBE_READ_SAMPLES = 4_096
+
 
 def _format_bandwidth_hz(rate_hz: float) -> str:
-    if rate_hz >= 1_000_000:
-        value = rate_hz / 1_000_000
-        text = f"{value:.3f}".rstrip("0").rstrip(".")
-        return f"{text} MHz"
-    if rate_hz >= 1_000:
-        return f"{rate_hz / 1_000:.0f} kHz"
-    return f"{rate_hz:.0f} Hz"
+    """DEPRECATED: usa core.formatting.format_bandwidth_hz()."""
+    from core.formatting import format_bandwidth_hz
+    return format_bandwidth_hz(rate_hz)
+
+
+# Re-export para no romper imports existentes
+from core.formatting import format_bandwidth_hz as _format_bandwidth_hz_public  # noqa: F401
 
 
 def _rate_within_soapy_range(rate_hz: float, rate_range) -> bool:
@@ -102,21 +118,191 @@ def _driver_name(kwargs: dict) -> str:
     return str(kwargs.get("driver", "")).lower()
 
 
+_IGNORED_AUTO_DRIVERS = frozenset({"audio", "simulated"})
+_PREFERRED_AUTO_ORDER = ("sdrplay", "rtlsdr", "hackrf", "airspy", "miri")
+_MIRI_SDRPLAY_HINTS = ("sdrplay", "rsp", "mirics sdr")
+
+
+def filter_sdr_devices(devices: list[dict]) -> list[dict]:
+    """Excluye drivers de audio/simulación de la enumeración útil para RX."""
+    return [dev for dev in devices if _driver_name(dev) not in _IGNORED_AUTO_DRIVERS]
+
+
+def _device_label(dev: dict) -> str:
+    return str(dev.get("label", "")).strip()
+
+
+def _is_miri_sdrplay_proxy(dev: dict) -> bool:
+    """True si el driver miri parece un proxy Mirics→SDRplay (no MSi2500/DVB genérico)."""
+    if _driver_name(dev) != "miri":
+        return False
+    label = _device_label(dev).lower()
+    if any(token in label for token in ("msi2500", "vtx3d", "dvb")):
+        return False
+    return any(hint in label for hint in _MIRI_SDRPLAY_HINTS)
+
+
+def _summarize_devices(devices: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for dev in devices:
+        name = _driver_name(dev) or "?"
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(f"{name}×{count}" if count > 1 else name for name, count in counts.items())
+
+
+def _device_option_label(dev: dict) -> str:
+    drv = _driver_name(dev) or "?"
+    label = _device_label(dev)
+    return label if label else drv.upper()
+
+
+def _kwargs_match(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    keys = ("driver", "label", "serial", "device_id")
+    for key in keys:
+        if key in left or key in right:
+            if str(left.get(key, "")) != str(right.get(key, "")):
+                return False
+    return _driver_name(left) == _driver_name(right)
+
+
+def build_driver_select_options(
+    devices: list[dict] | None = None,
+    *,
+    current_driver: str = "auto",
+    active_kwargs: dict | None = None,
+) -> tuple[list[tuple[str, str]], dict[str, str | dict], str]:
+    """
+    Opciones únicas para Select de driver (Esc → Ajustes).
+
+    Devuelve (opciones, mapa token→driver|kwargs, token seleccionado).
+    """
+    if devices is None:
+        devices = filter_sdr_devices(SDRDevice.list_devices())
+    else:
+        devices = filter_sdr_devices(devices)
+
+    options: list[tuple[str, str]] = []
+    token_map: dict[str, str | dict] = {}
+    seen_presets: set[str] = set()
+
+    presets = (
+        ("Auto (primer dispositivo)", "auto"),
+        ("SDRplay RSP", "sdrplay"),
+        ("RTL-SDR Dongle", "rtlsdr"),
+        ("HackRF One", "hackrf"),
+        ("Airspy", "airspy"),
+        ("Simulación (Hardware)", "simulated"),
+    )
+    for label, drv in presets:
+        token = f"preset:{drv}"
+        options.append((label, token))
+        token_map[token] = drv
+        seen_presets.add(drv)
+
+    for index, dev in enumerate(devices):
+        drv = _driver_name(dev)
+        if not drv or drv in _IGNORED_AUTO_DRIVERS:
+            continue
+        token = f"dev:{index}"
+        options.append((_device_option_label(dev), token))
+        token_map[token] = dict(dev)
+
+    driver_key = (current_driver or "auto").lower()
+    if driver_key == "sim":
+        driver_key = "simulated"
+
+    selected = f"preset:{driver_key}" if driver_key in seen_presets else f"preset:auto"
+    if active_kwargs:
+        for token, target in token_map.items():
+            if isinstance(target, dict) and _kwargs_match(target, active_kwargs):
+                selected = token
+                break
+    elif driver_key not in seen_presets:
+        for token, target in token_map.items():
+            if isinstance(target, dict) and _driver_name(target) == driver_key:
+                selected = token
+                break
+
+    if selected not in token_map:
+        selected = "preset:auto"
+
+    return options, token_map, selected
+
+
+def _sdrplay_resolution_hint(devices: list[dict]) -> str:
+    hints: list[str] = []
+    if not any(_driver_name(dev) == "sdrplay" for dev in devices):
+        hints.append(
+            "Plugin SoapySDR 'sdrplay' sin dispositivos — ejecuta: SoapySDRUtil --find=driver=sdrplay"
+        )
+        try:
+            from core.soapy_runtime import check_sdrplay_service_running
+
+            if check_sdrplay_service_running():
+                hints.append(
+                    "SDRplayAPIService activo: cierra SDRuno y reinstala módulo Soapy sdrplay "
+                    "(.\\setup\\install_drivers.ps1)."
+                )
+            else:
+                hints.append("Inicia SDRplayAPIService (services.msc) y cierra SDRuno.")
+        except Exception:
+            pass
+    for dev in devices:
+        if _driver_name(dev) == "miri" and not _is_miri_sdrplay_proxy(dev):
+            hints.append(
+                f"Driver 'miri' detectado ({_device_label(dev)}) no es un SDRplay RSP — "
+                "no se usará como sustituto de sdrplay."
+            )
+            break
+    return " ".join(hints)
+
+
 def resolve_device(driver: str, devices: list[dict] | None = None) -> dict:
     """Resuelve kwargs SoapySDR para abrir el dispositivo."""
     if devices is None:
-        devices = SDRDevice.list_devices()
-        devices = [d for d in devices if d.get("driver") != "simulated"]
+        devices = filter_sdr_devices(SDRDevice.list_devices())
+    else:
+        devices = filter_sdr_devices(devices)
 
     if not devices:
         raise HardwareInitializationError("No hay dispositivos SDR enumerados por SoapySDR.")
 
     key = (driver or "auto").lower()
     if key in ("auto", ""):
+        for preferred in _PREFERRED_AUTO_ORDER:
+            for dev in devices:
+                name = _driver_name(dev)
+                if name == preferred:
+                    if name == "miri" and not _is_miri_sdrplay_proxy(dev):
+                        continue
+                    return dict(dev)
         return dict(devices[0])
 
     if key == "simulated":
         return {"driver": "simulated"}
+
+    if key == "sdrplay":
+        for dev in devices:
+            if _driver_name(dev) == "sdrplay":
+                return dict(dev)
+        for dev in devices:
+            if _is_miri_sdrplay_proxy(dev):
+                logger.info(
+                    "Mapeando driver sdrplay solicitado al proxy miri: %s",
+                    _device_label(dev),
+                )
+                return dict(dev)
+
+        extra = _sdrplay_resolution_hint(devices)
+        msg = (
+            f"No se encontró dispositivo SDRplay RSP. "
+            f"Enumerados: {_summarize_devices(devices)}."
+        )
+        if extra:
+            msg = f"{msg} {extra}"
+        raise HardwareInitializationError(msg)
 
     for dev in devices:
         name = _driver_name(dev)
@@ -125,7 +311,7 @@ def resolve_device(driver: str, devices: list[dict] | None = None) -> dict:
 
     raise HardwareInitializationError(
         f"No se encontró dispositivo para driver={driver!r}. "
-        f"Disponibles: {[d.get('driver') for d in devices]}"
+        f"Disponibles: {_summarize_devices(devices)}"
     )
 
 
@@ -194,6 +380,8 @@ class SDRDevice:
         self.gain = 40.0
         self.auto_gain = False
         self._stream_stats = StreamStats()
+        self._sdrplay_pending_sample_rate: float | None = None
+        self._sdrplay_stream_bootstrapped: bool = False
 
     def reset_stream_stats(self) -> None:
         with self._lock:
@@ -204,12 +392,33 @@ class SDRDevice:
         with self._lock:
             return self._stream_stats.copy()
 
-    def open(self) -> bool:
-        if self.driver in ("simulated", "sim"):
+    def _native_settings_deferred(self) -> bool:
+        """
+        SDRplay crashea si setSampleRate/setFrequency se llaman al abrir sin stream.
+        Mantener estado en Python hasta start_stream (_prepare_stream_unlocked).
+        """
+        return (
+            self.driver == "sdrplay"
+            and self._stream is None
+            and self._sdr is not None
+            and not isinstance(self._sdr, SimulatedSDR)
+        )
+
+    def open(self, device_kwargs: dict | None = None) -> bool:
+        if self.driver in ("simulated", "sim") and not device_kwargs:
             self.driver = "simulated"
             self._sdr = SimulatedSDR()
             return True
 
+        if device_kwargs and str(device_kwargs.get("driver", "")).lower() in ("simulated", "sim"):
+            self.driver = "simulated"
+            self._device_kwargs = dict(device_kwargs)
+            self._sdr = SimulatedSDR()
+            return True
+
+        return run_sdr_io(self._open_native, device_kwargs)
+
+    def _open_native(self, device_kwargs: dict | None = None) -> bool:
         if not _load_soapy():
             raise HardwareInitializationError(
                 "SoapySDR no disponible en el entorno Python. "
@@ -217,21 +426,71 @@ class SDRDevice:
             )
 
         try:
-            kwargs = resolve_device(self.driver)
+            if device_kwargs:
+                kwargs = dict(device_kwargs)
+            else:
+                kwargs = resolve_device(self.driver)
+            log_breadcrumb(f"device.open start driver={self.driver!r} kwargs={kwargs!r}")
             self._device_kwargs = kwargs
             resolved_driver = kwargs.get("driver", self.driver)
-            self._sdr = _soapy_mod.Device(kwargs)
+            with self._lock:
+                self._sdr = _soapy_mod.Device(kwargs)
             self.driver = str(resolved_driver)
-            self._apply_settings()
+            if not isinstance(self._sdr, SimulatedSDR) and self.sample_rate > SAFE_START_SAMPLE_RATE:
+                logger.info(
+                    "Apertura conservadora: sample_rate %.0f Hz → %.0f Hz",
+                    self.sample_rate,
+                    SAFE_START_SAMPLE_RATE,
+                )
+                self.sample_rate = SAFE_START_SAMPLE_RATE
+            if self._native_settings_deferred():
+                log_breadcrumb(
+                    "device.open sdrplay: defer native settings until start_stream"
+                )
+            else:
+                self._apply_settings()
+            global _sdr_devices_open
+            _sdr_devices_open += 1
             logger.info("Dispositivo abierto: %s", kwargs)
+            log_breadcrumb(
+                f"device.open ok driver={self.driver!r} rate={self.sample_rate:.0f} "
+                f"freq={self.center_freq:.0f} gain={self.gain:.1f}"
+            )
             return True
         except HardwareInitializationError:
             raise
         except Exception as e:
             raise HardwareInitializationError(str(e)) from e
 
-    def close(self):
-        with self._lock:
+    def same_device_as(self, kwargs: dict | None) -> bool:
+        return _kwargs_match(self._device_kwargs, kwargs)
+
+    def close(self, *, fast: bool = False):
+        if isinstance(self._sdr, SimulatedSDR) or self._sdr is None:
+            self._close_impl(fast=fast)
+            return
+        if fast:
+            self._close_impl(fast=True)
+            return
+        try:
+            run_sdr_io(self._close_impl)
+        except TimeoutError:
+            logger.warning("device.close timeout; forcing fast cleanup")
+            self._close_impl(fast=True)
+
+    def _close_impl(self, *, fast: bool = False) -> None:
+        log_breadcrumb("device.close start")
+        global _sdr_devices_open
+        if fast:
+            acquired = self._lock.acquire(timeout=0.5)
+            if not acquired:
+                log_breadcrumb("device.close fast: lock busy, dropping handles")
+                self._stream = None
+                self._sdr = None
+                return
+        else:
+            self._lock.acquire()
+        try:
             if self._stream and soapysdr_available() and not isinstance(self._sdr, SimulatedSDR):
                 try:
                     self._sdr.deactivateStream(self._stream)
@@ -245,10 +504,17 @@ class SDRDevice:
                 except Exception:
                     pass
                 self._sdr = None
+                if _sdr_devices_open > 0:
+                    _sdr_devices_open -= 1
+        finally:
+            self._lock.release()
         logger.info("Dispositivo cerrado")
 
     def get_supported_sample_rates(self) -> list[float]:
         if self.is_simulated or self.driver == "simulated":
+            return list(BANDWIDTH_PRESETS)
+
+        if self._native_settings_deferred():
             return list(BANDWIDTH_PRESETS)
 
         if not self._sdr or not soapysdr_available():
@@ -284,6 +550,25 @@ class SDRDevice:
         if abs(self.sample_rate - rate) < 1.0:
             return
 
+        if self._native_settings_deferred():
+            if not any(abs(rate - candidate) < 1.0 for candidate in BANDWIDTH_PRESETS):
+                supported = ", ".join(_format_bandwidth_hz(r) for r in BANDWIDTH_PRESETS)
+                raise SampleRateError(
+                    f"Bandwidth {_format_bandwidth_hz(rate)} no soportado. Opciones: {supported}"
+                )
+            self.sample_rate = rate
+            logger.info(
+                "sdrplay: bandwidth %s aplazado hasta iniciar RX",
+                _format_bandwidth_hz(rate),
+            )
+            return
+
+        if isinstance(self._sdr, SimulatedSDR) or self._sdr is None:
+            self._set_sample_rate_impl(rate)
+            return
+        run_sdr_io(self._set_sample_rate_impl, rate)
+
+    def _set_sample_rate_impl(self, rate: float) -> None:
         previous_rate = self.sample_rate
         self.sample_rate = rate
 
@@ -292,26 +577,7 @@ class SDRDevice:
                 self._sdr.sample_rate = rate
             elif self._sdr and soapysdr_available():
                 with self._lock:
-                    had_stream = self._stream is not None
-                    if had_stream:
-                        self._stop_stream()
-                        try:
-                            self._sdr.closeStream(self._stream)
-                        except Exception:
-                            pass
-                        self._stream = None
-                    self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
-                    self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
-                    self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
-                    if not self.auto_gain:
-                        self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
-                    if had_stream:
-                        try:
-                            self._activate_stream()
-                        except Exception as exc:
-                            raise SampleRateError(
-                                f"No se pudo reactivar stream tras cambio de bandwidth: {exc}"
-                            ) from exc
+                    self._apply_native_sample_rate_unlocked(rate)
         except Exception as exc:
             self.sample_rate = previous_rate
             raise SampleRateError(
@@ -320,6 +586,45 @@ class SDRDevice:
 
         logger.info("Bandwidth: %s", _format_bandwidth_hz(rate))
 
+    def _try_set_bandwidth_unlocked(self, rate_hz: float) -> None:
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return
+        if not hasattr(self._sdr, "setBandwidth"):
+            return
+        try:
+            self._sdr.setBandwidth(SOAPY_SDR_RX, self.channel, rate_hz)
+        except Exception as exc:
+            logger.debug("setBandwidth(%.0f Hz): %s", rate_hz, exc)
+
+    def _clamp_gain_unlocked(self, gain_db: float) -> float:
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return gain_db
+        try:
+            gain_range = self._sdr.getGainRange(SOAPY_SDR_RX, self.channel)
+            minimum = float(gain_range.minimum())
+            maximum = float(gain_range.maximum())
+            clamped = max(minimum, min(maximum, float(gain_db)))
+            if abs(clamped - gain_db) > 0.01:
+                logger.info(
+                    "Ganancia ajustada %.1f → %.1f dB (rango %.1f–%.1f)",
+                    gain_db,
+                    clamped,
+                    minimum,
+                    maximum,
+                )
+            return clamped
+        except Exception as exc:
+            logger.debug("getGainRange: %s", exc)
+            return gain_db
+
+    def _apply_gain_unlocked(self) -> None:
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return
+        self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
+        if not self.auto_gain:
+            self.gain = self._clamp_gain_unlocked(self.gain)
+            self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
+
     def _apply_settings(self):
         if not soapysdr_available() or isinstance(self._sdr, SimulatedSDR):
             if isinstance(self._sdr, SimulatedSDR):
@@ -327,11 +632,145 @@ class SDRDevice:
                 self._sdr.sample_rate = self.sample_rate
                 self._sdr.gain = self.gain
             return
-        self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, self.sample_rate)
+        with self._lock:
+            self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, self.sample_rate)
+            self._try_set_bandwidth_unlocked(self.sample_rate)
+            self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+            self._apply_gain_unlocked()
+
+    def _prepare_stream_unlocked(self, *, iq_rate_hz: float | None = None) -> None:
+        """Re-sincroniza parámetros antes de activateStream (sdrplay es sensible)."""
+        if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+            return
+        rate = float(iq_rate_hz if iq_rate_hz is not None else self.sample_rate)
+        self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+        self._try_set_bandwidth_unlocked(rate)
         self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
-        self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, self.auto_gain)
-        if not self.auto_gain:
-            self._sdr.setGain(SOAPY_SDR_RX, self.channel, self.gain)
+        self._apply_gain_unlocked()
+
+    def _apply_native_sample_rate_unlocked(self, rate: float) -> None:
+        """Cambia sample rate nativo reiniciando stream si hace falta."""
+        had_stream = self._stream is not None
+        if had_stream:
+            self._stop_stream()
+            try:
+                self._sdr.closeStream(self._stream)
+            except Exception:
+                pass
+            self._stream = None
+        if self.driver == "sdrplay":
+            self._sdrplay_apply_tuning_unlocked(rate, mode="stopped")
+        else:
+            self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+            self._try_set_bandwidth_unlocked(rate)
+            self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+            self._apply_gain_unlocked()
+        if had_stream:
+            self._activate_stream(safe_sdrplay_start=False)
+
+    def _sdrplay_apply_tuning_unlocked(self, rate: float, *, mode: str = "stopped") -> None:
+        """Aplica freq/rate/gain en SDRplay con orden alternativo si falla."""
+        if mode == "live" and self._stream is not None:
+            try:
+                self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+                self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+                self._try_set_bandwidth_unlocked(rate)
+                self._apply_gain_unlocked()
+                log_breadcrumb("device.sdrplay.tuning live ok")
+                return
+            except Exception as exc:
+                log_breadcrumb(f"device.sdrplay.tuning live FAIL: {exc}")
+
+        last_exc: Exception | None = None
+        for label, apply_fn in (
+            ("stopped-freq-first", self._sdrplay_tune_stopped_freq_first),
+            ("stopped-rate-first", self._sdrplay_tune_stopped_rate_first),
+        ):
+            try:
+                apply_fn(rate)
+                log_breadcrumb(f"device.sdrplay.tuning {label} ok")
+                return
+            except Exception as exc:
+                last_exc = exc
+                log_breadcrumb(f"device.sdrplay.tuning {label} FAIL: {exc}")
+        if last_exc is not None:
+            raise last_exc
+
+    def _sdrplay_tune_stopped_freq_first(self, rate: float) -> None:
+        self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+        self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+        self._try_set_bandwidth_unlocked(rate)
+        self._apply_gain_unlocked()
+
+    def _sdrplay_tune_stopped_rate_first(self, rate: float) -> None:
+        self._sdr.setSampleRate(SOAPY_SDR_RX, self.channel, rate)
+        self._try_set_bandwidth_unlocked(rate)
+        self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, self.center_freq)
+        self._apply_gain_unlocked()
+
+    def _sdrplay_probe_read_unlocked(self) -> int:
+        buff = np.empty(SDRPLAY_PROBE_READ_SAMPLES, dtype=np.complex64)
+        sr = self._sdr.readStream(
+            self._stream,
+            [buff],
+            SDRPLAY_PROBE_READ_SAMPLES,
+            timeoutUs=int(1e6),
+        )
+        return int(getattr(sr, "ret", 0))
+
+    def _activate_stream_sdrplay_minimal(self) -> None:
+        """Activa stream SDRplay sin setSampleRate previo (evita segfault en arranque)."""
+        apply_rate = self.sample_rate
+        if self.sample_rate > SAFE_START_SAMPLE_RATE:
+            self._sdrplay_pending_sample_rate = self.sample_rate
+            apply_rate = SAFE_START_SAMPLE_RATE
+        else:
+            self._sdrplay_pending_sample_rate = None
+
+        log_breadcrumb(
+            f"device.sdrplay.minimal_activate begin apply_rate={apply_rate:.0f} "
+            f"target={self.sample_rate:.0f}"
+        )
+        if self._stream is None:
+            self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        self._try_set_stream_mtu_unlocked(SDRPLAY_INITIAL_STREAM_MTU)
+        self._sdr.activateStream(self._stream)
+        time.sleep(0.05)
+        log_breadcrumb("device.sdrplay.minimal_activate activateStream ok")
+
+        probe_ret = self._sdrplay_probe_read_unlocked()
+        log_breadcrumb(f"device.sdrplay.probe_read ok ret={probe_ret}")
+
+        try:
+            self._sdrplay_apply_tuning_unlocked(apply_rate, mode="live")
+            self._sdrplay_stream_bootstrapped = True
+            log_breadcrumb("device.sdrplay.minimal_activate stream ready (live tune)")
+            return
+        except Exception as exc:
+            log_breadcrumb(f"device.sdrplay live tune failed: {exc}")
+
+        self._stop_stream()
+        try:
+            self._sdr.closeStream(self._stream)
+        except Exception:
+            pass
+        self._stream = None
+        self._sdrplay_apply_tuning_unlocked(apply_rate, mode="stopped")
+        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        self._try_set_stream_mtu_unlocked(SDRPLAY_INITIAL_STREAM_MTU)
+        self._sdr.activateStream(self._stream)
+        time.sleep(0.05)
+        self._sdrplay_stream_bootstrapped = True
+        log_breadcrumb("device.sdrplay.minimal_activate stream ready (stopped tune)")
+
+    def _try_set_stream_mtu_unlocked(self, mtu: int) -> None:
+        if self._stream is None or not hasattr(self._sdr, "setStreamMTU"):
+            return
+        try:
+            actual = int(self._sdr.setStreamMTU(self._stream, mtu))
+            logger.info("Stream MTU: %d", actual)
+        except Exception as exc:
+            logger.debug("setStreamMTU(%d): %s", mtu, exc)
 
     def _stop_stream(self) -> None:
         if not self._stream or not soapysdr_available() or isinstance(self._sdr, SimulatedSDR):
@@ -341,16 +780,65 @@ class SDRDevice:
         except Exception as exc:
             logger.warning("Error desactivando stream RX: %s", exc)
 
-    def _activate_stream(self) -> None:
+    def _activate_stream(self, *, safe_sdrplay_start: bool = True) -> None:
         """Activa stream; el caller debe tener _lock si hace falta exclusión."""
         if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
+
+        if (
+            self.driver == "sdrplay"
+            and safe_sdrplay_start
+            and not self._sdrplay_stream_bootstrapped
+        ):
+            self._activate_stream_sdrplay_minimal()
+            return
+
+        iq_rate = self.sample_rate
+        if (
+            safe_sdrplay_start
+            and self.driver == "sdrplay"
+            and self.sample_rate > SAFE_START_SAMPLE_RATE
+        ):
+            self._sdrplay_pending_sample_rate = self.sample_rate
+            iq_rate = SAFE_START_SAMPLE_RATE
+            log_breadcrumb(
+                f"sdrplay: stream start at {iq_rate:.0f} Hz, "
+                f"target {self._sdrplay_pending_sample_rate:.0f} Hz after warmup"
+            )
+        self._prepare_stream_unlocked(iq_rate_hz=iq_rate)
         if self._stream is None:
             self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        initial_mtu = SDRPLAY_INITIAL_STREAM_MTU if self.driver == "sdrplay" else 65_536
+        self._try_set_stream_mtu_unlocked(initial_mtu)
         self._sdr.activateStream(self._stream)
+        time.sleep(0.05)
+
+    def maybe_ramp_sdrplay_sample_rate(self) -> bool:
+        """
+        Tras warmup RX, sube el sample rate nativo al objetivo (p. ej. 2 MHz FM).
+        Evita crash al activar stream directamente a tasas altas en SDRplay.
+        """
+        pending = self._sdrplay_pending_sample_rate
+        if pending is None or self.driver != "sdrplay":
+            return False
+        self._sdrplay_pending_sample_rate = None
+        run_sdr_io(self._ramp_sdrplay_sample_rate_impl, pending)
+        return True
+
+    def _ramp_sdrplay_sample_rate_impl(self, target_hz: float) -> None:
+        log_breadcrumb(f"sdrplay: ramp sample_rate to {target_hz:.0f}")
+        with self._lock:
+            self._apply_native_sample_rate_unlocked(target_hz)
+        log_breadcrumb("sdrplay: ramp sample_rate ok")
 
     def stop_stream(self) -> None:
         """Detiene el stream RX (p. ej. al pulsar DETENER RX)."""
+        if isinstance(self._sdr, SimulatedSDR) or self._sdr is None:
+            self._stop_stream_impl()
+            return
+        run_sdr_io(self._stop_stream_impl)
+
+    def _stop_stream_impl(self) -> None:
         with self._lock:
             self._stop_stream()
 
@@ -358,11 +846,18 @@ class SDRDevice:
         """Activa el stream RX bajo demanda (no al abrir el dispositivo)."""
         if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
+        run_sdr_io(self._start_stream_impl)
+
+    def _start_stream_impl(self) -> None:
+        log_breadcrumb(
+            f"device.start_stream rate={self.sample_rate:.0f} driver={self.driver!r}"
+        )
         with self._lock:
             self._stream_stats = StreamStats()
             try:
                 self._activate_stream()
             except Exception as exc:
+                log_breadcrumb(f"device.start_stream FAIL: {exc}")
                 try:
                     if self._stream:
                         self._sdr.closeStream(self._stream)
@@ -370,6 +865,13 @@ class SDRDevice:
                     pass
                 self._stream = None
                 raise RuntimeError(f"No se pudo activar stream RX: {exc}") from exc
+        logger.info(
+            "Stream RX activo | driver=%s kwargs=%s rate=%.0f Hz",
+            self.driver,
+            self._device_kwargs,
+            self.sample_rate,
+        )
+        log_breadcrumb("device.start_stream ok")
 
     def _recover_stream_unlocked(self) -> None:
         """Reinicia stream; caller debe tener _lock."""
@@ -384,7 +886,7 @@ class SDRDevice:
             except Exception:
                 pass
             self._stream = None
-        self._activate_stream()
+        self._activate_stream(safe_sdrplay_start=False)
 
     @property
     def stream_active(self) -> bool:
@@ -392,28 +894,66 @@ class SDRDevice:
 
     def set_frequency(self, freq_hz: float):
         self.center_freq = freq_hz
+        if self._native_settings_deferred():
+            return
         if self._sdr:
             if soapysdr_available() and not isinstance(self._sdr, SimulatedSDR):
-                self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, freq_hz)
+                run_sdr_io(self._set_frequency_impl, freq_hz)
             elif isinstance(self._sdr, SimulatedSDR):
                 self._sdr.center_freq = freq_hz
 
+    def _set_frequency_impl(self, freq_hz: float) -> None:
+        log_breadcrumb(f"device.set_frequency {freq_hz:.0f}")
+        with self._lock:
+            if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
+                return
+            had_stream = self._stream is not None
+            if had_stream:
+                self._stop_stream()
+            self._sdr.setFrequency(SOAPY_SDR_RX, self.channel, freq_hz)
+            if had_stream:
+                try:
+                    self._activate_stream(safe_sdrplay_start=False)
+                except Exception as exc:
+                    log_breadcrumb(f"device.set_frequency reactivate FAIL: {exc}")
+                    raise RuntimeError(
+                        f"No se pudo reactivar stream tras cambio de frecuencia: {exc}"
+                    ) from exc
+        log_breadcrumb("device.set_frequency ok")
+
     def set_gain(self, gain_db: float):
         self.gain = gain_db
+        if self._native_settings_deferred():
+            return
         if self._sdr and soapysdr_available() and not isinstance(self._sdr, SimulatedSDR):
+            run_sdr_io(self._set_gain_impl, gain_db)
+
+    def _set_gain_impl(self, gain_db: float) -> None:
+        with self._lock:
             self._sdr.setGainMode(SOAPY_SDR_RX, self.channel, False)
-            self._sdr.setGain(SOAPY_SDR_RX, self.channel, gain_db)
+            clamped = self._clamp_gain_unlocked(gain_db)
+            self.gain = clamped
+            self._sdr.setGain(SOAPY_SDR_RX, self.channel, clamped)
 
     def read_samples(self, num_samples: int = 256 * 1024) -> np.ndarray:
         if isinstance(self._sdr, SimulatedSDR):
-            with self._lock:
-                self._stream_stats.read_calls += 1
-                self._stream_stats.samples_requested += num_samples
-            out = self._sdr.read_samples(num_samples)
-            with self._lock:
-                self._stream_stats.samples_received += len(out)
-            return out
+            return self._read_samples_sim(num_samples)
+        if not self._sdr or not soapysdr_available():
+            return np.zeros(num_samples, dtype=np.complex64)
+        return run_sdr_io(self._read_samples_impl, num_samples)
 
+    def _read_samples_sim(self, num_samples: int) -> np.ndarray:
+        with self._lock:
+            self._stream_stats.read_calls += 1
+            self._stream_stats.samples_requested += num_samples
+        out = self._sdr.read_samples(num_samples)
+        with self._lock:
+            self._stream_stats.samples_received += len(out)
+        return out
+
+    def _read_samples_impl(self, num_samples: int) -> np.ndarray:
+        if self._stream_stats.read_calls <= 1:
+            log_breadcrumb(f"device.read_samples first n={num_samples}")
         if not self._stream:
             logger.warning("read_samples llamado sin stream RX activo")
             return np.zeros(num_samples, dtype=np.complex64)
@@ -427,14 +967,21 @@ class SDRDevice:
         chunk = min(num_samples, 65536)
         overflow_retries = 0
 
-        # Pre-asignar buffer temporal para reutilizar y evitar allocations en bucle
         tmp = np.empty(chunk, dtype=np.complex64)
 
         while read < num_samples:
             to_read = min(chunk, num_samples - read)
             tmp_view = tmp[:to_read]
-            with self._lock:
-                sr = self._sdr.readStream(self._stream, [tmp_view], to_read, timeoutUs=int(1e6))
+            try:
+                with self._lock:
+                    if not self._stream:
+                        break
+                    sr = self._sdr.readStream(self._stream, [tmp_view], to_read, timeoutUs=int(1e6))
+            except Exception as exc:
+                logger.warning("readStream excepción: %s", exc)
+                with self._lock:
+                    self._stream_stats.read_errors += 1
+                break
             if sr.ret > 0:
                 buff[read:read + sr.ret] = tmp_view[:sr.ret]
                 read += sr.ret
@@ -465,7 +1012,12 @@ class SDRDevice:
         return buff
 
     @staticmethod
-    def list_devices() -> list[dict]:
+    def list_devices(*, allow_while_open: bool = False) -> list[dict]:
+        if _sdr_devices_open > 0 and not allow_while_open:
+            logger.debug(
+                "list_devices omitido: dispositivo Soapy abierto (evita crash/reentrada sdrplay)"
+            )
+            return []
         if not _load_soapy():
             return [{"driver": "simulated", "label": "Simulación (sin hardware)"}]
         return [dict(r) for r in _soapy_mod.Device.enumerate()]
