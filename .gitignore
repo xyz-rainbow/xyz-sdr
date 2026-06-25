@@ -40,6 +40,9 @@ resources/test/*.tmp
 resources/test/*.toml.tmp
 
 # Project specific
+.harness
+AGENTS.md
+STATE.md
 config/local.toml
 scratch/
 recordings/
