@@ -78,7 +78,7 @@ class StorageHost(Protocol):
     def project_root(self) -> Path: ...
 
     # Callbacks
-    def log(self, message: str) -> None: ...
+    def host_log(self, message: str) -> None: ...
     def update_status(self) -> None: ...
     def refresh_preset_select(self) -> None: ...
 
@@ -198,7 +198,7 @@ class StorageController:
         """Inicia grabación IQ + audio si aplica. Devuelve True si OK."""
         if not self._host.rx_active:
             self._audio_effects.play_error()
-            self._host.log("[ERROR] Inicia RX antes de grabar")
+            self._host.host_log("[ERROR] Inicia RX antes de grabar")
             return False
 
         rec_cfg = self._host.config.get("recorder", {})
@@ -227,18 +227,18 @@ class StorageController:
             )
         except Exception as exc:
             self._audio_effects.play_error()
-            self._host.log(f"[ERROR] No se pudo iniciar grabacion: {exc}")
+            self._host.host_log(f"[ERROR] No se pudo iniciar grabacion: {exc}")
             return False
 
         self._recording = True
         self._audio_effects.play_blip()
         if iq_path:
-            self._host.log(f"[OK] Grabacion IQ: {iq_path}")
+            self._host.host_log(f"[OK] Grabacion IQ: {iq_path}")
         if wav_path:
-            self._host.log(f"[OK] Grabacion audio: {wav_path}")
+            self._host.host_log(f"[OK] Grabacion audio: {wav_path}")
         if not iq_path and not wav_path:
             self._recording = False
-            self._host.log("[ERROR] Nada que grabar con la config actual")
+            self._host.host_log("[ERROR] Nada que grabar con la config actual")
             return False
 
         self._host.update_status()
@@ -257,9 +257,9 @@ class StorageController:
         if log_stopped:
             self._audio_effects.play_blip()
             if iq_path:
-                self._host.log(f"[OK] Grabacion IQ detenida: {iq_path}")
+                self._host.host_log(f"[OK] Grabacion IQ detenida: {iq_path}")
             if wav_path:
-                self._host.log(f"[OK] Grabacion audio detenida: {wav_path}")
+                self._host.host_log(f"[OK] Grabacion audio detenida: {wav_path}")
         self._host.update_status()
         return RecordingResult(iq_path, wav_path)
 
@@ -306,10 +306,10 @@ class StorageController:
         self._bookmarks.append(bookmark)
         try:
             save_bookmarks(self.bookmarks_path(), self._bookmarks)
-            self._host.log(f"[OK] Guardado bookmark: {name}")
+            self._host.host_log(f"[OK] Guardado bookmark: {name}")
             return bookmark
         except Exception as exc:
-            self._host.log(f"[ERROR] Guardar bookmark: {exc}")
+            self._host.host_log(f"[ERROR] Guardar bookmark: {exc}")
             return None
 
     def export_bookmarks_to(self, dest: str | Path) -> bool:
@@ -317,13 +317,13 @@ class StorageController:
         dest_path = self._resolve_bookmark_io_path(dest)
         try:
             export_bookmarks(self._bookmarks, dest_path)
-            self._host.log(
+            self._host.host_log(
                 f"[OK] Bookmarks exportados ({len(self._bookmarks)}) → {dest_path}"
             )
             self._audio_effects.play_chime()
             return True
         except Exception as exc:
-            self._host.log(f"[ERROR] Export bookmarks: {exc}")
+            self._host.host_log(f"[ERROR] Export bookmarks: {exc}")
             self._audio_effects.play_error()
             return False
 
@@ -339,17 +339,17 @@ class StorageController:
             save_bookmarks(self.bookmarks_path(), self._bookmarks)
             self._host.refresh_preset_select()
             merge_str = " — fusionados" if merge else ""
-            self._host.log(
+            self._host.host_log(
                 f"[OK] Bookmarks importados ({len(self._bookmarks)} entradas{merge_str})"
             )
             self._audio_effects.play_chime()
             return True
         except FileNotFoundError:
-            self._host.log(f"[ERROR] No se encontró archivo: {src_path}")
+            self._host.host_log(f"[ERROR] No se encontró archivo: {src_path}")
             self._audio_effects.play_error()
             return False
         except Exception as exc:
-            self._host.log(f"[ERROR] Import bookmarks: {exc}")
+            self._host.host_log(f"[ERROR] Import bookmarks: {exc}")
             self._audio_effects.play_error()
             return False
 
@@ -378,7 +378,7 @@ class StorageController:
             - Ver ``_INT_KEYS`` y ``_FLOAT_KEYS``.
         """
         if section not in _PATCHERS:
-            self._host.log(f"[WARN] Sección desconocida: {section}")
+            self._host.host_log(f"[WARN] Sección desconocida: {section}")
             return False
 
         patcher = _PATCHERS[section]
@@ -392,7 +392,7 @@ class StorageController:
                     cfg[key] = value
             return True
         except Exception as exc:
-            self._host.log(f"[WARN] No se pudo guardar config [{section}]: {exc}")
+            self._host.host_log(f"[WARN] No se pudo guardar config [{section}]: {exc}")
             return False
 
     @staticmethod

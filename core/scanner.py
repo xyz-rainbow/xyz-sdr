@@ -90,7 +90,7 @@ class ScannerHost(Protocol):
 
     # Callbacks de efecto
     def set_tuned_frequency(self, freq_hz: float) -> None: ...
-    def log(self, message: str) -> None: ...
+    def host_log(self, message: str) -> None: ...
     def play_chime(self) -> None: ...
     def play_error(self) -> None: ...
 
@@ -160,7 +160,7 @@ class ScannerEngine:
         """Inicia el escaneo. Devuelve False si no se pudo (RX off)."""
         if not self._host.rx_active:
             self._host.play_error()
-            self._host.log("[ERROR] Inicia RX antes de escanear")
+            self._host.host_log("[ERROR] Inicia RX antes de escanear")
             return False
         if self._config is None:
             raise RuntimeError(
@@ -172,7 +172,7 @@ class ScannerEngine:
             paused=False,
             tuned_time=self._time_fn(),
         )
-        self._host.log(
+        self._host.host_log(
             f"[SCAN] Iniciando escaneo ({cfg.freq_start_hz / 1e6:.2f} - "
             f"{cfg.freq_end_hz / 1e6:.2f} MHz, paso {cfg.freq_step_hz / 1e3:.1f} kHz)"
         )
@@ -185,7 +185,7 @@ class ScannerEngine:
         if not self._state.scanning:
             return
         self._state = ScannerState()
-        self._host.log("[SCAN] Escaneo detenido")
+        self._host.host_log("[SCAN] Escaneo detenido")
 
     def pause(self, passband_snr: float) -> None:
         """Pausa el escaneo por señal detectada."""
@@ -194,7 +194,7 @@ class ScannerEngine:
         self._state.paused = True
         self._state.pause_below_since = 0.0
         self._host.play_chime()
-        self._host.log(
+        self._host.host_log(
             f"[SCAN] Pausa — señal {passband_snr:.1f} dB en "
             f"{self._host.tuned_frequency / 1e6:.4f} MHz"
         )
@@ -207,7 +207,7 @@ class ScannerEngine:
         self._state.tuned_time = self._time_fn()
         self._state.last_signal_time = 0.0
         self._state.pause_below_since = 0.0
-        self._host.log("[SCAN] Reanudando escaneo")
+        self._host.host_log("[SCAN] Reanudando escaneo")
 
     def step(self) -> None:
         """Avanza a la siguiente frecuencia (wrap-around en freq_end)."""
@@ -217,7 +217,7 @@ class ScannerEngine:
         next_freq = self._host.tuned_frequency + cfg.freq_step_hz
         if next_freq > cfg.freq_end_hz:
             next_freq = cfg.freq_start_hz
-        self._host.log(f"[SCAN] Sintonizando: {next_freq / 1e6:.4f} MHz")
+        self._host.host_log(f"[SCAN] Sintonizando: {next_freq / 1e6:.4f} MHz")
         self._host.set_tuned_frequency(next_freq)
         self._state.tuned_time = self._time_fn()
         self._state.last_signal_time = 0.0
@@ -261,7 +261,7 @@ class ScannerEngine:
                 self.pause(passband_snr)
                 return
             if self._state.last_signal_time == 0.0:
-                self._host.log(
+                self._host.host_log(
                     f"[SCAN] Señal en {self._host.tuned_frequency / 1e6:.4f} MHz "
                     f"(SNR: {passband_snr:.1f} dB)"
                 )

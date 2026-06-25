@@ -132,8 +132,8 @@ def test_engine_configure_then_start():
     assert eng.paused is False
     # Debe haber saltado a la freq de inicio
     eng._host.set_tuned_frequency.assert_called_with(88_000_000.0)
-    # Y logueado
-    assert any("Iniciando escaneo" in str(c) for c in eng._host.log.call_args_list)
+    # Y host_logueado
+    assert any("Iniciando escaneo" in str(c) for c in eng._host.host_log.call_args_list)
 
 
 def test_engine_start_requires_rx_active():
@@ -190,14 +190,14 @@ def test_engine_step_wraps_at_end():
 # ── Pause / resume ───────────────────────────────────────────────────────────
 
 
-def test_engine_pause_emits_chime_and_log():
+def test_engine_pause_emits_chime_and_host_log():
     eng = _make_engine()
     eng.configure(_make_config())
     eng.start()
     eng.pause(15.5)
     assert eng.paused is True
     eng._host.play_chime.assert_called_once()
-    assert any("Pausa" in str(c) for c in eng._host.log.call_args_list)
+    assert any("Pausa" in str(c) for c in eng._host.host_log.call_args_list)
 
 
 def test_engine_pause_idempotent():
@@ -224,12 +224,12 @@ def test_engine_resume_requires_paused():
     eng.configure(_make_config())
     eng.start()
     eng.resume()  # no estaba en pausa, no debe hacer nada
-    # Y loguear el resume solo si estaba pausado
-    log_messages = [str(c) for c in eng._host.log.call_args_list]
-    assert not any("Reanudando" in m for m in log_messages)
+    # Y host_loguear el resume solo si estaba pausado
+    host_log_messages = [str(c) for c in eng._host.host_log.call_args_list]
+    assert not any("Reanudando" in m for m in host_log_messages)
 
 
-# ── on_frame logic ───────────────────────────────────────────────────────────
+# ── on_frame host_logic ───────────────────────────────────────────────────────────
 
 
 def test_on_frame_ignores_when_not_scanning():

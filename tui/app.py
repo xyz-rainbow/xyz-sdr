@@ -864,6 +864,7 @@ class XyzSDRApp(App):
         self.debug_mode = debug_mode
         self.band_profile = band_profile
         self.strict = strict
+        self._project_root = Path(config_path).resolve().parent.parent
         # ScannerEngine: la lógica de escaneo vive ahora en core/scanner.py.
         # XyzSDRApp implementa ScannerHost vía propiedades y métodos.
         from core.scanner import ScannerEngine
@@ -876,8 +877,7 @@ class XyzSDRApp(App):
         self._rx_active = False
         self._recording = False
         self._recorder: Optional[SDRRecorder] = None
-        self._scanning = False
-        self._scan_paused = False
+        # scanning/paused: propiedades delegadas a ScannerEngine (no asignar aquí)
         self._scan_pause_below_since = 0.0
         self._scan_tuned_time = 0.0
         self._scan_last_signal_time = 0.0
@@ -961,7 +961,6 @@ class XyzSDRApp(App):
         self._fm_demod_state = FmDemodState()
 
         rec_cfg = self.config.get("recorder", {})
-        self._project_root = Path(self.config_path).resolve().parent.parent
         self._bookmarks = self._storage.bookmarks  # alias legacy (StorageController es owner)
         # Legacy state — StorageController es el owner real; estos atributos
         # se mantienen por compatibilidad con código externo que los lee.
@@ -2332,8 +2331,8 @@ class XyzSDRApp(App):
         finally:
             self._is_scanner_stepping = False
 
-    def log(self, message: str) -> None:
-        """Callback del ScannerEngine / StorageController."""
+    def host_log(self, message: str) -> None:
+        """Callback del ScannerEngine / StorageController (no usar `log`: reservado por Textual)."""
         self._log(message)
 
     def play_chime(self) -> None:
@@ -2350,6 +2349,10 @@ class XyzSDRApp(App):
         return self._display_width
 
     # ── StorageHost protocol: callbacks delegan a la app ───────────────────
+
+    @property
+    def project_root(self) -> Path:
+        return self._project_root
 
     def refresh_preset_select(self) -> None:
         """Callback del StorageController tras import_bookmarks_from."""

@@ -65,8 +65,8 @@ def test_start_recording_requires_rx_active(tmp_path: Path):
     storage = StorageController(host, _make_audio_effects(), PRESETS)
     result = storage.start_recording()
     assert result is False
-    host.log.assert_called()
-    assert "RX antes de grabar" in host.log.call_args_list[0].args[0]
+    host.host_log.assert_called()
+    assert "RX antes de grabar" in host.host_log.call_args_list[0].args[0]
 
 
 def test_start_recording_calls_recorder_start(tmp_path: Path):
@@ -223,7 +223,7 @@ def test_import_bookmarks_from_missing_file(tmp_path: Path):
     storage = StorageController(host, _make_audio_effects(), PRESETS)
     result = storage.import_bookmarks_from(tmp_path / "nonexistent.toml")
     assert result is False
-    host.log.assert_called()
+    host.host_log.assert_called()
 
 
 def test_import_bookmarks_from_overwrite_mode(tmp_path: Path):
