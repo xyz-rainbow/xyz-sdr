@@ -65,6 +65,7 @@ def test_env_ready_vs_hardware_ready():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_plugin_ok=True,
         venv_path=__import__("pathlib").Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,

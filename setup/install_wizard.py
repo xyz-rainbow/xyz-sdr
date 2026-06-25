@@ -13,6 +13,7 @@ from setup.install_actions import (
     install_pothos,
     install_python_env,
     install_sdrplay,
+    install_soapy_sdrplay3,
     report_path_configuration,
 )
 from setup.install_i18n import t
@@ -58,6 +59,9 @@ def run_repair_wizard(ctx: InstallContext, *, quiet: bool = False) -> int:
                 report_path_configuration(ctx)
             else:
                 log_line("SKIP pothos")
+            state = probe_environment(bootstrap_soapy=False)
+            if state.sdrplay_ok and state.pothos_installed:
+                install_soapy_sdrplay3(ctx)
             continue
 
         if key == "python":

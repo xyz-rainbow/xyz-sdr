@@ -11,6 +11,7 @@ INSTALL_BLOCKER_ORDER = (
     "pothos",
     "pothos_path",
     "sdrplay_api",
+    "soapy_sdrplay3",
     "venv",
     "python_libs",
     "soapysdr",
@@ -42,6 +43,8 @@ def next_action(state: EnvironmentState, lang: str) -> InstallAction:
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_pothos_path", (blocker,))
     if blocker == "sdrplay_api":
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_sdrplay", (blocker,))
+    if blocker == "soapy_sdrplay3":
+        return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_soapy_sdrplay3", (blocker,))
     if blocker in ("venv", "python_libs", "soapysdr"):
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_python", (blocker,))
 
@@ -71,6 +74,8 @@ def drivers_row_status(state: EnvironmentState, lang: str) -> str:
         missing.append("PothosSDR")
     elif not state.path_ok:
         missing.append("PATH")
+    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_plugin_ok:
+        missing.append("SoapySDRPlay3")
     return t(lang, "status_row_fail").format(", ".join(missing) if missing else "?")
 
 

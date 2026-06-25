@@ -18,6 +18,7 @@ from setup.windows_installers import (
     download_file,
     run_exe_installer,
 )
+from setup.bundled_installers import acquire_sdrplay_installer
 
 
 @dataclass
@@ -59,17 +60,35 @@ def report_install_error(ctx: InstallContext, exc: Exception) -> None:
         ctx.say(f"  {t(ctx.lang, 'install_elevation_hint')}")
 
 
-def install_sdrplay(ctx: InstallContext) -> None:
-    path = os.path.join(ctx.temp_dir, "SDRplay_API_installer.exe")
-    if download_file(SDRPLAY_INSTALLER_URL, path, "SDRplay API", lang=ctx.lang, on_message=ctx.say):
-        ctx.say(f"  {t(ctx.lang, 'running_installer')}")
-        try:
-            run_exe_installer(path)
-            ctx.say(f"\n[SUCCESS] {t(ctx.lang, 'install_success')}")
-        except Exception as exc:
-            report_install_error(ctx, exc)
-    else:
+def run_sdrplay_api_installer(ctx: InstallContext) -> bool:
+    """Obtiene e instala SDRplay API v3.15 (bundled → local → URL)."""
+    path = acquire_sdrplay_installer(ctx.temp_dir, lang=ctx.lang, on_message=ctx.say)
+    if not path:
         ctx.say(f"\n[ERROR] {t(ctx.lang, 'install_fail')}")
+        ctx.say(f"\n  Manual: {SDRPLAY_INSTALLER_URL}")
+        return False
+
+    ctx.say(f"  {t(ctx.lang, 'running_installer')}")
+    ctx.say("  [>>] Acepta UAC si aparece; completa el asistente SDRplay API.")
+    try:
+        run_exe_installer(path)
+        ctx.say(f"\n[SUCCESS] {t(ctx.lang, 'install_success')}")
+        from core.sdrplay_service import restart_sdrplay_service
+
+        ok, msg = restart_sdrplay_service()
+        if ok:
+            ctx.say(f"  [OK] {msg}")
+        else:
+            ctx.say(f"  [>>] {msg}")
+            ctx.say("  [>>] Ejecuta como admin: Restart-Service SDRplayAPIService")
+        return True
+    except Exception as exc:
+        report_install_error(ctx, exc)
+        return False
+
+
+def install_sdrplay(ctx: InstallContext) -> None:
+    run_sdrplay_api_installer(ctx)
 
 
 def install_pothos(ctx: InstallContext) -> None:
@@ -158,6 +177,17 @@ def install_python_env(ctx: InstallContext, *, offer_python_install: bool = True
     except Exception as exc:
         ctx.say(f"\n[ERROR] {t(ctx.lang, 'py_fail')}: {exc}")
         return False
+
+
+def install_soapy_sdrplay3(ctx: InstallContext, *, force: bool = False) -> bool:
+    from setup.soapy_sdrplay3 import install_soapy_sdrplay3_if_needed
+
+    return install_soapy_sdrplay3_if_needed(
+        ctx.temp_dir,
+        say=ctx.say,
+        confirm=ctx.confirm,
+        force=force,
+    )
 
 
 def run_diagnostics(ctx: InstallContext, *, verbose: bool = True) -> int:
