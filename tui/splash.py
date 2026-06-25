@@ -154,18 +154,52 @@ def _render_banner_block(
     return "\n".join(out)
 
 
-def _draw_progress_bar(width: int, percent: int, bar_width: int = 40) -> None:
+def _draw_progress_bar(
+    width: int,
+    percent: int,
+    bar_width: int = 40,
+    *,
+    use_cr: bool = True,
+) -> None:
     bar_pad = max(0, (width - bar_width - 8) // 2)
     filled = int((percent / 100) * bar_width)
     empty = bar_width - filled
     bar_color = C_CYAN if percent < 50 else C_LIME
     fill_ch, empty_ch = _progress_fill_chars()
     bar = fill_ch * filled + empty_ch * empty
+    prefix = "\r" if use_cr else ""
     _console_write(
-        "\r"
+        prefix
         + " " * bar_pad
         + f"{C_RESET}[{bar_color}{bar}{C_RESET}] {percent:3d}%"
     )
+
+
+def _trim_status_line(line: str, width: int) -> str:
+    plain = line.strip()
+    if len(plain) <= width - 2:
+        return plain
+    return plain[: max(8, width - 5)] + "..."
+
+
+def _render_startup_frame(
+    width: int,
+    v_padding: int,
+    centered: list[str],
+    percent: int,
+    status_lines: list[str] | None,
+    *,
+    max_status_lines: int = 5,
+) -> None:
+    _clear_screen()
+    _console_write(_render_banner_block(centered, v_padding))
+    _draw_progress_bar(width, percent, use_cr=False)
+    if status_lines:
+        _console_write("\n")
+        for line in status_lines[-max_status_lines:]:
+            display = _trim_status_line(line, width)
+            pad = max(0, (width - len(display)) // 2)
+            _console_write(" " * pad + f"{C_DIM}{display}{C_RESET}\n")
 
 
 def run_startup_splash(
@@ -173,10 +207,12 @@ def run_startup_splash(
     *,
     min_duration_s: float = 1.0,
     step_sleep_s: float = 0.06,
+    status_lines: list[str] | None = None,
 ) -> _T:
     """
     Muestra banner + barra de progreso mientras ``work()`` corre en segundo plano.
     La salida de consola del trabajo debe suprimirse con ``suppress_startup_output``.
+    Si ``status_lines`` se proporciona, las últimas líneas se muestran bajo la barra.
     """
     global _USE_UNICODE_SPLASH
     _USE_UNICODE_SPLASH = configure_console_encoding()
@@ -193,8 +229,7 @@ def run_startup_splash(
         except BaseException as exc:  # noqa: BLE001
             error.append(exc)
 
-    _clear_screen()
-    _console_write(_render_banner_block(centered, v_padding))
+    _render_startup_frame(width, v_padding, centered, 0, status_lines)
 
     thread = threading.Thread(target=_runner, name="xyz-sdr-startup", daemon=True)
     t0 = time.monotonic()
@@ -209,7 +244,7 @@ def run_startup_splash(
         else:
             percent = 100
 
-        _draw_progress_bar(width, percent)
+        _render_startup_frame(width, v_padding, centered, percent, status_lines)
 
         if not thread.is_alive() and elapsed >= min_duration_s:
             break
@@ -219,7 +254,7 @@ def run_startup_splash(
         time.sleep(step_sleep_s)
 
     thread.join()
-    _draw_progress_bar(width, 100)
+    _render_startup_frame(width, v_padding, centered, 100, status_lines)
     _console_write("\n")
     time.sleep(0.15)
     _handoff_to_textual()

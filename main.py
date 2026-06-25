@@ -45,6 +45,11 @@ class StartupHardwareError(Exception):
         super().__init__("\n".join(lines))
 
 
+def _will_use_startup_splash(args: argparse.Namespace) -> bool:
+    """True si la TUI mostrará splash (no modos CLI ni --no-splash)."""
+    return not args.no_splash and not args.check and not args.list_dev and not args.diagnose_sdrplay
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="xyz-sdr",
@@ -146,39 +151,56 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
-    config = load_config(args.config)
+    startup_logs: list[str] = []
+    use_startup_splash = _will_use_startup_splash(args)
+    defer_config = use_startup_splash
 
-    from core.band_profiles import merge_configs
-    from core.config_store import user_config_path
+    def _load_application_config(*, exit_on_error: bool = True) -> tuple[dict, str | None]:
+        cfg = load_config(args.config)
+        from core.band_profiles import merge_configs
+        from core.config_store import user_config_path
 
-    local_path = user_config_path(args.config)
-    if Path(local_path).is_file():
-        local_cfg = load_config(local_path)
-        if local_cfg:
-            config = merge_configs(config, local_cfg)
-            logger.info("Config local cargada: %s", local_path)
+        local_path = user_config_path(args.config)
+        if Path(local_path).is_file():
+            local_cfg = load_config(local_path)
+            if local_cfg:
+                cfg = merge_configs(cfg, local_cfg)
+                logger.info("Config local cargada: %s", local_path)
 
-    active_band = args.band
-    if not active_band:
-        saved = config.get("app", {}).get("active_band_profile", "")
-        active_band = str(saved).strip() or None
+        band = args.band
+        if not band:
+            saved = cfg.get("app", {}).get("active_band_profile", "")
+            band = str(saved).strip() or None
 
-    if active_band:
-        from core.band_profiles import load_band_profile
-        from core.config_store import ensure_user_config, patch_app_section
+        if band:
+            from core.band_profiles import load_band_profile
+            from core.config_store import ensure_user_config, patch_app_section
 
-        try:
-            band_cfg = load_band_profile(active_band)
-            config = merge_configs(config, band_cfg)
-            logger.info("Perfil de banda activo: %s", active_band)
-            if args.band:
-                patch_app_section(ensure_user_config(args.config), active_band_profile=args.band)
-        except FileNotFoundError as exc:
-            logger.error("%s", exc)
-            sys.exit(1)
-        except Exception as exc:
-            logger.error("Error cargando perfil de banda %s: %s", active_band, exc)
-            sys.exit(1)
+            try:
+                band_cfg = load_band_profile(band)
+                cfg = merge_configs(cfg, band_cfg)
+                logger.info("Perfil de banda activo: %s", band)
+                if args.band:
+                    patch_app_section(ensure_user_config(args.config), active_band_profile=args.band)
+            except FileNotFoundError as exc:
+                if exit_on_error:
+                    logger.error("%s", exc)
+                    sys.exit(1)
+                raise StartupHardwareError([str(exc)]) from exc
+            except Exception as exc:
+                msg = f"Error cargando perfil de banda {band}: {exc}"
+                if exit_on_error:
+                    logger.error("%s", msg)
+                    sys.exit(1)
+                raise StartupHardwareError([msg]) from exc
+        return cfg, band
+
+    from core.startup_io import suppress_startup_output
+
+    config: dict = {}
+    active_band: str | None = None
+    if not defer_config:
+        config, active_band = _load_application_config()
 
     # ── Modo check ──────────────────────────────────────────────────────────
     if args.check:
@@ -230,16 +252,14 @@ def main():
         sys.exit(0)
 
     # ── Configuración combinada (TOML + args CLI) ───────────────────────────
-    dev_cfg = config.get("device", {})
+    dev_cfg = config.get("device", {}) if config else {}
     driver      = args.driver or dev_cfg.get("driver", "sdrplay")
     center_freq = (args.freq * 1e6) if args.freq else dev_cfg.get("center_freq", 100_600_000)
     gain        = args.gain if args.gain is not None else dev_cfg.get("gain", 40.0)
-    demod_mode  = args.mode or config.get("dsp", {}).get("demod_mode", "wbfm")
-    volume      = config.get("dsp", {}).get("volume", 75.0)
+    demod_mode  = args.mode or (config.get("dsp", {}).get("demod_mode", "wbfm") if config else "wbfm")
+    volume      = config.get("dsp", {}).get("volume", 75.0) if config else 75.0
 
     # ── Verificación de hardware real y simulación ─────────────────────────
-    startup_logs: list[str] = []
-
     if args.sim:
         driver = "simulated"
 
@@ -247,19 +267,44 @@ def main():
 
     # ── Lanzar TUI ─────────────────────────────────────────────────────────
     try:
-        from core.startup_io import suppress_startup_output
         from tui.app import XyzSDRApp
         from tui.splash import print_shutdown_splash, run_startup_splash
         from core.device import HardwareInitializationError
 
         def _startup_phase() -> None:
-            nonlocal driver, enumerated_devices
+            nonlocal driver, enumerated_devices, config, active_band
+            nonlocal center_freq, gain, demod_mode, volume
+
+            with suppress_startup_output(startup_logs):
+                if defer_config and not config:
+                    loaded_cfg, loaded_band = _load_application_config(exit_on_error=False)
+                    config = loaded_cfg
+                    active_band = loaded_band
+                    dev_cfg = config.get("device", {})
+                    if not args.driver:
+                        driver = str(dev_cfg.get("driver", driver))
+                    if args.freq is None:
+                        center_freq = float(dev_cfg.get("center_freq", center_freq))
+                    if args.gain is None:
+                        gain = float(dev_cfg.get("gain", gain))
+                    if not args.mode:
+                        demod_mode = str(config.get("dsp", {}).get("demod_mode", demod_mode))
+                    volume = float(config.get("dsp", {}).get("volume", volume))
+
             if not args.sim:
                 from core.soapy_runtime import bootstrap_soapy, format_hardware_help
                 from core.device import filter_sdr_devices, resolve_device
 
                 with suppress_startup_output(startup_logs):
-                    status = bootstrap_soapy()
+                    from core.sdrplay_enumerate import recover_sdrplay_enumeration
+
+                    found, recover_msg, _recover_status = recover_sdrplay_enumeration(
+                        restart_if_missing=True,
+                        log=log_breadcrumb,
+                    )
+                    if recover_msg:
+                        log_breadcrumb(f"sdrplay.enumerate: found={found} msg={recover_msg!r}")
+                    status = bootstrap_soapy(force=True)
                 log_breadcrumb(
                     f"bootstrap import_ok={status.import_ok} plugin={status.sdrplay_plugin_status} "
                     f"module={status.sdrplay_plugin_module!r} devices={len(status.devices)}"
@@ -302,7 +347,7 @@ def main():
         if args.no_splash:
             _startup_phase()
         else:
-            run_startup_splash(_startup_phase)
+            run_startup_splash(_startup_phase, status_lines=startup_logs)
 
         prepare_terminal_for_tui()
         detach_console_logging()

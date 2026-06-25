@@ -182,6 +182,57 @@ def _device_option_label(dev: dict) -> str:
     return label if label else drv.upper()
 
 
+def format_device_detail_lines(dev: dict | None, *, simulated: bool = False) -> list[str]:
+    """Líneas compactas para la ficha del dispositivo en Ajustes → Hardware."""
+    if simulated:
+        return ["Modo simulación", "Sin hardware SDR real"]
+    if not dev:
+        return ["(ningún dispositivo seleccionado)"]
+    drv = _driver_name(dev) or "?"
+    label = _device_label(dev)
+    serial = str(dev.get("serial", "")).strip()
+    if label and serial:
+        clean = label.replace(serial, "").strip() if serial in label else label
+        lines = [clean, serial]
+    elif label:
+        lines = [label]
+    else:
+        lines = [drv.upper()]
+    if serial and len(lines) == 1 and serial not in lines[0]:
+        lines.append(serial)
+    return lines
+
+
+def resolve_settings_device_display(
+    token: str | None,
+    token_map: dict[str, str | dict],
+    cached_devices: list[dict] | None,
+    *,
+    current_driver: str,
+    simulated: bool,
+) -> list[str]:
+    """Resuelve la ficha visible bajo el Select de driver."""
+    if simulated or str(current_driver).lower() in ("simulated", "sim"):
+        return format_device_detail_lines(None, simulated=True)
+
+    target = token_map.get(str(token or "")) if token else None
+    if isinstance(target, dict):
+        return format_device_detail_lines(target)
+
+    driver_key = str(target or current_driver or "auto").lower()
+    if driver_key in ("", "auto"):
+        devices = filter_sdr_devices(cached_devices or [])
+        if devices:
+            return format_device_detail_lines(devices[0])
+        return ["Auto — sin dispositivos en caché de arranque"]
+
+    devices = filter_sdr_devices(cached_devices or [])
+    for dev in devices:
+        if _driver_name(dev) == driver_key:
+            return format_device_detail_lines(dev)
+    return [f"Preset: {driver_key.upper()}", "(no apareció en el último enumerate)"]
+
+
 def _kwargs_match(left: dict | None, right: dict | None) -> bool:
     if not left or not right:
         return False

@@ -18,6 +18,7 @@ from core.soapy_runtime import (
     _parse_sdrplay_find_stdout,
     assess_sdrplay_soapy_module,
     bootstrap_soapy,
+    check_sdrplay_plugin,
     find_pothos_install,
     find_sdrplay_api_dll,
     find_sdrplay_soapy_module,
@@ -73,6 +74,7 @@ class DiagnoseReport:
     stream_test_recommended_path: str = ""
     stream_test_timeout_s: float = 0.0
     service_restart_before_stream: str = ""
+    service_restart_before_find: str = ""
     issues: list[str] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
 
@@ -164,6 +166,16 @@ def collect_diagnose_report(
     report.bootstrap_import_ok = status.import_ok
     report.bootstrap_devices = [dict(d) for d in status.devices]
 
+    if report.bootstrap_import_ok and not check_sdrplay_plugin():
+        ok, msg = restart_sdrplay_service(stop_wait_s=10.0, start_wait_s=5.0)
+        if not ok:
+            ok, msg = ensure_sdrplay_service_running()
+        if ok:
+            time.sleep(2.0)
+            bootstrap_soapy(force=True)
+            report.service_restart_before_find = msg
+            report.service_running = check_sdrplay_service_running()
+
     try:
         find_res = _run_soapy_util(["--find=driver=sdrplay"])
         report.find_stdout = (find_res.stdout or "") + (find_res.stderr or "")
@@ -253,6 +265,14 @@ def _analyze_report(report: DiagnoseReport) -> None:
         report.recommendations.append("Cierra SDRuno antes de iniciar/reiniciar el servicio.")
 
     find_lower = (report.find_stdout or "").lower()
+    if not report.find_ok and "no available rsp" in find_lower:
+        report.issues.append(
+            "Soapy no encuentra RSP — SDRplayAPIService puede estar colgado aunque reporte Running."
+        )
+        report.recommendations.append(
+            "Restart-Service SDRplayAPIService; Start-Sleep 10; .\\scripts\\diagnose_sdrplay.ps1 --no-probe"
+        )
+
     if "sdrplay_api_open()" in find_lower and not report.service_running:
         report.issues.insert(
             0,
@@ -372,6 +392,7 @@ def format_diagnose_report(report: DiagnoseReport) -> str:
         f"plugin_module: {_file_info(report.plugin_module)}",
         f"plugin_status: {report.plugin_status}",
             f"SDRplayAPIService running: {report.service_running}",
+            f"service restart before find: {report.service_restart_before_find or '(none)'}",
             f"service restart before stream: {report.service_restart_before_stream or '(none)'}",
         f"SOAPY_SDR_PLUGIN_PATH: {report.soapy_plugin_path_env or '(empty)'}",
         f"user_plugin_dir: {report.user_plugin_dir}",

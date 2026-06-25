@@ -20,6 +20,8 @@ from core.sdrplay_forensics import capture_post_segfault_evidence
 from core.soapy_runtime import find_sdrplay_api_dll, find_sdrplay_soapy_module
 
 MatrixResult = Literal["OK", "SEGFAULT", "FAIL", "TIMEOUT", "SKIP", "PENDING"]
+MATRIX_VERSION = "0.3"
+RUNTIME_PROFILES = ("default", "bundled-only")
 STREAM_FORMATS = ("CF32", "CS16")
 STREAM_MODES = ("minimal", "legacy")
 
@@ -29,6 +31,7 @@ class MatrixRow:
     sample_rate: int | None
     format: str
     stream_mode: str
+    runtime_profile: str = "default"
     kwargs: dict[str, Any] = field(default_factory=dict)
     version: str = ""
     plugin_mtime: str = ""
@@ -61,6 +64,7 @@ class MatrixReport:
     rows: list[MatrixRow]
     environment: dict[str, Any] = field(default_factory=dict)
     best_row_index: int | None = None
+    matrix_version: str = MATRIX_VERSION
 
 
 def _sha256_file(path: str | None) -> str:
@@ -198,14 +202,31 @@ def _find_recent_minidump(*, since: float, dumps_dir: Path) -> str:
     return find_recent_minidump(since=since, dumps_dir=dumps_dir, poll_seconds=0)
 
 
-def build_matrix_cases() -> list[MatrixRow]:
+def build_matrix_cases(*, profiles: tuple[str, ...] | None = None) -> list[MatrixRow]:
     cases: list[MatrixRow] = []
+    profile_list = profiles or _resolve_matrix_profiles()
     rates = (None, 500_000, 250_000, 2_000_000)
-    for stream_mode in STREAM_MODES:
-        for fmt in STREAM_FORMATS:
-            for rate in rates:
-                cases.append(MatrixRow(sample_rate=rate, format=fmt, stream_mode=stream_mode))
+    for profile in profile_list:
+        for stream_mode in STREAM_MODES:
+            for fmt in STREAM_FORMATS:
+                for rate in rates:
+                    cases.append(
+                        MatrixRow(
+                            sample_rate=rate,
+                            format=fmt,
+                            stream_mode=stream_mode,
+                            runtime_profile=profile,
+                        )
+                    )
     return cases
+
+
+def _resolve_matrix_profiles() -> tuple[str, ...]:
+    raw = os.environ.get("XYZ_SDR_MATRIX_PROFILES", "default,bundled-only").strip()
+    parts = tuple(p.strip() for p in raw.split(",") if p.strip())
+    if not parts:
+        return ("default",)
+    return parts
 
 
 def _apply_env_meta(row: MatrixRow, env_meta: dict[str, Any], service_events: list[str]) -> None:
@@ -242,12 +263,24 @@ def _run_case(
     case_started = datetime.now(timezone.utc).timestamp()
     per_path = max(timeout_s / 2.0, 30.0)
     mode = row.stream_mode if row.stream_mode in STREAM_MODES else "minimal"
-    pre = run_preflight(
-        mode,  # type: ignore[arg-type]
-        per_path_timeout_s=per_path,
-        stream_format=fmt,  # type: ignore[arg-type]
-        sample_rate=row.sample_rate,
-    )
+    profile = row.runtime_profile or "default"
+    prior_allow = os.environ.get("XYZ_SDR_ALLOW_POTHOS_PLUGINS")
+    if profile == "bundled-only":
+        os.environ["XYZ_SDR_ALLOW_POTHOS_PLUGINS"] = "0"
+    elif profile == "default" and prior_allow is None:
+        os.environ.pop("XYZ_SDR_ALLOW_POTHOS_PLUGINS", None)
+    try:
+        pre = run_preflight(
+            mode,  # type: ignore[arg-type]
+            per_path_timeout_s=per_path,
+            stream_format=fmt,  # type: ignore[arg-type]
+            sample_rate=row.sample_rate,
+        )
+    finally:
+        if prior_allow is None:
+            os.environ.pop("XYZ_SDR_ALLOW_POTHOS_PLUGINS", None)
+        else:
+            os.environ["XYZ_SDR_ALLOW_POTHOS_PLUGINS"] = prior_allow
 
     row.exit_code = pre.returncode
     row.last_step = pre.last_step
@@ -326,6 +359,8 @@ def run_matrix(
     pip_path = _ensure_pip_freeze(log_dir)
     _ensure_python_version_file(log_dir)
     env_meta = collect_environment(pip_freeze_file=pip_path)
+    env_meta["matrix_version"] = MATRIX_VERSION
+    env_meta["runtime_profiles"] = list(_resolve_matrix_profiles())
     service_events = _load_service_events(log_dir) or [
         f"{datetime.now(timezone.utc).isoformat()} matrix_start (no service-events.txt)"
     ]
@@ -368,6 +403,7 @@ def write_matrix_report(report: MatrixReport, out_dir: Path | None = None) -> Pa
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / f"sdrplay-matrix-{datetime.now():%Y%m%d-%H%M%S}.json"
     payload = {
+        "matrix_version": report.matrix_version,
         "generated_at": report.generated_at,
         "hostname": report.hostname,
         "environment": report.environment,
@@ -384,11 +420,15 @@ def format_matrix_summary(report: MatrixReport) -> str:
         counts[row.result] = counts.get(row.result, 0) + 1
     lines = [
         "=== xyz-sdr SDRplay stream matrix ===",
+        f"matrix_version: {report.matrix_version}",
         f"generated_at: {report.generated_at}",
         f"hostname: {report.hostname}",
         f"rows: {len(report.rows)}",
         "results: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
     ]
+    profiles = sorted({r.runtime_profile for r in report.rows})
+    if profiles:
+        lines.append("profiles: " + ", ".join(profiles))
     segfaults = [r for r in report.rows if r.result == "SEGFAULT"]
     if segfaults:
         lines.append(f"segfault_rows: {len(segfaults)} (event_log captured per row)")
@@ -421,7 +461,15 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Una fila: mode,format[,sample_rate] p.ej. minimal,CF32 o minimal,CS16,500000",
     )
+    parser.add_argument(
+        "--profiles",
+        default="",
+        help="Perfiles runtime separados por coma: default,bundled-only (default: ambos)",
+    )
     args = parser.parse_args(argv)
+
+    if args.profiles.strip():
+        os.environ["XYZ_SDR_MATRIX_PROFILES"] = args.profiles.strip()
 
     cases: list[MatrixRow] | None = None
     if args.single_row.strip():
@@ -431,7 +479,14 @@ def main(argv: list[str] | None = None) -> int:
         mode = parts[0]
         fmt = parts[1].upper()
         rate: int | None = int(parts[2]) if len(parts) > 2 and parts[2].lower() != "none" else None
-        cases = [MatrixRow(sample_rate=rate, format=fmt, stream_mode=mode)]
+        cases = [
+            MatrixRow(
+                sample_rate=rate,
+                format=fmt,
+                stream_mode=mode,
+                runtime_profile=_resolve_matrix_profiles()[0],
+            )
+        ]
 
     report = run_matrix(
         out_dir=args.out_dir,

@@ -1,6 +1,6 @@
 [device]
 driver = "sdrplay"
-sample_rate = 2048000
+sample_rate = 500000
 center_freq = 97780487
 gain = 40.0
 auto_gain = false

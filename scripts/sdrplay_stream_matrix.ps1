@@ -5,7 +5,9 @@ param(
     [switch]$SkipServiceRestart,
     [switch]$EnableWer,
     [string]$SingleRow = "",
-    [int]$TimeoutSeconds = 90
+    [int]$TimeoutSeconds = 90,
+    [ValidateSet("default", "bundled-only", "both")]
+    [string]$Profile = "both"
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,7 +38,7 @@ $ServiceLog = Join-Path $LogDir "service-events.txt"
 $ts = (Get-Date).ToUniversalTime().ToString("o")
 
 Write-Host ""
-Write-Host "=== xyz-sdr SDRplay stream matrix (0.2) ===" -ForegroundColor Cyan
+Write-Host "=== xyz-sdr SDRplay stream matrix (0.3) ===" -ForegroundColor Cyan
 Write-Host ""
 
 $sdrProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -63,6 +65,11 @@ if (-not $SkipServiceRestart) {
 }
 
 $env:XYZ_SDR_MATRIX_SERVICE_EVENTS = $ServiceLog
+if ($Profile -eq "both") {
+    $env:XYZ_SDR_MATRIX_PROFILES = "default,bundled-only"
+} else {
+    $env:XYZ_SDR_MATRIX_PROFILES = $Profile
+}
 
 Write-Host "[>>] python -V + pip freeze..." -ForegroundColor Gray
 $pyVerPath = Join-Path $LogDir "python-version.txt"

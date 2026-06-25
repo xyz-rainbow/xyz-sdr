@@ -82,6 +82,33 @@ def wait_for_sdrplay_service_running(timeout_s: float = 20.0) -> bool:
     return False
 
 
+def _sc_output_already_running(output: str) -> bool:
+    """True si sc start devolvió 1056 / instancia ya en ejecución."""
+    lowered = (output or "").lower()
+    return "1056" in lowered or "already running" in lowered
+
+
+def _resolve_sc_start_after_stop(
+    service_name: str,
+    start_out: str,
+    *,
+    start_wait_s: float,
+) -> tuple[bool, str]:
+    """Interpreta sc start tras un stop; 1056 no es fallo si el servicio queda usable."""
+    if _sc_output_already_running(start_out):
+        if wait_for_sdrplay_service_running(start_wait_s + 20.0):
+            return True, f"Servicio {service_name} en ejecución"
+        time.sleep(2.0)
+        if check_sdrplay_service_running():
+            return True, f"Servicio {service_name} en ejecución"
+        # Windows reportó 1056: la instancia existe aunque sc query tarde en reflejar RUNNING.
+        return True, f"Servicio {service_name} en ejecución (SC 1056)"
+
+    if start_out:
+        return False, f"No se pudo iniciar {service_name}: {start_out}"
+    return False, f"No se pudo iniciar {service_name}"
+
+
 def ensure_sdrplay_service_running(
     *,
     start_wait_s: float = 5.0,
@@ -106,7 +133,7 @@ def ensure_sdrplay_service_running(
             timeout=30,
         )
         start_out = ((start.stdout or "") + (start.stderr or "")).strip()
-        if start.returncode != 0 and "1056" not in start_out:
+        if start.returncode != 0 and not _sc_output_already_running(start_out):
             return False, f"No se pudo iniciar {service_name}: {start_out or start.returncode}"
 
         if wait_for_sdrplay_service_running(start_wait_s + 15.0):
@@ -163,10 +190,12 @@ def restart_sdrplay_service(
         )
         start_out = ((start.stdout or "") + (start.stderr or "")).strip()
         if start.returncode != 0:
-            # 1056 = ya en ejecución (p. ej. tras instalador SDRplay)
-            if "1056" in start_out and check_sdrplay_service_running():
-                return True, f"Servicio {service_name} en ejecución"
-            return False, f"No se pudo iniciar {service_name}: {start_out or start.returncode}"
+            ok, msg = _resolve_sc_start_after_stop(
+                service_name, start_out, start_wait_s=start_wait_s
+            )
+            if ok:
+                return ok, msg
+            return False, msg
 
         if wait_for_sdrplay_service_running(start_wait_s + 15.0):
             time.sleep(1.0)
@@ -218,6 +247,11 @@ def maybe_restart_sdrplay_service_after_crash(
         log(f"sdrplay_service restart ok={ok} msg={message!r}")
     if ok:
         logger.info(message)
-    else:
-        logger.warning("Reinicio SDRplayAPIService falló: %s", message)
+        return True, message
+    if _sc_output_already_running(message):
+        if wait_for_sdrplay_service_running(15.0) or check_sdrplay_service_running():
+            info = f"SDRplayAPIService ya en ejecución: {message}"
+            logger.info(info)
+            return True, info
+    logger.warning("Reinicio SDRplayAPIService falló: %s", message)
     return ok, message

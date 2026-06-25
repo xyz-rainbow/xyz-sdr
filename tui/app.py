@@ -1261,6 +1261,7 @@ class XyzSDRApp(App):
             "yes",
         )
         if self.driver == "sdrplay" and not skip_pf:
+            from core.sdrplay_enumerate import recover_sdrplay_enumeration
             from core.sdrplay_preflight import (
                 apply_preflight_strategy,
                 per_path_timeout,
@@ -1269,6 +1270,8 @@ class XyzSDRApp(App):
                 run_preflight,
             )
             from core.sdrplay_service import restart_sdrplay_service
+
+            recover_sdrplay_enumeration(restart_if_missing=True, log=log_breadcrumb)
 
             # Arranque TUI: solo minimal (CS16→CF32) para no bloquear ~2 min
             startup_timeout = min(resolve_preflight_timeout(), 50.0)
@@ -2211,6 +2214,60 @@ class XyzSDRApp(App):
         except Exception as exc:
             logger.exception("No se pudo abrir ajustes: %s", exc)
             self._log(f"[ERROR] No se pudo abrir ajustes: {exc}")
+
+    def sdrplay_wizard_lines(self, *, attempt_recover: bool = False) -> list[str]:
+        """Líneas de estado para el wizard SDRplay (página Hardware)."""
+        from core.sdrplay_wizard import collect_sdrplay_wizard_snapshot, format_wizard_lines
+
+        preflight_ok: bool | None = None
+        if getattr(self, "_sdrplay_preflight_done", False):
+            preflight_ok = bool(getattr(self, "_sdrplay_preflight_ok", False))
+        snapshot = collect_sdrplay_wizard_snapshot(
+            attempt_recover=attempt_recover,
+            preflight_ok=preflight_ok,
+        )
+        cached = getattr(self, "_cached_sdr_devices", None) or []
+        sdrplay_cached = sum(
+            1 for d in cached if str(d.get("driver", "")).lower() == "sdrplay"
+        )
+        return format_wizard_lines(snapshot, cached_sdrplay=sdrplay_cached)
+
+    @work(thread=True)
+    def _restart_sdrplay_service_async(self) -> None:
+        from core.sdrplay_enumerate import recover_sdrplay_enumeration
+
+        found, msg, _status = recover_sdrplay_enumeration(restart_if_missing=True)
+        self.call_from_thread(self._on_sdrplay_service_recovered, found, msg)
+
+    def _on_sdrplay_service_recovered(self, found: bool, message: str) -> None:
+        self._refresh_enumerated_devices_if_safe()
+        level = "[OK]" if found else "[WARN]"
+        self._log(f"{level} SDRplay API: {message}")
+        screen = self.screen
+        if hasattr(screen, "_refresh_hardware_page"):
+            screen._refresh_hardware_page(attempt_recover=False)
+
+    @work(thread=True)
+    def _run_sdrplay_diagnose_async(self) -> None:
+        from core.diagnose_sdrplay import collect_diagnose_report, format_diagnose_report, write_diagnose_report
+
+        report = collect_diagnose_report(run_stream_test=False, run_probe=False)
+        text = format_diagnose_report(report)
+        out_path = write_diagnose_report(report)
+        summary = text.splitlines()[:18]
+        self.call_from_thread(self._on_sdrplay_diagnose_done, "\n".join(summary), str(out_path), report.issues)
+
+    def _on_sdrplay_diagnose_done(self, summary: str, out_path: str, issues: list[str]) -> None:
+        self._log("[INFO] Diagnóstico SDRplay (rápido, sin stream):")
+        for line in summary.splitlines():
+            if line.strip():
+                self._log(f"  {line}")
+        if issues:
+            self._log(f"[WARN] {len(issues)} issue(s) — ver informe completo")
+        self._log(f"[INFO] Informe: {out_path}")
+        screen = self.screen
+        if hasattr(screen, "_refresh_hardware_page"):
+            screen._refresh_hardware_page(attempt_recover=False)
 
     def action_quit(self) -> None:
         """Salida limpia con pantalla de cierre."""
