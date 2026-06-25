@@ -190,8 +190,12 @@ def _render_startup_frame(
     status_lines: list[str] | None,
     *,
     max_status_lines: int = 5,
+    full_clear: bool = True,
 ) -> None:
-    _clear_screen()
+    if full_clear:
+        _clear_screen()
+    else:
+        _console_write("\033[H")
     _console_write(_render_banner_block(centered, v_padding))
     _draw_progress_bar(width, percent, use_cr=False)
     if status_lines:
@@ -205,14 +209,18 @@ def _render_startup_frame(
 def run_startup_splash(
     work: Callable[[], _T],
     *,
-    min_duration_s: float = 1.0,
-    step_sleep_s: float = 0.06,
+    min_duration_s: float = 0.6,
+    step_sleep_s: float = 0.12,
+    redraw_interval_s: float = 0.25,
     status_lines: list[str] | None = None,
 ) -> _T:
     """
     Muestra banner + barra de progreso mientras ``work()`` corre en segundo plano.
     La salida de consola del trabajo debe suprimirse con ``suppress_startup_output``.
     Si ``status_lines`` se proporciona, las últimas líneas se muestran bajo la barra.
+
+    Redibuja como máximo cada ``redraw_interval_s`` (o al cambiar % / líneas de estado)
+    para no inundar la terminal con secuencias de pantalla completa.
     """
     global _USE_UNICODE_SPLASH
     _USE_UNICODE_SPLASH = configure_console_encoding()
@@ -229,13 +237,17 @@ def run_startup_splash(
         except BaseException as exc:  # noqa: BLE001
             error.append(exc)
 
-    _render_startup_frame(width, v_padding, centered, 0, status_lines)
+    _render_startup_frame(width, v_padding, centered, 0, status_lines, full_clear=True)
 
     thread = threading.Thread(target=_runner, name="xyz-sdr-startup", daemon=True)
     t0 = time.monotonic()
     thread.start()
 
     percent = 0
+    last_drawn_percent = 0
+    last_status_len = len(status_lines) if status_lines else 0
+    last_redraw_at = time.monotonic()
+
     while True:
         elapsed = time.monotonic() - t0
         time_progress = min(95, int((elapsed / max(min_duration_s, 0.1)) * 95))
@@ -244,7 +256,25 @@ def run_startup_splash(
         else:
             percent = 100
 
-        _render_startup_frame(width, v_padding, centered, percent, status_lines)
+        status_len = len(status_lines) if status_lines else 0
+        now = time.monotonic()
+        should_redraw = (
+            percent != last_drawn_percent
+            or status_len != last_status_len
+            or (now - last_redraw_at) >= redraw_interval_s
+        )
+        if should_redraw:
+            _render_startup_frame(
+                width,
+                v_padding,
+                centered,
+                percent,
+                status_lines,
+                full_clear=False,
+            )
+            last_drawn_percent = percent
+            last_status_len = status_len
+            last_redraw_at = now
 
         if not thread.is_alive() and elapsed >= min_duration_s:
             break
@@ -254,7 +284,7 @@ def run_startup_splash(
         time.sleep(step_sleep_s)
 
     thread.join()
-    _render_startup_frame(width, v_padding, centered, 100, status_lines)
+    _render_startup_frame(width, v_padding, centered, 100, status_lines, full_clear=False)
     _console_write("\n")
     time.sleep(0.15)
     _handoff_to_textual()
