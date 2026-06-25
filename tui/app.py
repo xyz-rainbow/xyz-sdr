@@ -209,6 +209,7 @@ class StatusBar(Static):
         recording: bool = False,
         stream_drop_rate: float = 0.0,
         stream_overflows: int = 0,
+        sdrplay_blocked: bool = False,
     ) -> None:
         step_str = _format_hz(step)
         span_str = _format_hz(span)
@@ -274,7 +275,12 @@ class StatusBar(Static):
             text.append(" ┃ ", "#475569")
         
         text.append("DEV ", "bold #38bdf8")
-        text.append(f"{device.upper()}", "bold #ffffff")
+        dev_label = device.upper()
+        if sdrplay_blocked:
+            dev_label = "SIM·BLOCK"
+            text.append(dev_label, "bold #fbbf24")
+        else:
+            text.append(dev_label, "bold #ffffff")
 
         if StatusBar._hints_text is None:
             StatusBar._hints_text = Text()
@@ -886,6 +892,8 @@ class XyzSDRApp(App):
         self._audio_started = False
         self._sdrplay_preflight_done = False
         self._sdrplay_preflight_ok = False
+        self._sdrplay_rx_blocked = False
+        self._sdrplay_rx_blocked_notified = False
         self.audio_effects = AudioEffects()
         # StorageController: grabación, bookmarks y persistencia de config
         # viven ahora en tui/storage.py. XyzSDRApp implementa StorageHost
@@ -1245,6 +1253,65 @@ class XyzSDRApp(App):
         from core.session_log import log_breadcrumb
 
         log_breadcrumb(f"hardware.init start driver={self.driver!r}")
+        preflight_msg: str | None = None
+        skip_pf = os.environ.get("XYZ_SDR_SKIP_SDRPLAY_PREFLIGHT", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if self.driver == "sdrplay" and not skip_pf:
+            from core.sdrplay_preflight import (
+                apply_preflight_strategy,
+                per_path_timeout,
+                preflight_user_message,
+                resolve_preflight_timeout,
+                run_preflight,
+            )
+            from core.sdrplay_service import restart_sdrplay_service
+
+            # Arranque TUI: solo minimal (CS16→CF32) para no bloquear ~2 min
+            startup_timeout = min(resolve_preflight_timeout(), 50.0)
+            per = per_path_timeout(startup_timeout)
+            result = run_preflight("minimal", per_path_timeout_s=per, stream_format="CS16")
+            if not result.ok:
+                result = run_preflight("minimal", per_path_timeout_s=per, stream_format="CF32")
+            if result.segfault:
+                restart_sdrplay_service()
+                result = run_preflight("minimal", per_path_timeout_s=per, stream_format="CS16")
+                if not result.ok:
+                    result = run_preflight(
+                        "minimal", per_path_timeout_s=per, stream_format="CF32"
+                    )
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = result.ok
+            if result.ok:
+                apply_preflight_strategy(result)
+                log_breadcrumb(
+                    f"hardware.preflight ok path={result.path} fmt={result.stream_format}"
+                )
+            elif self.strict:
+                preflight_msg = preflight_user_message(result)
+                log_breadcrumb(
+                    f"hardware.preflight FAIL strict step={result.last_step}"
+                )
+                self.call_from_thread(
+                    self._on_hardware_complete,
+                    (None, f"[STRICT] {preflight_msg or result.detail}", False),
+                )
+                return
+            else:
+                preflight_msg = preflight_user_message(result)
+                log_breadcrumb(
+                    f"hardware.preflight FAIL segfault={result.segfault} step={result.last_step}"
+                )
+                device = SDRDevice(driver="simulated")
+                device.open()
+                self.call_from_thread(
+                    self._on_hardware_complete,
+                    (device, preflight_msg or "SDRplay preflight RX failed", True),
+                )
+                return
+
         device = SDRDevice(driver=self.driver)
         hw_open_error: str | None = None
         used_fallback = False
@@ -1343,7 +1410,24 @@ class XyzSDRApp(App):
         if hw_open_error:
             log.write_line(f"[ERR]  Hardware no disponible: {hw_open_error}")
             log.write_line("[WARN] Modo SIMULACION activado")
-            if "sdrplay" in hw_open_error.lower():
+            if (
+                self._sdrplay_preflight_done
+                and not self._sdrplay_preflight_ok
+                and self.driver == "sdrplay"
+            ):
+                self._sdrplay_rx_blocked = True
+                log.write_line(
+                    "[BLOCK] RX SDRplay REAL bloqueado — segfault en SoapySDRPlay3 al abrir stream"
+                )
+                log.write_line(
+                    "[INFO] RX en SIMULACION disponible (IQ sintetico) para probar UI y controles"
+                )
+                log.write_line(
+                    "[INFO] Evidencia: .\\scripts\\sdrplay_stream_matrix.ps1 -EnableWer "
+                    "-SingleRow minimal,CF32"
+                )
+                log.write_line("[INFO] Diagnostico: .\\scripts\\diagnose_sdrplay.ps1 --no-probe")
+            elif "sdrplay" in hw_open_error.lower():
                 log.write_line("[INFO] SDRplay: SoapySDRUtil --find=driver=sdrplay debe listar tu RSP")
                 log.write_line("[INFO] Cierra SDRuno, verifica SDRplayAPIService, .\\setup\\install_drivers.ps1")
             else:
@@ -1355,8 +1439,8 @@ class XyzSDRApp(App):
             log.write_line(f"[OK]   Dispositivo abierto: driver={self.driver}")
             if self.driver == "sdrplay" and not self._device.is_simulated:
                 log.write_line(
-                    "[INFO] SDRplay: frecuencia/BW se aplican al pulsar INICIAR RX "
-                    "(evita crash nativo al abrir)"
+                    "[INFO] SDRplay: preflight OK — frecuencia/BW al pulsar INICIAR RX "
+                    "(formato vía XYZ_SDR_SDRPLAY_STREAM_FORMAT)"
                 )
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
@@ -1904,24 +1988,22 @@ class XyzSDRApp(App):
         if not self._device or self._device.is_simulated or self._device.driver != "sdrplay":
             return True
 
-        # El RSP solo admite un handle: si la TUI ya abrió el dispositivo, el hijo
-        # no puede volver a abrirlo ("no available RSP devices found"). Usar
-        # minimal_activate in-process en start_stream().
-        if self._device._sdr is not None:
-            log_breadcrumb("sdrplay preflight skipped: device already open in parent")
-            if not self._sdrplay_preflight_done:
-                self._log(
-                    "[INFO] Preflight omitido: dispositivo ya abierto; "
-                    "prueba RX = start_stream minimal"
-                )
-            self._sdrplay_preflight_done = True
-            self._sdrplay_preflight_ok = True
-            return True
-
         if self._sdrplay_preflight_done:
             return self._sdrplay_preflight_ok
 
+        # Dispositivo abierto sin preflight previo → no activar RX in-process (segfault).
+        if self._device._sdr is not None:
+            log_breadcrumb("sdrplay preflight missing: device already open in parent")
+            self._log(
+                "[ERR] Preflight RX no ejecutado antes de abrir el RSP; "
+                "reinicia la app (no uses XYZ_SDR_SKIP_SDRPLAY_PREFLIGHT)"
+            )
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = False
+            return False
+
         from core.sdrplay_preflight import (
+            apply_preflight_strategy,
             preflight_user_message,
             resolve_preflight_timeout,
             run_preflight_best,
@@ -1936,6 +2018,8 @@ class XyzSDRApp(App):
 
         self._sdrplay_preflight_done = True
         self._sdrplay_preflight_ok = result.ok
+        if result.ok:
+            apply_preflight_strategy(result)
         if not result.ok:
             msg = preflight_user_message(result)
             if msg:
