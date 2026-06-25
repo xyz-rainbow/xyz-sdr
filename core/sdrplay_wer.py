@@ -1,18 +1,52 @@
-"""xyz-sdr | core/sdrplay_wer.py — WER LocalDumps para capturar minidumps de python.exe."""
+"""xyz-sdr | core/sdrplay_wer.py — WER LocalDumps para capturar minidumps de python.exe.
+
+Solo Windows. En Linux/macOS las funciones devuelven ``supported=False`` o
+``(False, "...")`` según corresponda, sin tocar el registro.
+
+Importante
+==========
+
+``winreg`` es stdlib **Windows-only**. El ``import winreg`` se hace dentro
+de ``_require_winreg()`` (lazy) para que pytest pueda hacer collect de los
+tests en runners Linux/macOS sin ``ModuleNotFoundError`` en tiempo de import.
+El bug original era ``import winreg`` top-level — rompía toda la cadena
+``core.sdrplay_wer → core.sdrplay_forensics → core.sdrplay_stream_matrix``
+en CI Linux/macOS.
+"""
+
 from __future__ import annotations
 
 import os
 import subprocess
-import winreg
+import sys
 from pathlib import Path
+from typing import Tuple
 
 from core.runtime_paths import project_root
 
 _WER_EXECUTABLES = ("python.exe", "sdrplay_apiService.exe", "SoapySDRUtil.exe")
-_WER_HIVES = (
-    (winreg.HKEY_CURRENT_USER, "HKCU"),
-    (winreg.HKEY_LOCAL_MACHINE, "HKLM"),
-)
+
+
+def _require_winreg():
+    """Devuelve el módulo ``winreg`` si estamos en Windows; raise si no.
+
+    Lazy import para no romper el collect de pytest en Linux/macOS.
+    Llamar después del guard ``os.name == "nt"`` para mensaje limpio.
+    """
+    if sys.platform != "win32" and os.name != "nt":
+        raise RuntimeError("winreg no está disponible fuera de Windows")
+    import winreg  # noqa: WPS433 — lazy por portabilidad
+
+    return winreg
+
+
+def _wer_hives() -> Tuple[Tuple[int, str], Tuple[int, str]]:
+    """Pares (hive, label) — solo se evalúan dentro de Windows."""
+    winreg = _require_winreg()
+    return (
+        (winreg.HKEY_CURRENT_USER, "HKCU"),
+        (winreg.HKEY_LOCAL_MACHINE, "HKLM"),
+    )
 
 
 def _wer_key_for(exe_name: str) -> str:
@@ -20,6 +54,7 @@ def _wer_key_for(exe_name: str) -> str:
 
 
 def _read_wer_key(hive: int, exe_name: str = "python.exe") -> dict[str, str | int]:
+    winreg = _require_winreg()
     data: dict[str, str | int] = {}
     key_path = _wer_key_for(exe_name)
     try:
@@ -37,7 +72,10 @@ def _read_wer_key(hive: int, exe_name: str = "python.exe") -> dict[str, str | in
 
 def registry_dump_folder(*, dumps_dir: Path | None = None) -> Path:
     """Carpeta WER efectiva (HKCU gana sobre HKLM si existe)."""
-    for hive, _label in _WER_HIVES:
+    if os.name != "nt":
+        # No Windows: caer al default local (sin tocar registro).
+        return (dumps_dir or default_dumps_dir()).resolve()
+    for hive, _label in _wer_hives():
         cfg = _read_wer_key(hive, "python.exe")
         folder = str(cfg.get("DumpFolder") or "").strip()
         if folder:
@@ -66,7 +104,7 @@ def wer_status(*, dumps_dir: Path | None = None) -> dict[str, str | int | bool]:
     }
     if os.name != "nt":
         return status
-    for hive, label in _WER_HIVES:
+    for hive, label in _wer_hives():
         cfg = _read_wer_key(hive, "python.exe")
         if cfg:
             status["configured"] = True
@@ -84,6 +122,7 @@ def wer_status(*, dumps_dir: Path | None = None) -> dict[str, str | int | bool]:
 
 
 def _apply_wer_registry(*, hive: int, folder: Path, dump_type: int, exe_name: str) -> None:
+    winreg = _require_winreg()
     key_path = _wer_key_for(exe_name)
     with winreg.CreateKey(hive, key_path) as key:
         winreg.SetValueEx(key, "DumpFolder", 0, winreg.REG_EXPAND_SZ, str(folder))
@@ -104,6 +143,7 @@ def enable_wer_minidumps(
     if os.name != "nt":
         return False, "WER LocalDumps solo aplica en Windows"
 
+    winreg = _require_winreg()
     folder = (dumps_dir or default_dumps_dir()).resolve()
     folder.mkdir(parents=True, exist_ok=True)
 

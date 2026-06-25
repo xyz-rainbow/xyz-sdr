@@ -39,6 +39,13 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           python -m pip install --upgrade pip
+          # PortAudio: sounddevice necesita libportaudio2 en Linux / portaudio en macOS
+          # Sin esto, test_audio_output falla en collect (OSError al instanciar OutputStream).
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libportaudio2
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install portaudio
+          fi
           # Lockfile reproducible: requirements-dev.lock incluye runtime + dev
           # SoapySDR se instala por separado (no en PyPI; viene de PothosSDR)
           pip install --require-hashes -r requirements-dev.lock || echo "::warning::requirements-dev.lock falló (puede faltar Soapy)"
