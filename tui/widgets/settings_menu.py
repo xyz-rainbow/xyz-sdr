@@ -90,6 +90,9 @@ class SettingsScreen(ModalScreen):
     #page_bookmarks {
         display: none;
     }
+    #page_ai {
+        display: none;
+    }
 
     SettingsScreen.show-hardware #page_main {
         display: none;
@@ -123,6 +126,13 @@ class SettingsScreen(ModalScreen):
         display: none;
     }
     SettingsScreen.show-bookmarks #page_bookmarks {
+        display: block;
+    }
+
+    SettingsScreen.show-ai #page_main {
+        display: none;
+    }
+    SettingsScreen.show-ai #page_ai {
         display: block;
     }
 
@@ -377,6 +387,7 @@ class SettingsScreen(ModalScreen):
         self.remove_class("show-recording")
         self.remove_class("show-scanner")
         self.remove_class("show-bookmarks")
+        self.remove_class("show-ai")
         if new_page == "hardware":
             self.add_class("show-hardware")
             self.call_after_refresh(self._refresh_hardware_page, False)
@@ -388,6 +399,8 @@ class SettingsScreen(ModalScreen):
             self.add_class("show-scanner")
         elif new_page == "bookmarks":
             self.add_class("show-bookmarks")
+        elif new_page == "ai":
+            self.add_class("show-ai")
 
     def _set_hw_action_buttons_disabled(self, disabled: bool) -> None:
         for btn_id in (
@@ -509,6 +522,85 @@ class SettingsScreen(ModalScreen):
         us = int(getattr(self.app, "fm_deemphasis_us", 50))
         return us if us in opts else 50
 
+    def _ai_status_text(self) -> str:
+        """Snapshot legible del estado AI para el label superior."""
+        from ai import get_status
+
+        status = get_status(self.app.config)
+        deps = status.get("deps", {}) or {}
+        ok = status.get("engine_ready", False)
+        ready_txt = "✅ motor listo" if ok else "⚠ motor pendiente (Fase 4-5)"
+        flags = []
+        if status.get("whisper_enabled"):
+            flags.append(f"Whisper={status.get('whisper_model', 'base')}/{status.get('whisper_language', 'es')}")
+        if status.get("classifier_enabled"):
+            flags.append("Clasificador")
+        if not flags:
+            flags.append("(sin flags activas)")
+        deps_txt = ", ".join(
+            f"{name}={'OK' if installed else '—'}"
+            for name, installed in sorted(deps.items())
+        )
+        return (
+            f"{ready_txt}  ·  {' | '.join(flags)}\n"
+            f"deps: {deps_txt or '—'}"
+        )
+
+    def _ai_cfg_bool(self, key: str, default: bool) -> bool:
+        ai_cfg = self.app.config.get("ai", {}) if isinstance(self.app.config, dict) else {}
+        if not isinstance(ai_cfg, dict):
+            return default
+        return bool(ai_cfg.get(key, default))
+
+    def _ai_cfg_str(self, key: str, default: str) -> str:
+        ai_cfg = self.app.config.get("ai", {}) if isinstance(self.app.config, dict) else {}
+        if not isinstance(ai_cfg, dict):
+            return default
+        return str(ai_cfg.get(key, default))
+
+    @staticmethod
+    def _ai_whisper_models() -> list[str]:
+        from ai import WHISPER_MODELS
+
+        return list(WHISPER_MODELS)
+
+    def _refresh_ai_status_label(self) -> None:
+        try:
+            lbl = self.query_one("#lbl_ai_status", Static)
+            lbl.update(self._ai_status_text())
+        except Exception:
+            pass
+
+    def _persist_ai_config(
+        self,
+        *,
+        whisper_enabled: bool | None = None,
+        whisper_model: str | None = None,
+        whisper_language: str | None = None,
+        classifier_enabled: bool | None = None,
+    ) -> bool:
+        """Delega en StorageController.persist_config('ai', ...)."""
+        updates: dict = {}
+        if whisper_enabled is not None:
+            updates["whisper_enabled"] = bool(whisper_enabled)
+        if whisper_model is not None:
+            updates["whisper_model"] = str(whisper_model)
+        if whisper_language is not None:
+            updates["whisper_language"] = str(whisper_language).strip() or "es"
+        if classifier_enabled is not None:
+            updates["classifier_enabled"] = bool(classifier_enabled)
+        if not updates:
+            return False
+        try:
+            ok = self.app._storage.persist_config("ai", **updates)
+        except Exception:
+            ok = self.app._persist_config("ai", **updates)
+        # Refrescar el config en memoria para que los switches reflejen el estado real.
+        ai_section = self.app.config.setdefault("ai", {})
+        if isinstance(ai_section, dict):
+            ai_section.update(updates)
+        return ok
+
     def compose(self) -> ComposeResult:
         from core.device import build_driver_select_options
 
@@ -534,6 +626,7 @@ class SettingsScreen(ModalScreen):
                 yield Button("💾 Ajustes de Grabación", id="btn_go_recording", classes="nav-btn")
                 yield Button("🔍 Ajustes del Escáner", id="btn_go_scanner", classes="nav-btn")
                 yield Button("📋 Bookmarks", id="btn_go_bookmarks", classes="nav-btn")
+                yield Button("🤖 IA (experimental)", id="btn_go_ai", classes="nav-btn")
                 with Horizontal(classes="main-footer-row"):
                     yield Label("FX:")
                     yield Switch(value=self.app.audio_effects.enabled, id="sw_sound_effects")
@@ -711,6 +804,44 @@ class SettingsScreen(ModalScreen):
                 with Horizontal(classes="settings-actions"):
                     yield Button("Atrás", id="btn_back_to_main_bm")
 
+            # ─── PÁGINA 7: IA (experimental, opt-in) ───
+            with Container(id="page_ai"):
+                yield Label("🤖 IA (experimental)", id="settings_title_compact")
+                yield Static(self._ai_status_text(), id="lbl_ai_status")
+                with Horizontal(classes="setting-row"):
+                    yield Label("Whisper:")
+                    yield Switch(
+                        value=self._ai_cfg_bool("whisper_enabled", False),
+                        id="sw_ai_whisper_enabled",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Modelo:")
+                    yield Select(
+                        [(m, m) for m in self._ai_whisper_models()],
+                        value=self._ai_cfg_str("whisper_model", "base"),
+                        id="set_ai_whisper_model",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Idioma:")
+                    yield Input(
+                        value=self._ai_cfg_str("whisper_language", "es"),
+                        placeholder="es, en, auto…",
+                        id="set_ai_whisper_language",
+                    )
+                with Horizontal(classes="setting-row"):
+                    yield Label("Clasif.:")
+                    yield Switch(
+                        value=self._ai_cfg_bool("classifier_enabled", False),
+                        id="sw_ai_classifier_enabled",
+                    )
+                yield Label(
+                    "Para activar deps: pip install .[ai]  ·  CLI: --ai",
+                    classes="hint-label",
+                )
+                with Horizontal(classes="settings-actions"):
+                    yield Button("Atrás", id="btn_back_to_main_ai")
+                    yield Button("Aplicar", variant="success", id="btn_apply_ai")
+
         yield BusyOverlay(id="busy_overlay")
 
     def on_mount(self) -> None:
@@ -749,12 +880,16 @@ class SettingsScreen(ModalScreen):
         elif event.button.id == "btn_go_bookmarks":
             self.current_page = "bookmarks"
             self._refresh_bookmarks_count_label()
+        elif event.button.id == "btn_go_ai":
+            self.current_page = "ai"
+            self._refresh_ai_status_label()
         elif event.button.id in (
             "btn_back_to_main_hw",
             "btn_back_to_main_noise",
             "btn_back_to_main_rec",
             "btn_back_to_main_scan",
             "btn_back_to_main_bm",
+            "btn_back_to_main_ai",
         ):
             self.current_page = "main"
         elif event.button.id == "btn_close_settings":
@@ -824,6 +959,30 @@ class SettingsScreen(ModalScreen):
             merge_val = self.query_one("#sw_bookmarks_merge", Switch).value
             if self.app.import_bookmarks_from_path(import_path, merge=bool(merge_val)):
                 self._refresh_bookmarks_count_label()
+
+        # Acciones - Aplicar IA
+        elif event.button.id == "btn_apply_ai":
+            whisper_val = self.query_one("#sw_ai_whisper_enabled", Switch).value
+            model_val = self.query_one("#set_ai_whisper_model", Select).value
+            lang_val = self.query_one("#set_ai_whisper_language", Input).value
+            classifier_val = self.query_one("#sw_ai_classifier_enabled", Switch).value
+
+            model_str = str(model_val) if model_val is not None and _valid_select_value(model_val) else "base"
+            self._persist_ai_config(
+                whisper_enabled=bool(whisper_val),
+                whisper_model=model_str,
+                whisper_language=str(lang_val).strip() or "es",
+                classifier_enabled=bool(classifier_val),
+            )
+            self._refresh_ai_status_label()
+            self.audio_effects.play_chime()
+            self.app._log(
+                "[OK]   IA:"
+                f" Whisper {'ON' if whisper_val else 'OFF'}"
+                f" ({model_str}/{str(lang_val).strip() or 'es'})"
+                f" | Clasificador {'ON' if classifier_val else 'OFF'}"
+            )
+            self.current_page = "main"
 
         # Acciones - Aplicar Hardware
         elif event.button.id == "btn_apply_hardware":

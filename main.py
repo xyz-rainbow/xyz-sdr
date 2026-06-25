@@ -82,6 +82,15 @@ def parse_args():
         action="store_true",
         help="Abortar si hay errores de hardware en vez de fallback silencioso a 'simulated'",
     )
+    parser.add_argument(
+        "--ai",
+        action="store_true",
+        help=(
+            "Activa el subsistema de IA (Whisper / clasificador de modos). "
+            "Opt-in: por defecto se respeta [ai] del config. Requiere instalar "
+            "`pip install .[ai]` o el motorizará un no-op silencioso si faltan deps."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -378,6 +387,7 @@ def main():
             enumerated_devices=enumerated_devices,
             previous_session_marker=previous_marker,
             strict=args.strict,
+            ai_enabled=args.ai,
         )
         try:
             # Textual: mouse habilitado (Windows incl.). XYZ_SDR_NO_MOUSE=1 para desactivar.

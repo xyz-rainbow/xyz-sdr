@@ -859,6 +859,7 @@ class XyzSDRApp(App):
         enumerated_devices: list[dict] | None = None,
         previous_session_marker: dict | None = None,
         strict: bool = False,
+        ai_enabled: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -871,6 +872,8 @@ class XyzSDRApp(App):
         self.debug_mode = debug_mode
         self.band_profile = band_profile
         self.strict = strict
+        # AI: opt-in vía CLI (--ai) o [ai] del config. Combinado en ai.is_enabled().
+        self.ai_enabled = ai_enabled
         self._project_root = Path(config_path).resolve().parent.parent
         # ScannerEngine: la lógica de escaneo vive ahora en core/scanner.py.
         # XyzSDRApp implementa ScannerHost vía propiedades y métodos.
