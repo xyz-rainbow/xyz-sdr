@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from tui.splash import (
-    _phase_percent_from_lines,
+    _phase_progress_window,
     _splash_display_lines,
+    _splash_progress_percent,
     _trim_status_line,
 )
 
@@ -20,13 +21,13 @@ def test_trim_status_line_long():
     assert len(trimmed) <= 40
 
 
-def test_splash_display_lines_prefers_phases():
+def test_splash_display_lines_shows_only_latest_phase():
     lines = [
         "15:23:36 [INFO] core.soapy_runtime: SOAPY plugin path: user dir",
         "Fase: config",
         "Fase: enumerate SDR",
     ]
-    assert _splash_display_lines(lines) == ["Fase: config", "Fase: enumerate SDR"]
+    assert _splash_display_lines(lines) == ["Cargando: enumerate SDR…"]
 
 
 def test_splash_display_lines_filters_noise():
@@ -39,8 +40,17 @@ def test_splash_display_lines_filters_noise():
     assert "fm_broadcast" in shown[0]
 
 
-def test_phase_percent_mapping():
-    assert _phase_percent_from_lines(["Fase: config"]) == 25
-    assert _phase_percent_from_lines(["Fase: enumerate SDR"]) == 55
-    assert _phase_percent_from_lines(["Fase: recovery API"]) == 80
-    assert _phase_percent_from_lines(["Fase: listo"]) == 100
+def test_phase_progress_window_mapping():
+    assert _phase_progress_window(["Fase: config"]) == (15, 40)
+    assert _phase_progress_window(["Fase: enumerate SDR"]) == (45, 78)
+    assert _phase_progress_window(["Fase: recovery API"]) == (80, 95)
+    assert _phase_progress_window(["Fase: listo"]) == (100, 100)
+
+
+def test_splash_progress_creeps_during_enumerate():
+    lines = ["Fase: enumerate SDR"]
+    early = _splash_progress_percent(0.5, lines, thread_alive=True)
+    late = _splash_progress_percent(15.0, lines, thread_alive=True)
+    assert early >= 45
+    assert late > early
+    assert late <= 78

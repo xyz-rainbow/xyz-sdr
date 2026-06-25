@@ -206,12 +206,16 @@ def _splash_display_lines(status_lines: list[str] | None) -> list[str]:
         return []
     phases = [line.strip() for line in status_lines if line.strip().startswith("Fase:")]
     if phases:
-        return phases[-3:]
+        latest = phases[-1].removeprefix("Fase:").strip()
+        if latest.lower() == "listo":
+            return ["Listo"]
+        return [f"Cargando: {latest}…"]
     clean = [line.strip() for line in status_lines if not _is_splash_noise_line(line)]
-    return clean[-3:]
+    return clean[-1:]
 
 
-def _phase_percent_from_lines(status_lines: list[str] | None) -> int | None:
+def _phase_progress_window(status_lines: list[str] | None) -> tuple[int, int] | None:
+    """Rango de % para la fase actual (mín, máx)."""
     if not status_lines:
         return None
     phase = ""
@@ -223,15 +227,35 @@ def _phase_percent_from_lines(status_lines: list[str] | None) -> int | None:
     if not phase:
         return None
     lowered = phase.lower()
-    if "config" in lowered:
-        return 25
-    if "enumerate" in lowered or "sdr" in lowered:
-        return 55
-    if "recovery" in lowered or "api" in lowered:
-        return 80
     if "listo" in lowered or "ready" in lowered:
-        return 100
+        return 100, 100
+    if "recovery" in lowered or "api" in lowered:
+        return 80, 95
+    if "enumerate" in lowered:
+        return 45, 78
+    if "config" in lowered:
+        return 15, 40
     return None
+
+
+def _splash_progress_percent(
+    elapsed_s: float,
+    status_lines: list[str] | None,
+    *,
+    thread_alive: bool,
+) -> int:
+    if not thread_alive:
+        return 100
+    window = _phase_progress_window(status_lines)
+    time_progress = min(98, int((elapsed_s / 0.6) * 98))
+    if window is None:
+        return time_progress
+    lo, hi = window
+    if lo >= hi:
+        return lo
+    span = hi - lo
+    creep = int(span * min(1.0, elapsed_s / 20.0))
+    return min(hi, lo + max(creep, 0))
 
 
 def _render_startup_frame(
@@ -304,12 +328,11 @@ def run_startup_splash(
 
     while True:
         elapsed = time.monotonic() - t0
-        phase_percent = _phase_percent_from_lines(status_lines)
-        time_progress = min(98, int((elapsed / max(min_duration_s, 0.1)) * 98))
-        if thread.is_alive():
-            percent = phase_percent if phase_percent is not None else min(time_progress, 98)
-        else:
-            percent = 100
+        percent = _splash_progress_percent(
+            elapsed,
+            status_lines,
+            thread_alive=thread.is_alive(),
+        )
 
         status_len = len(status_lines) if status_lines else 0
         now = time.monotonic()
