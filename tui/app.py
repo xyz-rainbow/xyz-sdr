@@ -7,6 +7,7 @@ v2: Timeline + Espectro + Waterfall con navegacion por teclado.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
