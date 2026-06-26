@@ -102,6 +102,16 @@ def test_reopen_sdrplay_device_on_start_rx_when_flagged():
     assert app._sdrplay_device_needs_reopen is False
 
 
+def test_auto_start_rx_default_off():
+    app = XyzSDRApp(config={"app": {}, "dsp": {}, "display": {}})
+    assert app._auto_start_rx is False
+
+
+def test_auto_start_rx_from_config():
+    app = XyzSDRApp(config={"app": {"auto_start_rx": True}, "dsp": {}, "display": {}})
+    assert app._auto_start_rx is True
+
+
 def test_maybe_auto_start_rx_starts_when_ready():
     app = XyzSDRApp(auto_start_rx=True)
     app._hardware_ready = True

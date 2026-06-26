@@ -656,6 +656,9 @@ class SettingsScreen(ModalScreen):
                         with Horizontal(classes="setting-row-wide"):
                             yield Label("RX:")
                             yield Switch(value=self.app._rx_active, id="set_rx_active")
+                        with Horizontal(classes="setting-row-wide"):
+                            yield Label("Auto al abrir:")
+                            yield Switch(value=self.app._auto_start_rx, id="sw_auto_start_rx")
                         yield Static("…", id="sdr_diagnose_panel")
                         with Horizontal(classes="settings-actions compact-actions"):
                             yield Button("↻ Actualizar", id="btn_refresh_sdr_wizard")
@@ -1089,3 +1092,11 @@ class SettingsScreen(ModalScreen):
             self.app._log(
                 f"[OK]   Waterfall auto-level {'ON' if event.value else 'OFF'}"
             )
+        elif event.switch.id == "sw_auto_start_rx":
+            self.app._auto_start_rx = bool(event.value)
+            self.app._persist_config("app", auto_start_rx=bool(event.value))
+            self.app._log(
+                f"[OK]   Auto-RX al abrir {'ON' if event.value else 'OFF'}"
+            )
+            if event.value and self.app._hardware_ready and not self.app._rx_active:
+                self.app.call_later(self.app._maybe_auto_start_rx)

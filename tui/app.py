@@ -912,7 +912,7 @@ class XyzSDRApp(App):
         self._sidebar_collapsed = False
         app_cfg = self.config.get("app", {})
         if auto_start_rx is None:
-            self._auto_start_rx = bool(app_cfg.get("auto_start_rx", True))
+            self._auto_start_rx = bool(app_cfg.get("auto_start_rx", False))
         else:
             self._auto_start_rx = bool(auto_start_rx)
         self._performance_ui = bool(app_cfg.get("performance_ui", True))

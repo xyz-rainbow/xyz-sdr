@@ -1,7 +1,7 @@
 [device]
 driver = "sdrplay"
-sample_rate = 500000
-center_freq = 6451767
+sample_rate = 250000
+center_freq = 7100000
 gain = 50.0
 auto_gain = false
 ppm_correction = 0
@@ -45,7 +45,7 @@ color_theme = "cyberpunk"
 
 [app]
 active_band_profile = ""
-auto_start_rx = true
+auto_start_rx = false
 performance_ui = true
 
 [recorder]

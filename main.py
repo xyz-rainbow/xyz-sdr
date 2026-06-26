@@ -83,7 +83,12 @@ def parse_args():
     parser.add_argument(
         "--no-auto-rx",
         action="store_true",
-        help="No iniciar RX automáticamente al abrir el dispositivo (por defecto: auto-RX ON)",
+        help="Forzar que no se inicie RX al abrir (anula [app].auto_start_rx del config)",
+    )
+    parser.add_argument(
+        "--auto-rx",
+        action="store_true",
+        help="Forzar auto-RX al abrir (anula config; por defecto usa [app].auto_start_rx)",
     )
     parser.add_argument(
         "--harness",
@@ -599,6 +604,12 @@ def main():
         detach_console_logging()
         begin_native_stderr_suppression()
 
+        auto_start_rx = None
+        if args.no_auto_rx:
+            auto_start_rx = False
+        elif args.auto_rx:
+            auto_start_rx = True
+
         app = XyzSDRApp(
             driver=driver,
             center_freq=center_freq,
@@ -614,7 +625,7 @@ def main():
             previous_session_marker=previous_marker,
             strict=args.strict,
             ai_enabled=args.ai,
-            auto_start_rx=not args.no_auto_rx,
+            auto_start_rx=auto_start_rx,
             display_diagnostics=args.debug,
         )
         try:
