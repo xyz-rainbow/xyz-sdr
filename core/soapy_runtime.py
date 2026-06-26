@@ -600,6 +600,21 @@ def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:
 
     from core.driver_runtime import bundled_soapy_dll_dir
 
+    # --- Pre-carga experimental para evitar segfault en Windows ---
+    if os.name == "nt":
+        try:
+            import ctypes
+            # Forzar la carga de la versión de Windows System32 del Runtime de C++ (64 bits).
+            # Evita que se carguen las versiones obsoletas o incompatibles de PothosSDR\bin.
+            sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+            for dll_name in ("vcruntime140.dll", "msvcp140.dll"):
+                dll_path = os.path.join(sys32, dll_name)
+                if os.path.isfile(dll_path):
+                    ctypes.CDLL(dll_path)
+            logger.info("Pre-carga experimental de Runtime C++ System32 completada.")
+        except Exception as exc:
+            logger.warning("Fallo en la pre-carga experimental de DLLs: %s", exc)
+
     soapy_bundled = bundled_soapy_dll_dir()
     use_bundled_soapy = soapy_bundled is not None
     allow_pothos = _allow_pothos_plugins()
