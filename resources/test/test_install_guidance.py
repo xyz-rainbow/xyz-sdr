@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from setup.env_state import EnvironmentState
-from setup.install_guidance import next_action
+from setup.install_guidance import drivers_row_status, hardware_row_status, next_action
 
 
 def _state(**kwargs) -> EnvironmentState:
@@ -17,6 +17,7 @@ def test_next_action_missing_venv():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_module_ok=True,
         venv_path=None,
         blockers=["venv"],
     )
@@ -30,6 +31,7 @@ def test_next_action_env_ready_no_device():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_module_ok=True,
         sdrplay_plugin_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
@@ -47,12 +49,13 @@ def test_next_action_all_ready():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
+        sdrplay_module_ok=True,
         sdrplay_plugin_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,
-        has_devices=True,
-        device_count=1,
+        has_sdrplay_devices=True,
+        sdrplay_device_count=1,
         blockers=[],
     )
     action = next_action(state, "es")
@@ -76,7 +79,7 @@ def test_next_action_soapy_sdrplay3():
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
-        sdrplay_plugin_ok=False,
+        sdrplay_module_ok=False,
         blockers=["soapy_sdrplay3"],
     )
     action = next_action(state, "es")
@@ -84,12 +87,56 @@ def test_next_action_soapy_sdrplay3():
     assert action.reason_key == "next_reason_soapy_sdrplay3"
 
 
+def test_next_action_sdrplay_enumeration():
+    state = _state(
+        sdrplay_ok=True,
+        pothos_installed=True,
+        path_in_process=True,
+        sdrplay_module_ok=True,
+        sdrplay_plugin_ok=False,
+        venv_path=Path(__file__),
+        python_libs_missing=[],
+        soapy_import_ok=True,
+        blockers=["sdrplay_enumeration"],
+    )
+    action = next_action(state, "es")
+    assert action.reason_key == "next_reason_sdrplay_enum"
+    assert action.menu_highlight == "1"
+
+
+def test_drivers_row_plugin_installed_not_enumerating():
+    state = _state(
+        sdrplay_ok=True,
+        pothos_installed=True,
+        path_in_process=True,
+        sdrplay_module_ok=True,
+        sdrplay_plugin_ok=False,
+    )
+    text = drivers_row_status(state, "es")
+    assert "no visible" in text.lower() or "instalado" in text.lower()
+
+
+def test_hardware_row_usb_driver_failed():
+    state = _state(
+        sdrplay_ok=True,
+        pothos_installed=True,
+        path_in_process=True,
+        sdrplay_module_ok=True,
+        venv_path=Path(__file__),
+        python_libs_missing=[],
+        soapy_import_ok=True,
+        sdrplay_usb_issue=True,
+    )
+    text = hardware_row_status(state, "es")
+    assert "28" in text
+
+
 def test_env_ready_property():
     state = _state(
         sdrplay_ok=True,
         pothos_installed=True,
         path_in_process=True,
-        sdrplay_plugin_ok=True,
+        sdrplay_module_ok=True,
         venv_path=Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,

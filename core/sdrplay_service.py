@@ -145,6 +145,42 @@ def ensure_sdrplay_service_running(
         return False, f"Error iniciando {service_name}: {exc}"
 
 
+def stop_sdrplay_service(*, wait_s: float = 8.0) -> tuple[bool, str]:
+    """Detiene SDRplayAPIService y espera a que deje de reportar RUNNING."""
+    if os.name != "nt":
+        return True, "N/A (no Windows)"
+
+    service_name = resolve_sdrplay_service_name()
+    if not service_name:
+        return False, "Servicio SDRplay API no encontrado"
+
+    if not check_sdrplay_service_running():
+        return True, f"Servicio {service_name} ya detenido"
+
+    try:
+        stop = subprocess.run(
+            ["sc", "stop", service_name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if stop.returncode != 0 and "1062" not in (stop.stderr or "") + (stop.stdout or ""):
+            out = ((stop.stdout or "") + (stop.stderr or "")).strip()
+            return False, f"No se pudo detener {service_name}: {out or stop.returncode}"
+
+        deadline = time.monotonic() + max(wait_s, 0.0)
+        while time.monotonic() < deadline:
+            if not check_sdrplay_service_running():
+                return True, f"Servicio {service_name} detenido"
+            time.sleep(0.4)
+        return False, f"{service_name} sigue en ejecución tras sc stop"
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout deteniendo {service_name}"
+    except Exception as exc:
+        return False, f"Error deteniendo {service_name}: {exc}"
+
+
 def restart_sdrplay_service(
     *,
     stop_wait_s: float = 8.0,

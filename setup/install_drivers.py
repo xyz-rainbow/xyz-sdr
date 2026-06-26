@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Callable
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -21,12 +22,16 @@ if script_dir:
 
 from pathlib import Path
 
+from core.console_utf8 import configure_console_encoding, register_windows_console_restore, restore_terminal_after_tui
 from core.runtime_paths import configure_pycache_prefix
 
 configure_pycache_prefix(Path(project_root))
+configure_console_encoding()
+register_windows_console_restore()
 
 if os.name == "nt":
     os.system("")
+    os.environ.setdefault("UHD_LOG_LEVEL", "off")
 
 from setup.env_state import probe_environment
 from setup.install_i18n import detect_system_language, t
@@ -65,9 +70,21 @@ def _ctx(temp_dir: str) -> InstallContext:
     return InstallContext(lang=_lang(), say=_say, confirm=_confirm, temp_dir=temp_dir)
 
 
-def _exit_installer() -> None:
-    print(f"\n{C_PINK}Saliendo de la instalación. ¡Buen código! / Exiting installer. Happy coding!{C_RESET}\n")
-    sys.exit(0)
+def _make_exit_installer(*, use_splash: bool) -> Callable[[], None]:
+    def _exit_installer() -> None:
+        if use_splash:
+            from setup.install_splash import run_installer_closing_splash
+
+            run_installer_closing_splash()
+        else:
+            print(
+                f"\n{C_PINK}Saliendo de la instalación. ¡Buen código! / "
+                f"Exiting installer. Happy coding!{C_RESET}\n"
+            )
+        restore_terminal_after_tui()
+        sys.exit(0)
+
+    return _exit_installer
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -78,14 +95,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true", help="No prompts (with --repair)")
     parser.add_argument("--verbose", action="store_true", help="Full diagnostics (with --check)")
     parser.add_argument("--require-hardware", action="store_true", help="Exit 2 if no SDR device")
+    parser.add_argument("--no-splash", action="store_true", help="Skip installer splash/outro animations")
     return parser
 
 
 def _exit_code_for_state(*, require_hardware: bool = False) -> int:
     refresh_windows_environment()
-    state = probe_environment(bootstrap_soapy=True)
+    state = probe_environment(bootstrap_soapy=True, quiet_soapy=True, inprocess_soapy=False)
     if state.env_ready:
-        if require_hardware and not state.has_devices:
+        if require_hardware and not state.has_target_hardware:
             return 2
         return 0
     return 1
@@ -97,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     get_install_logger()
     refresh_windows_environment()
     temp_dir = os.environ.get("TEMP", os.environ.get("TMP", "/tmp"))
+    use_splash = not args.no_splash
 
     if args.check:
         from setup.check_env import run_check
@@ -121,12 +140,19 @@ def main(argv: list[str] | None = None) -> int:
         run_resumed_repair(_lang(), _ctx(temp_dir))
         return 0
 
+    initial_state = None
+    if use_splash:
+        from setup.install_splash import run_installer_opening_splash
+
+        initial_state = run_installer_opening_splash(_lang())
+
     run_express_menu(
         _lang(),
         _ctx(temp_dir),
         set_lang=_set_lang,
         temp_dir=temp_dir,
-        exit_fn=_exit_installer,
+        exit_fn=_make_exit_installer(use_splash=use_splash),
+        initial_state=initial_state,
     )
     return 0
 
@@ -135,5 +161,20 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print(f"\n\n{C_PINK}Saliendo de la instalación. ¡Buen código! / Exiting installer. Happy coding!{C_RESET}\n")
+        if "--no-splash" not in sys.argv:
+            try:
+                from setup.install_splash import run_installer_closing_splash
+
+                run_installer_closing_splash()
+            except Exception:
+                print(
+                    f"\n\n{C_PINK}Saliendo de la instalación. ¡Buen código! / "
+                    f"Exiting installer. Happy coding!{C_RESET}\n"
+                )
+        else:
+            print(
+                f"\n\n{C_PINK}Saliendo de la instalación. ¡Buen código! / "
+                f"Exiting installer. Happy coding!{C_RESET}\n"
+            )
+        restore_terminal_after_tui()
         sys.exit(130)

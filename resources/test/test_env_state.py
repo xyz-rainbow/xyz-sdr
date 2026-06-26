@@ -42,7 +42,7 @@ def test_probe_keeps_venv_soapy_when_bootstrap_runs_on_other_interpreter(monkeyp
     monkeypatch.setattr("setup.env_state.check_soapy_import", lambda _exe: True)
     monkeypatch.setattr(
         "setup.env_state.probe_soapy_in_python",
-        lambda _exe: (True, [{"driver": "sdrplay", "label": "test"}]),
+        lambda _exe, **kwargs: (True, [{"driver": "sdrplay", "label": "test"}]),
     )
     monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
     monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: r"C:\Program Files\PothosSDR")
@@ -66,6 +66,7 @@ def test_env_ready_vs_hardware_ready():
         pothos_installed=True,
         path_in_process=True,
         sdrplay_plugin_ok=True,
+        sdrplay_module_ok=True,
         venv_path=__import__("pathlib").Path(__file__),
         python_libs_missing=[],
         soapy_import_ok=True,

@@ -198,10 +198,17 @@ def find_sdrplay_api_dll() -> str | None:
 
 def assess_sdrplay_soapy_module(module_path: str | None) -> str:
     """Clasifica el módulo Soapy sdrplay: missing | legacy | present."""
+    from core.driver_runtime import PLUGIN_DLL_NAME
+
     if not module_path or not os.path.isfile(module_path):
         return "missing"
     name = os.path.basename(module_path).lower()
-    if name == "soapy sdrplay3.dll":
+    if name == PLUGIN_DLL_NAME.lower():
+        try:
+            if os.path.getmtime(module_path) < _LEGACY_SDRPLAY_MODULE_CUTOFF:
+                return "legacy"
+        except OSError:
+            pass
         return "present"
     try:
         if os.path.getmtime(module_path) < _LEGACY_SDRPLAY_MODULE_CUTOFF:
@@ -269,11 +276,15 @@ def _disable_stale_pothos_api_dll(dest: str) -> None:
 
 def _copy_if_newer(src: str, dest: str) -> bool:
     try:
-        src_size = os.path.getsize(src)
-        if os.path.isfile(dest) and os.path.getsize(dest) == src_size:
-            return True
         import shutil
 
+        src_mtime = os.path.getmtime(src)
+        src_size = os.path.getsize(src)
+        if os.path.isfile(dest):
+            dest_mtime = os.path.getmtime(dest)
+            dest_size = os.path.getsize(dest)
+            if dest_size == src_size and dest_mtime >= src_mtime:
+                return True
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copy2(src, dest)
         logger.info("Actualizado %s desde %s", dest, src)
@@ -389,10 +400,10 @@ def is_sdrplay_soapy_module_ok(pothos_root: str | None = None) -> bool:
 
 
 def _configure_soapy_plugin_path(pothos_root: str | None, *, allow_pothos: bool = True) -> None:
-    from core.driver_runtime import resolve_bundled_sdrplay_plugin
+    from core.driver_runtime import PLUGIN_DLL_NAME, resolve_bundled_sdrplay_plugin
 
     user_dir = user_soapy_plugin_dir()
-    user_module = os.path.join(user_dir, "sdrPlaySupport.dll")
+    user_module = os.path.join(user_dir, PLUGIN_DLL_NAME)
     if os.path.isfile(user_module) and assess_sdrplay_soapy_module(user_module) == "present":
         _prepend_soapy_plugin_dir(user_dir)
         logger.info("SOAPY plugin path: user dir %s", user_dir)
@@ -521,8 +532,8 @@ def check_sdrplay_service_running() -> bool:
     return False
 
 
-def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
-    """True si SoapySDRUtil enumera al menos un dispositivo con driver sdrplay."""
+def run_sdrplay_find(*, timeout: float = 10.0) -> tuple[bool, str, str]:
+    """Ejecuta SoapySDRUtil --find=driver=sdrplay. Devuelve (found, stdout, stderr)."""
     try:
         res = subprocess.run(
             [_soapy_util_executable(), "--find=driver=sdrplay"],
@@ -531,13 +542,47 @@ def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
             check=False,
             timeout=timeout,
         )
-        return _parse_sdrplay_find_stdout(res.stdout or "")
+        stdout = res.stdout or ""
+        stderr = res.stderr or ""
+        return _parse_sdrplay_find_stdout(stdout), stdout, stderr
     except Exception:
+        return False, "", ""
+
+
+_API_FAULT_MARKERS = (
+    "servicenotresponding",
+    "sdrplayapiopenfail",
+    "sdrplayapifail",
+    "apiopenfail",
+)
+
+
+def is_sdrplay_api_fault(*, timeout: float = 12.0) -> bool:
+    """True si la API está en disco pero SoapySDRUtil reporta fallo de servicio/sesión."""
+    if not check_sdrplay_api():
         return False
+    found, stdout, stderr = run_sdrplay_find(timeout=timeout)
+    if found:
+        return False
+    compact = (stdout + stderr).lower().replace("_", "").replace(" ", "")
+    return any(marker in compact for marker in _API_FAULT_MARKERS)
+
+
+def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
+    """True si SoapySDRUtil enumera al menos un dispositivo con driver sdrplay."""
+    found, _, _ = run_sdrplay_find(timeout=timeout)
+    return found
 
 
 def is_python_64bit() -> bool:
     return struct.calcsize("P") * 8 == 64
+
+
+def clear_soapy_bootstrap_cache() -> None:
+    """Invalida caché de bootstrap (p. ej. antes de reinstalar SDRplay API)."""
+    global _bootstrap_done, _last_status
+    _bootstrap_done = False
+    _last_status = None
 
 
 def bootstrap_soapy(*, force: bool = False) -> SoapyStatus:

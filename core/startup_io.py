@@ -36,6 +36,29 @@ def restore_stdio() -> None:
 
 
 @contextmanager
+def suppress_soapy_probe_output() -> Iterator[None]:
+    """
+    Silencia stdout y stderr durante enumerate Soapy (UHD/VOLK en Pothos).
+    Usar solo tras imprimir la UI del instalador; no durante splash/TUI.
+    """
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+        restore_stdio()
+
+
+@contextmanager
 def suppress_startup_output(
     captured: list[str] | None = None,
 ) -> Iterator[None]:

@@ -154,7 +154,12 @@ def run_check(*, verbose: bool = True, lang: str = "es") -> int:
             if status and status.pothos_bin:
                 ok(f"DLL path: {status.pothos_bin}")
         if state.has_devices and state.device_count:
-            ok(f"Dispositivos encontrados: {state.device_count}")
+            if state.sdrplay_ok and state.has_sdrplay_devices:
+                ok(f"RSP SDRplay detectado: {state.sdrplay_device_count}")
+            elif state.sdrplay_ok:
+                warn(f"Soapy enumera {state.device_count} dispositivo(s) pero ninguno es SDRplay")
+            else:
+                ok(f"Dispositivos encontrados: {state.device_count}")
             if state.venv_ok and venv_py and os.path.normcase(sys.executable) != os.path.normcase(str(venv_py)):
                 from setup.env_state import probe_soapy_in_python
 
@@ -195,11 +200,13 @@ def run_check(*, verbose: bool = True, lang: str = "es") -> int:
             )
             warn("Compila SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo")
         elif module_path:
+            from core.sdrplay_enumerate import describe_sdrplay_enumeration_failure
+
             warn(
                 f"Módulo Soapy sdrplay en disco ({os.path.basename(module_path)}) "
                 "pero no enumera dispositivo."
             )
-            warn("¿RSP conectado? Cierra SDRuno y reinicia SDRplayAPIService.")
+            warn(describe_sdrplay_enumeration_failure())
         else:
             warn("Módulo Soapy sdrplay no encontrado en PothosSDR/lib/SoapySDR/modules*.")
             warn("Compila SoapySDRPlay3: .\\setup\\install_drivers.ps1 → [1] Reparar todo")
@@ -217,7 +224,7 @@ def run_check(*, verbose: bool = True, lang: str = "es") -> int:
     )
     if skip_preflight:
         warn("sdrplay_rx_preflight: SKIP (XYZ_SDR_SKIP_RX_PREFLIGHT)")
-    elif state.sdrplay_plugin_ok and state.sdrplay_ok and state.has_devices:
+    elif state.sdrplay_plugin_ok and state.sdrplay_ok and state.has_sdrplay_devices:
         from core.sdrplay_preflight import preflight_status_label, resolve_preflight_timeout, run_preflight_best
 
         try:

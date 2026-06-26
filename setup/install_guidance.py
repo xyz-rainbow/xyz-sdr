@@ -12,6 +12,7 @@ INSTALL_BLOCKER_ORDER = (
     "pothos_path",
     "sdrplay_api",
     "soapy_sdrplay3",
+    "sdrplay_enumeration",
     "venv",
     "python_libs",
     "soapysdr",
@@ -45,10 +46,20 @@ def next_action(state: EnvironmentState, lang: str) -> InstallAction:
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_sdrplay", (blocker,))
     if blocker == "soapy_sdrplay3":
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_soapy_sdrplay3", (blocker,))
+    if blocker == "sdrplay_enumeration":
+        return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_sdrplay_enum", (blocker,))
     if blocker in ("venv", "python_libs", "soapysdr"):
         return InstallAction("repair_all", "1", "menu_repair_all", "next_reason_python", (blocker,))
 
-    if state.env_ready and not state.has_devices:
+    if state.env_ready and not state.has_target_hardware:
+        if "sdrplay_enumeration" in state.blockers:
+            return InstallAction(
+                "repair_all",
+                "1",
+                "menu_repair_all",
+                "next_reason_sdrplay_enum",
+                ("sdrplay_enumeration",),
+            )
         return InstallAction("run_sim", "2", "menu_run_app", "next_reason_connect_sdr", ())
 
     if state.env_ready:
@@ -66,6 +77,8 @@ def format_action(state: EnvironmentState, lang: str) -> tuple[InstallAction, st
 
 def drivers_row_status(state: EnvironmentState, lang: str) -> str:
     if state.drivers_ready:
+        if state.sdrplay_ok and state.sdrplay_module_ok and not state.sdrplay_plugin_ok:
+            return t(lang, "status_row_plugin_not_enumerating")
         return t(lang, "status_row_ok")
     missing: list[str] = []
     if not state.sdrplay_ok:
@@ -74,7 +87,7 @@ def drivers_row_status(state: EnvironmentState, lang: str) -> str:
         missing.append("PothosSDR")
     elif not state.path_ok:
         missing.append("PATH")
-    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_plugin_ok:
+    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_module_ok:
         missing.append("SoapySDRPlay3")
     return t(lang, "status_row_fail").format(", ".join(missing) if missing else "?")
 
@@ -92,8 +105,16 @@ def python_row_status(state: EnvironmentState, lang: str) -> str:
 
 
 def hardware_row_status(state: EnvironmentState, lang: str) -> str:
+    if not state.env_ready:
+        return t(lang, "status_row_hw_pending")
+    if state.sdrplay_ok:
+        if state.has_sdrplay_devices:
+            return t(lang, "status_row_ok_sdrplay_devices").format(state.sdrplay_device_count)
+        if state.sdrplay_usb_issue:
+            return t(lang, "status_row_usb_driver_failed")
+        if state.sdrplay_module_ok:
+            return t(lang, "status_row_rsp_not_visible")
+        return t(lang, "status_row_no_device")
     if state.has_devices:
         return t(lang, "status_row_ok_devices").format(state.device_count)
-    if state.env_ready:
-        return t(lang, "status_row_no_device")
-    return t(lang, "status_row_hw_pending")
+    return t(lang, "status_row_no_device")

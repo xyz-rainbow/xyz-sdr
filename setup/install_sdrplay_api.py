@@ -5,6 +5,7 @@ Instala solo SDRplay API v3.15 (atajo desde la raíz del repo).
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
@@ -35,6 +36,14 @@ def _say(message: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Install SDRplay API v3.15")
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Run installer only (no process guard; used from parent installer subprocess)",
+    )
+    args = parser.parse_args()
+
     get_install_logger()
     refresh_windows_environment()
     lang = detect_system_language()
@@ -43,7 +52,7 @@ def main() -> int:
     _say(f"\n=== {t(lang, 'menu_opt_sdrplay')} ===\n")
 
     ctx = InstallContext(lang=lang, say=_say, confirm=lambda _p: True, temp_dir=temp_dir)
-    ok = run_sdrplay_api_installer(ctx)
+    ok = run_sdrplay_api_installer(ctx, isolated=args.isolated)
     return 0 if ok else 1
 
 

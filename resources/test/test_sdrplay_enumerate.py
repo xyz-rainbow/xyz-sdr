@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
-from core.sdrplay_enumerate import has_sdrplay_in_devices, recover_sdrplay_enumeration
+from core.sdrplay_enumerate import describe_sdrplay_enumeration_failure, has_sdrplay_in_devices, recover_sdrplay_enumeration
+from core.sdrplay_usb import CM_PROB_FAILED_INSTALL, SdrplayUsbStatus
+
+
+def test_describe_failure_usb_driver(monkeypatch):
+    monkeypatch.setattr("core.sdrplay_enumerate.is_sdrplay_soapy_module_ok", lambda: True)
+    monkeypatch.setattr(
+        "core.sdrplay_enumerate.probe_sdrplay_usb",
+        lambda **k: SdrplayUsbStatus(
+            present=True,
+            ok=False,
+            problem_code=CM_PROB_FAILED_INSTALL,
+        ),
+    )
+    msg = describe_sdrplay_enumeration_failure()
+    assert "28" in msg or "driver" in msg.lower()
 
 
 def test_has_sdrplay_in_devices():

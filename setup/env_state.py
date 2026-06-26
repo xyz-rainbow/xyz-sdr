@@ -31,6 +31,10 @@ class EnvironmentState:
     soapy_import_ok: bool = False
     has_devices: bool = False
     device_count: int = 0
+    has_sdrplay_devices: bool = False
+    sdrplay_device_count: int = 0
+    sdrplay_module_ok: bool = False
+    sdrplay_usb_issue: bool = False
     sdrplay_plugin_ok: bool = False
     blockers: list[str] = field(default_factory=list)
 
@@ -60,7 +64,15 @@ class EnvironmentState:
 
     @property
     def drivers_ready(self) -> bool:
-        return self.sdrplay_ok and self.pothos_ready and self.sdrplay_plugin_ok
+        if not (self.sdrplay_ok and self.pothos_ready):
+            return False
+        return self.sdrplay_module_ok
+
+    @property
+    def has_target_hardware(self) -> bool:
+        if self.sdrplay_ok:
+            return self.has_sdrplay_devices
+        return self.has_devices
 
     @property
     def env_ready(self) -> bool:
@@ -69,7 +81,11 @@ class EnvironmentState:
 
     @property
     def hardware_ready(self) -> bool:
-        return self.env_ready and self.has_devices
+        if not self.env_ready:
+            return False
+        if self.sdrplay_ok:
+            return self.has_sdrplay_devices
+        return self.has_devices
 
     @property
     def sim_ready(self) -> bool:
@@ -172,13 +188,48 @@ def check_soapy_import(python_exe: str) -> bool:
         return False
 
 
-def probe_soapy_in_python(python_exe: str) -> tuple[bool, list[dict]]:
+def probe_soapy_in_python(
+    python_exe: str,
+    *,
+    quiet: bool = False,
+    bootstrap: bool = False,
+    project_root: str | None = None,
+) -> tuple[bool, list[dict]]:
     """Importa SoapySDR y enumera dispositivos en el intérprete indicado."""
+    quiet_setup = (
+        "import os, sys\n"
+        "sys.stderr = open(os.devnull, 'w')\n"
+        "os.environ['UHD_LOG_LEVEL'] = 'off'\n"
+        if quiet
+        else ""
+    )
+    root_setup = ""
+    if bootstrap and project_root:
+        root_setup = (
+            f"import os, sys\n"
+            f"sys.path.insert(0, {project_root!r})\n"
+            f"os.chdir({project_root!r})\n"
+        )
+    bootstrap_block = ""
+    if bootstrap:
+        bootstrap_block = (
+            "    from core.soapy_runtime import bootstrap_soapy\n"
+            "    status = bootstrap_soapy(force=True)\n"
+            "    if not status.import_ok:\n"
+            "        raise RuntimeError('SoapySDR import failed')\n"
+            "    devices = [dict(d) for d in status.devices]\n"
+        )
+    else:
+        bootstrap_block = (
+            "    import SoapySDR\n"
+            "    devices = [dict(d) for d in SoapySDR.Device.enumerate()]\n"
+        )
     code = (
         "import json\n"
+        f"{quiet_setup}"
+        f"{root_setup}"
         "try:\n"
-        "    import SoapySDR\n"
-        "    devices = [dict(d) for d in SoapySDR.Device.enumerate()]\n"
+        f"{bootstrap_block}"
         "    print(json.dumps({'ok': True, 'devices': devices}))\n"
         "except Exception as exc:\n"
         "    print(json.dumps({'ok': False, 'error': str(exc)}))\n"
@@ -205,15 +256,33 @@ def _same_python_executable(left: str, right: str) -> bool:
     return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
-def probe_environment(*, bootstrap_soapy: bool = True) -> EnvironmentState:
+def _count_sdrplay_devices(devices: list[dict]) -> int:
+    return sum(1 for dev in devices if str(dev.get("driver", "")).strip().lower() == "sdrplay")
+
+
+def probe_environment(
+    *,
+    bootstrap_soapy: bool = True,
+    quiet_soapy: bool = False,
+    inprocess_soapy: bool = True,
+) -> EnvironmentState:
+    from contextlib import nullcontext
+
     from core.python_runtime import project_venv_python
+    from core.sdrplay_usb import probe_sdrplay_usb_with_retry
     from core.soapy_runtime import (
-        bootstrap_soapy,
+        bootstrap_soapy as bootstrap_soapy_runtime,
         check_sdrplay_api,
         check_sdrplay_plugin,
         find_pothos_install,
         is_sdrplay_soapy_module_ok,
     )
+    from core.startup_io import suppress_soapy_probe_output, suppress_startup_output
+
+    def _soapy_probe_context():
+        if not quiet_soapy:
+            return nullcontext()
+        return suppress_soapy_probe_output()
 
     state = EnvironmentState()
     blockers: list[str] = []
@@ -247,30 +316,49 @@ def probe_environment(*, bootstrap_soapy: bool = True) -> EnvironmentState:
         if not state.soapy_import_ok:
             blockers.append("soapysdr")
 
-    if bootstrap_soapy and state.venv_ok:
-        venv_str = str(venv_py)
-        if _same_python_executable(sys.executable, venv_str):
-            status = bootstrap_soapy(force=True)
-            state.soapy_import_ok = status.import_ok
-            state.has_devices = status.has_devices
-            state.device_count = len(status.devices)
-            if not status.import_ok and "soapysdr" not in blockers:
-                blockers.append("soapysdr")
-        elif state.soapy_import_ok:
-            ok, devices = probe_soapy_in_python(venv_str)
-            if not ok:
-                state.soapy_import_ok = False
-                if "soapysdr" not in blockers:
+    with _soapy_probe_context():
+        if quiet_soapy:
+            os.environ.setdefault("UHD_LOG_LEVEL", "off")
+        if bootstrap_soapy and state.venv_ok:
+            venv_str = str(venv_py)
+            use_inprocess = inprocess_soapy and _same_python_executable(sys.executable, venv_str)
+            if use_inprocess:
+                status = bootstrap_soapy_runtime(force=True)
+                state.soapy_import_ok = status.import_ok
+                state.has_devices = status.has_devices
+                state.device_count = len(status.devices)
+                state.sdrplay_device_count = _count_sdrplay_devices(status.devices)
+                state.has_sdrplay_devices = state.sdrplay_device_count > 0
+                if not status.import_ok and "soapysdr" not in blockers:
                     blockers.append("soapysdr")
-            else:
-                state.device_count = len(devices)
-                state.has_devices = state.device_count > 0
+            elif state.soapy_import_ok or not inprocess_soapy:
+                ok, devices = probe_soapy_in_python(
+                    venv_str,
+                    quiet=quiet_soapy,
+                    bootstrap=True,
+                    project_root=str(project_root()),
+                )
+                if not ok:
+                    state.soapy_import_ok = False
+                    if "soapysdr" not in blockers:
+                        blockers.append("soapysdr")
+                else:
+                    state.device_count = len(devices)
+                    state.has_devices = state.device_count > 0
+                    state.sdrplay_device_count = _count_sdrplay_devices(devices)
+                    state.has_sdrplay_devices = state.sdrplay_device_count > 0
 
-    state.sdrplay_plugin_ok = (
-        check_sdrplay_plugin() if state.sdrplay_ok else is_sdrplay_soapy_module_ok()
-    )
-    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_plugin_ok:
+        state.sdrplay_module_ok = is_sdrplay_soapy_module_ok()
+        state.sdrplay_plugin_ok = (
+            check_sdrplay_plugin() if state.sdrplay_ok else state.sdrplay_module_ok
+        )
+    if state.sdrplay_ok:
+        usb = probe_sdrplay_usb_with_retry(attempts=2, delay_s=0.3)
+        state.sdrplay_usb_issue = usb.present and not usb.ok
+    if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_module_ok:
         blockers.append("soapy_sdrplay3")
+    elif state.sdrplay_ok and state.pothos_installed and state.sdrplay_module_ok and not state.sdrplay_plugin_ok:
+        blockers.append("sdrplay_enumeration")
 
     state.blockers = blockers
     return state

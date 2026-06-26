@@ -8,11 +8,15 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+from core.sdrplay_usb import CM_PROB_FAILED_INSTALL, probe_sdrplay_usb
 from core.soapy_runtime import (
     SoapyStatus,
     bootstrap_soapy,
     check_sdrplay_api,
     check_sdrplay_plugin,
+    check_sdrplay_service_running,
+    is_sdrplay_soapy_module_ok,
+    run_sdrplay_find,
 )
 
 
@@ -34,6 +38,53 @@ def sdrplay_find_ok(*, status: SoapyStatus | None = None) -> bool:
 
 
 _QUICK_RETRY_DELAYS = (0.5, 1.0, 1.5)
+
+
+def describe_sdrplay_enumeration_failure() -> str:
+    """Mensaje accionable cuando el RSP no aparece en Soapy."""
+    if not is_sdrplay_soapy_module_ok():
+        return "Plugin SoapySDRPlay3 no instalado — ejecuta reparar todo en el instalador."
+
+    usb = probe_sdrplay_usb()
+    if usb.present and not usb.ok:
+        if usb.problem_code == CM_PROB_FAILED_INSTALL:
+            return (
+                "Driver USB del RSP sin instalar (Administrador de dispositivos, código 28). "
+                "Desconecta el RSP, reinstala la API SDRplay y vuelve a conectar el USB."
+            )
+        return (
+            f"RSP conectado por USB pero con error del sistema (código {usb.problem_code}). "
+            "Revisa Administrador de dispositivos o reinstala la API SDRplay."
+        )
+
+    _, stdout, stderr = run_sdrplay_find()
+    combined = f"{stdout}\n{stderr}".lower()
+    compact = combined.replace("_", "").replace(" ", "")
+    if "servicenotresponding" in compact:
+        return (
+            "SDRplay API no responde (servicio colgado). Cierra SDRuno y ejecuta: "
+            "Restart-Service SDRplayAPIService"
+        )
+    if "sdrplayapiopen" in compact and "fail" in compact:
+        if usb.present and not usb.ok:
+            return (
+                "Driver USB del RSP sin instalar (Administrador de dispositivos, código 28). "
+                "Desconecta el RSP, reinstala la API SDRplay y vuelve a conectar el USB."
+            )
+        return (
+            "SDRplay API no abre sesión (sdrplay_api_Fail). Cierra SDRuno, reinicia "
+            "SDRplayAPIService y revisa el driver USB del RSP."
+        )
+    if not check_sdrplay_service_running():
+        return "SDRplayAPIService detenido — PowerShell (admin): Start-Service SDRplayAPIService"
+
+    if not usb.present:
+        return "No se detecta RSP por USB — conecta el dispositivo o prueba otro puerto/cable."
+
+    return (
+        "Plugin instalado pero el RSP no enumera. Cierra SDRuno, reinicia "
+        "SDRplayAPIService y revisa el USB."
+    )
 
 
 def _quick_enumerate_retries(status: SoapyStatus) -> SoapyStatus:
@@ -97,4 +148,4 @@ def recover_sdrplay_enumeration(
     status = bootstrap_soapy(force=True)
     if sdrplay_find_ok(status=status):
         return True, f"SDRplay visible tras reinicio de servicio ({msg})", status
-    return False, "SDRplay sigue sin enumerar tras reiniciar SDRplayAPIService", status
+    return False, describe_sdrplay_enumeration_failure(), status

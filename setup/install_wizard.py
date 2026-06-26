@@ -12,13 +12,14 @@ from setup.install_actions import (
     InstallContext,
     install_pothos,
     install_python_env,
-    install_sdrplay,
     install_soapy_sdrplay3,
     report_path_configuration,
+    run_sdrplay_api_installer,
 )
 from setup.install_i18n import t
 from setup.install_log import current_log_path, log_line
 from setup.repo_update import ensure_repo_updated_for_wizard
+from setup.sdrplay_repair import repair_sdrplay_driver_stack
 from setup.windows_installers import refresh_windows_environment
 
 WIZARD_STEPS = (
@@ -45,33 +46,32 @@ def run_repair_wizard(ctx: InstallContext, *, quiet: bool = False) -> int:
             ensure_repo_updated_for_wizard(ctx.lang, ctx.say)
             continue
 
-        state = probe_environment(bootstrap_soapy=False)
-
         if key == "drivers":
-            if state.sdrplay_ok:
-                from core.sdrplay_enumerate import recover_sdrplay_enumeration
-
-                ctx.say("  [>>] Comprobando SDRplay API / enumeración…")
-                found, msg, _st = recover_sdrplay_enumeration(restart_if_missing=True, log=log_line)
-                ctx.say(f"  [{'OK' if found else '!!'}] {msg}")
-            if not state.sdrplay_ok:
-                install_sdrplay(ctx)
-            else:
-                log_line("SKIP sdrplay")
-            state = probe_environment(bootstrap_soapy=False)
+            rsp_ok, repair_msg = repair_sdrplay_driver_stack(
+                ctx,
+                run_api_installer=lambda: run_sdrplay_api_installer(ctx),
+                install_soapy_plugin=lambda: install_soapy_sdrplay3(ctx, force=False),
+                log=log_line,
+            )
+            if not rsp_ok:
+                ctx.say(f"  [!!] Reparación SDRplay incompleta: {repair_msg}")
+            state = probe_environment(bootstrap_soapy=False, inprocess_soapy=False)
             if not state.pothos_installed:
                 install_pothos(ctx)
             elif not state.path_in_process:
                 report_path_configuration(ctx)
             else:
                 log_line("SKIP pothos")
-            state = probe_environment(bootstrap_soapy=False)
-            if state.sdrplay_ok and state.pothos_installed:
-                install_soapy_sdrplay3(ctx)
+            state = probe_environment(bootstrap_soapy=False, inprocess_soapy=False)
+            if state.sdrplay_ok and state.pothos_installed and not state.sdrplay_module_ok:
+                ok = install_soapy_sdrplay3(ctx, force=True)
+                if not ok:
+                    ctx.say(f"  [!!] {t(ctx.lang, 'wizard_soapy_failed')}")
             continue
 
+        state = probe_environment(bootstrap_soapy=False, inprocess_soapy=False)
+
         if key == "python":
-            state = probe_environment(bootstrap_soapy=False)
             if state.python_env_ready:
                 log_line("SKIP python env")
             elif not install_python_env(ctx, offer_python_install=not quiet):
@@ -83,6 +83,10 @@ def run_repair_wizard(ctx: InstallContext, *, quiet: bool = False) -> int:
             from setup.check_env import run_check
 
             code = run_check(verbose=False, lang=ctx.lang)
+            verify_state = probe_environment(bootstrap_soapy=True, inprocess_soapy=False)
+            if verify_state.sdrplay_ok and not verify_state.has_sdrplay_devices:
+                ctx.say("  [!!] El RSP no es visible tras la reparación — revisa USB o reinicia el PC.")
+                code = max(code, 1)
             ctx.say(f"\n=== {t(ctx.lang, 'wizard_done')} ===")
             log_path = current_log_path()
             if log_path:
@@ -93,13 +97,13 @@ def run_repair_wizard(ctx: InstallContext, *, quiet: bool = False) -> int:
 
 
 def offer_post_install_run(ctx: InstallContext) -> bool:
-    state = probe_environment(bootstrap_soapy=True)
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=False)
     if not state.env_ready:
         return False
     choice = input(f"\n  {t(ctx.lang, 'post_install_prompt')}").strip().lower()
     if choice in ("m", "menu"):
         return False
-    return launch_app(ctx, sim=not state.has_devices)
+    return launch_app(ctx, sim=not state.has_target_hardware)
 
 
 def launch_app(ctx: InstallContext, *, sim: bool = False) -> bool:
@@ -111,8 +115,8 @@ def launch_app(ctx: InstallContext, *, sim: bool = False) -> bool:
         ctx.say(f"  [ERROR] {t(ctx.lang, 'post_install_no_venv')}")
         return False
 
-    state = probe_environment(bootstrap_soapy=True)
-    use_sim = sim or (state.env_ready and not state.has_devices)
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=False)
+    use_sim = sim or (state.env_ready and not state.has_target_hardware)
     cmd = [str(venv_py), str(root / "main.py")]
     if use_sim:
         cmd.append("--sim")

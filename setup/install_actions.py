@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -60,8 +62,17 @@ def report_install_error(ctx: InstallContext, exc: Exception) -> None:
         ctx.say(f"  {t(ctx.lang, 'install_elevation_hint')}")
 
 
-def run_sdrplay_api_installer(ctx: InstallContext) -> bool:
-    """Obtiene e instala SDRplay API v3.15 (bundled → local → URL)."""
+def _installer_python() -> str:
+    from core.python_runtime import project_venv_python
+
+    venv_py = project_venv_python()
+    if venv_py is not None and venv_py.is_file():
+        return str(venv_py)
+    return sys.executable
+
+
+def _run_sdrplay_api_installer_body(ctx: InstallContext) -> bool:
+    """Ejecuta el instalador oficial (sin preparación de procesos)."""
     path = acquire_sdrplay_installer(ctx.temp_dir, lang=ctx.lang, on_message=ctx.say)
     if not path:
         ctx.say(f"\n[ERROR] {t(ctx.lang, 'install_fail')}")
@@ -72,26 +83,72 @@ def run_sdrplay_api_installer(ctx: InstallContext) -> bool:
     ctx.say("  [>>] Acepta UAC si aparece; completa el asistente SDRplay API.")
     try:
         run_exe_installer(path)
-        ctx.say(f"\n[SUCCESS] {t(ctx.lang, 'install_success')}")
-        from core.sdrplay_service import restart_sdrplay_service
+        from core.soapy_runtime import check_sdrplay_api
 
-        ok, msg = restart_sdrplay_service()
-        if ok:
-            ctx.say(f"  [OK] {msg}")
-        else:
-            ctx.say(f"  [>>] {msg}")
-            ctx.say("  [>>] Ejecuta como admin: Restart-Service SDRplayAPIService")
+        if not check_sdrplay_api():
+            ctx.say("  [!!] Instalador ejecutado pero la API SDRplay no se detecta en disco.")
+            ctx.say("  [>>] Completa el asistente o reinstala desde sdrplay.com/downloads")
+            return False
+        ctx.say(f"\n[SUCCESS] {t(ctx.lang, 'install_success')}")
         return True
     except Exception as exc:
         report_install_error(ctx, exc)
         return False
 
 
-def install_sdrplay(ctx: InstallContext) -> None:
-    run_sdrplay_api_installer(ctx)
+def run_sdrplay_api_installer(ctx: InstallContext, *, isolated: bool = False) -> bool:
+    """Obtiene e instala SDRplay API v3.15 (bundled → local → URL)."""
+    from core.runtime_paths import project_root
+    from core.sdrplay_install_guard import (
+        finalize_after_sdrplay_api_install,
+        prepare_for_sdrplay_api_install,
+    )
+
+    if isolated:
+        return _run_sdrplay_api_installer_body(ctx)
+
+    ok_prep, prep_msg = prepare_for_sdrplay_api_install(ctx.say, lang=ctx.lang)
+    if not ok_prep:
+        ctx.say(f"  [!!] {prep_msg}")
+        return False
+
+    root = project_root()
+    py = _installer_python()
+    log_line(f"SDRplay API isolated install via {py}")
+    proc = subprocess.run(
+        [py, "-m", "setup.install_sdrplay_api", "--isolated"],
+        cwd=str(root),
+        env=os.environ.copy(),
+        check=False,
+    )
+    if proc.returncode != 0:
+        ctx.say(f"  [!!] {t(ctx.lang, 'sdrplay_guard_install_failed')}")
+        return False
+
+    ok_final, final_msg = finalize_after_sdrplay_api_install(ctx.say, lang=ctx.lang)
+    if not ok_final:
+        ctx.say(f"  [>>] {final_msg}")
+    time.sleep(1.0)
+    return True
+
+
+def install_sdrplay(ctx: InstallContext) -> bool:
+    return run_sdrplay_api_installer(ctx)
 
 
 def install_pothos(ctx: InstallContext) -> None:
+    path = os.path.join(ctx.temp_dir, "PothosSDR_installer.exe")
+    if download_file(POTHOS_INSTALLER_URL, path, "PothosSDR", lang=ctx.lang, on_message=ctx.say):
+        ctx.say(f"  {t(ctx.lang, 'running_installer')}")
+        try:
+            run_exe_installer(path)
+            ctx.say(f"\n[SUCCESS] {t(ctx.lang, 'install_success')}")
+            report_path_configuration(ctx)
+        except Exception as exc:
+            report_install_error(ctx, exc)
+    else:
+        ctx.say(f"\n[ERROR] {t(ctx.lang, 'install_fail')}")
+        ctx.say(f"\n  Manual: {POTHOS_INSTALLER_URL}")
     path = os.path.join(ctx.temp_dir, "PothosSDR_installer.exe")
     if download_file(POTHOS_INSTALLER_URL, path, "PothosSDR", lang=ctx.lang, on_message=ctx.say):
         ctx.say(f"  {t(ctx.lang, 'running_installer')}")

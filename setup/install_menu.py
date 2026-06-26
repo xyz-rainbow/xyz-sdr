@@ -7,7 +7,7 @@ import sys
 import time
 from typing import Callable
 
-from setup.env_state import probe_environment
+from setup.env_state import EnvironmentState, probe_environment
 from setup.install_actions import (
     InstallContext,
     install_pothos,
@@ -64,10 +64,19 @@ def _status_icon(ok: bool | None) -> str:
     return f"{C_ORANGE}⚠{C_RESET}"
 
 
-def print_express_interface(lang: str) -> None:
-    print_banner()
+def print_express_interface(
+    lang: str,
+    *,
+    prefetched_state: EnvironmentState | None = None,
+    skip_banner: bool = False,
+) -> EnvironmentState:
+    if not skip_banner:
+        print_banner()
     refresh_windows_environment()
-    state = probe_environment(bootstrap_soapy=True)
+    if prefetched_state is not None:
+        state = prefetched_state
+    else:
+        state = probe_environment(bootstrap_soapy=True, quiet_soapy=True, inprocess_soapy=False)
     action, _, reason = format_action(state, lang)
 
     level = state.readiness_level()
@@ -75,8 +84,12 @@ def print_express_interface(lang: str) -> None:
         headline = t(lang, "readiness_hardware")
         color = C_LIME
     elif level == "env":
-        headline = t(lang, "readiness_env")
-        color = C_LIME
+        if state.sdrplay_ok and not state.has_sdrplay_devices:
+            headline = t(lang, "readiness_env_no_rsp")
+            color = C_ORANGE
+        else:
+            headline = t(lang, "readiness_env")
+            color = C_LIME
     else:
         headline = t(lang, "readiness_pending")
         color = C_ORANGE
@@ -84,7 +97,12 @@ def print_express_interface(lang: str) -> None:
     print(f" {C_BOLD}{t(lang, 'status_summary')}:{C_RESET} {color}{headline}{C_RESET}")
     print(f"  {_status_icon(state.drivers_ready)} {t(lang, 'status_row_drivers')}: {drivers_row_status(state, lang)}")
     print(f"  {_status_icon(state.python_env_ready)} {t(lang, 'status_row_python')}: {python_row_status(state, lang)}")
-    print(f"  {_status_icon(state.has_devices if state.env_ready else None)} {t(lang, 'status_row_hardware')}: {hardware_row_status(state, lang)}")
+    print(f"  {_status_icon(state.has_target_hardware if state.env_ready else None)} {t(lang, 'status_row_hardware')}: {hardware_row_status(state, lang)}")
+    if state.env_ready and state.sdrplay_ok and not state.has_sdrplay_devices:
+        if state.sdrplay_usb_issue:
+            print(f"  {C_ORANGE}→ {t(lang, 'status_hint_usb_repair')}{C_RESET}")
+        elif "sdrplay_enumeration" in state.blockers:
+            print(f"  {C_ORANGE}→ {t(lang, 'status_hint_rsp_repair')}{C_RESET}")
     print(f"\n {C_BOLD}{t(lang, 'next_step_label')}:{C_RESET} {reason}")
     print(f"{C_CYAN} ─────────────────────────────────────────────────────────────────────────────────────────{C_RESET}")
     print(f" {C_BOLD}{t(lang, 'menu_express_title')}:{C_RESET}")
@@ -102,6 +120,7 @@ def print_express_interface(lang: str) -> None:
     _menu_line(MENU_ADVANCED, t(lang, "menu_advanced"))
     _menu_line(MENU_EXIT, t(lang, "menu_opt_exit"))
     print(f"{C_CYAN} ─────────────────────────────────────────────────────────────────────────────────────────{C_RESET}")
+    return state
 
 
 def _pause(lang: str) -> None:
@@ -183,15 +202,25 @@ def run_express_menu(
     set_lang: Callable[[str], None],
     temp_dir: str,
     exit_fn: Callable[[], None],
+    initial_state: EnvironmentState | None = None,
 ) -> None:
+    first_menu = initial_state is not None
     while True:
-        print_express_interface(lang)
+        prefetched = initial_state if first_menu else None
+        print_express_interface(
+            lang,
+            prefetched_state=prefetched,
+            skip_banner=first_menu,
+        )
+        first_menu = False
+        initial_state = None
         opc = input(f" {C_BOLD}{t(lang, 'select_option')}{C_RESET}").strip().upper()
-        state = probe_environment(bootstrap_soapy=True)
-
         if opc == MENU_EXIT:
             exit_fn()
-        elif opc == MENU_REPAIR:
+
+        state = probe_environment(bootstrap_soapy=True, quiet_soapy=True, inprocess_soapy=False)
+
+        if opc == MENU_REPAIR:
             code = run_repair_wizard(ctx)
             if code == 0:
                 offer_post_install_run(ctx)
@@ -205,7 +234,7 @@ def run_express_menu(
                 _pause(lang)
                 continue
             from setup.install_wizard import launch_app
-            launch_app(ctx, sim=not state.has_devices)
+            launch_app(ctx, sim=not state.has_target_hardware)
             _pause(lang)
         elif opc == MENU_DIAG:
             from setup.check_env import run_check

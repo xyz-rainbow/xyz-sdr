@@ -363,8 +363,10 @@ def finalize_plugin_install(*, say: Callable[[str], None]) -> bool:
         say("  [OK] SoapySDRUtil --find=driver=sdrplay OK")
         return True
 
-    say("  [OK] Plugin instalado (módulo no-legacy presente)")
-    say("  [!!] RSP no enumerado aún — cierra SDRuno, reinicia SDRplayAPIService, revisa USB.")
+    from core.sdrplay_enumerate import describe_sdrplay_enumeration_failure
+
+    say("  [OK] Plugin Soapy instalado (módulo presente)")
+    say(f"  [!!] {describe_sdrplay_enumeration_failure()}")
     return True
 
 
@@ -511,8 +513,10 @@ def install_soapy_sdrplay3_if_needed(
                 say("  [OK] Plugin Soapy sdrplay operativo tras reinicio")
                 log_line("OK soapy_sdrplay3 after service restart")
                 return True
-            say("  [!!] Cierra SDRuno, revisa USB y ejecuta: Restart-Service SDRplayAPIService")
-            log_line("WARN soapy_sdrplay3 API not responding after restart")
+            from core.sdrplay_enumerate import describe_sdrplay_enumeration_failure
+
+            say(f"  [!!] {describe_sdrplay_enumeration_failure()}")
+            log_line("WARN soapy_sdrplay3 not enumerating after restart")
             return False
         say("  [OK] Plugin Soapy sdrplay ya operativo")
         log_line("SKIP soapy_sdrplay3")
