@@ -102,6 +102,29 @@ def test_reopen_sdrplay_device_on_start_rx_when_flagged():
     assert app._sdrplay_device_needs_reopen is False
 
 
+def test_maybe_auto_start_rx_starts_when_ready():
+    app = XyzSDRApp(auto_start_rx=True)
+    app._hardware_ready = True
+    app._device = MagicMock()
+    app._device.is_simulated = True
+    app._sdrplay_rx_blocked = False
+
+    with patch.object(app, "_start_rx") as start_rx:
+        app._maybe_auto_start_rx()
+        start_rx.assert_called_once()
+
+
+def test_maybe_auto_start_rx_skips_when_blocked():
+    app = XyzSDRApp(auto_start_rx=True)
+    app._hardware_ready = True
+    app._device = MagicMock()
+    app._sdrplay_rx_blocked = True
+
+    with patch.object(app, "_start_rx") as start_rx:
+        app._maybe_auto_start_rx()
+        start_rx.assert_not_called()
+
+
 def test_after_sdrplay_api_restart_closes_device_and_sets_flag():
     app = XyzSDRApp()
     app._device = _sdrplay_device(sdr_open=True)

@@ -103,10 +103,11 @@ def _console_write(text: str) -> None:
 
 
 def _handoff_to_textual() -> None:
-    """Restaura stdout/stderr antes de que Textual tome el control."""
-    from core.console_utf8 import prepare_terminal_for_tui
+    """Pantalla alterna limpia antes de que Textual tome el control."""
+    from core.console_utf8 import clear_alternate_screen, prepare_terminal_for_tui
 
-    prepare_terminal_for_tui()
+    clear_alternate_screen()
+    prepare_terminal_for_tui(already_alternate=True)
 
 
 def _clear_screen() -> None:
@@ -302,6 +303,11 @@ def run_startup_splash(
     """
     global _USE_UNICODE_SPLASH
     _USE_UNICODE_SPLASH = configure_console_encoding()
+
+    from core.console_utf8 import clear_console_scrollback, enter_alternate_screen
+
+    clear_console_scrollback()
+    enter_alternate_screen()
 
     width, height = _term_size()
     v_padding, centered = _banner_layout(width, height)

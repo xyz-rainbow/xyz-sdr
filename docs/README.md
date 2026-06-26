@@ -34,7 +34,9 @@
 | [requirements-locking.md](requirements-locking.md) | Lockfiles `requirements*.lock` con `--require-hashes` |
 | [logging.md](logging.md) | Logging seguro con Textual: `detach_console_logging`, `var/log/` |
 | [installer-i18n.md](installer-i18n.md) | Traducciones del instalador (es/en), API `t()`, añadir idioma |
-| [roadmap.md](roadmap.md) | Plan de ruta |
+| [roadmap.md](roadmap.md) | Plan de ruta (fases 1–6) |
+| [roadmap-platform.md](roadmap-platform.md) | **Roadmap plataforma:** sectores S0–S8, fases A–H, scripts/tests por área |
+| [api-control-plane.md](api-control-plane.md) | Mapa API SDR: qué módulo usar por operación (hardware, RX, display, recovery) |
 | [onboarding.md](onboarding.md) | "Primeros 15 minutos" — tutorial paso a paso |
 
 ---

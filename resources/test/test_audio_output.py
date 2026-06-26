@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from core.audio_output import AudioOutputQueue
+from core.audio_output import AudioOutputQueue, resolve_output_device
 
 
 def test_enqueue_drops_when_full():
@@ -22,3 +22,16 @@ def test_set_volume_clamps():
     assert q._volume == 1.0
     q.set_volume(-5.0)
     assert q._volume == 0.0
+
+
+def test_resolve_output_device_by_index_string():
+    assert resolve_output_device("3") == 3
+
+
+def test_resolve_output_device_by_name_substring():
+    fake_devices = [
+        {"name": "Microsoft Sound Mapper", "max_output_channels": 2},
+        {"name": "Realtek HD Audio", "max_output_channels": 2},
+    ]
+    with patch("core.audio_output.sd.query_devices", return_value=fake_devices):
+        assert resolve_output_device("realtek") == 1

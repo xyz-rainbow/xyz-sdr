@@ -18,6 +18,44 @@ _LOG_FORMAT = logging.Formatter(
     "%H:%M:%S",
 )
 
+_tui_stderr_guard: tuple[int, int] | None = None
+
+
+def begin_native_stderr_suppression() -> None:
+    """
+    Silencia fd 2 durante la TUI (Soapy/VOLK escriben ahí y ensucian la pantalla).
+
+    No toca stdout: Textual lo necesita para el driver.
+    """
+    global _tui_stderr_guard
+    if _tui_stderr_guard is not None:
+        return
+    saved_stderr_fd = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, 2)
+        _tui_stderr_guard = (saved_stderr_fd, devnull_fd)
+        restore_stdio()
+    except Exception:
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+        _tui_stderr_guard = None
+
+
+def end_native_stderr_suppression() -> None:
+    """Restaura stderr tras salir de la TUI."""
+    global _tui_stderr_guard
+    if _tui_stderr_guard is None:
+        return
+    saved_stderr_fd, devnull_fd = _tui_stderr_guard
+    try:
+        os.dup2(saved_stderr_fd, 2)
+    finally:
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+        _tui_stderr_guard = None
+        restore_stdio()
+
 
 def restore_stdio() -> None:
     """Re-sincroniza sys.stdout/stderr con los fds 1/2 (Textual en Windows)."""

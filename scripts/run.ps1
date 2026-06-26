@@ -11,6 +11,7 @@ param(
     [switch]$Check,
     [switch]$ListDev,
     [switch]$NoSplash,
+    [switch]$NoAutoRx,
 
     [string]$Driver,
 
@@ -35,6 +36,10 @@ New-Item -ItemType Directory -Force -Path $Pycache | Out-Null
 $env:PYTHONPYCACHEPREFIX = $Pycache
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+# Evita secuencias SGR de ratón mezcladas con la TUI en Windows Terminal / PS.
+if (-not $env:XYZ_SDR_MOUSE) {
+    $env:XYZ_SDR_NO_MOUSE = "1"
+}
 try {
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -105,6 +110,7 @@ if ($DebugMode) { $pyArgs += "--debug" }
 if ($Check) { $pyArgs += "--check" }
 if ($ListDev) { $pyArgs += "--list-dev" }
 if ($NoSplash) { $pyArgs += "--no-splash" }
+if ($NoAutoRx) { $pyArgs += "--no-auto-rx" }
 if ($Band) { $pyArgs += @("--band", $Band) }
 if ($Driver) { $pyArgs += @("--driver", $Driver) }
 if ($PSBoundParameters.ContainsKey("Freq")) { $pyArgs += @("--freq", $Freq) }

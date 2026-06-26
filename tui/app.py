@@ -67,7 +67,13 @@ from tui.widgets.frequency_timeline import FrequencyTimeline
 from tui.widgets.spectrum_graph import SpectrumGraph
 from tui.widgets.waterfall_timeline import WaterfallTimeline
 from core.display_levels import ColumnLevelTracker
-from tui.widgets.display_palette import compute_auto_levels, plot_content_width
+from tui.display_sync import (
+    DisplayFrameContext,
+    DisplayLevelState,
+    apply_band_frame_to_widgets,
+    compute_column_levels,
+)
+from tui.widgets.display_palette import plot_content_width
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +329,7 @@ class XyzSDRApp(App):
 
     #main_area {
         height: 1fr;
+        background: #090d16;
     }
 
     #controls {
@@ -388,14 +395,14 @@ class XyzSDRApp(App):
     }
 
     #controls Select > SelectCurrent Static#label {
-        background: transparent;
+        background: #0b0f19;
         height: 1fr;
         padding: 0 1;
         content-align: left middle;
     }
 
     #controls Select > SelectCurrent .arrow {
-        background: transparent;
+        background: #0b0f19;
         height: 1fr;
         padding: 0 1 0 0;
         content-align: center middle;
@@ -417,7 +424,7 @@ class XyzSDRApp(App):
     #controls Select.-expanded > SelectCurrent .arrow,
     #controls Select > SelectCurrent:focus Static#label,
     #controls Select > SelectCurrent:focus .arrow {
-        background: transparent;
+        background: #0b0f19;
     }
 
     #controls Select:focus,
@@ -458,7 +465,7 @@ class XyzSDRApp(App):
         align: left middle;
         grid-gutter: 1 0;
         margin-bottom: 0;
-        background: transparent;
+        background: #0b0f19;
         border: none;
         padding: 0;
     }
@@ -468,14 +475,14 @@ class XyzSDRApp(App):
         min-width: 0;
         padding: 0;
         margin: 0;
-        background: transparent;
+        background: #0b0f19;
         background-tint: transparent;
     }
 
     .gain-volume-row Select:focus,
     .gain-volume-row Select.-expanded,
     .gain-volume-row Select:focus-within {
-        background: transparent;
+        background: #0b0f19;
         background-tint: transparent;
     }
 
@@ -639,7 +646,7 @@ class XyzSDRApp(App):
         margin-top: 1;
         margin-bottom: 0;
         min-height: 9;
-        background: transparent;
+        background: #0b0f19;
         border: none;
         padding: 0;
     }
@@ -677,6 +684,7 @@ class XyzSDRApp(App):
 
     #display_area {
         width: 1fr;
+        background: #090d16;
     }
 
     /* ── Widgets de visualizacion ── */
@@ -827,6 +835,7 @@ class XyzSDRApp(App):
         ("shift+up",    "scroll_history_newer", "WF ↑"),
         ("shift+down",  "scroll_history_older", "WF ↓"),
         ("r",           "record",        "Grabar"),
+        ("p",           "capture_display", "Captura"),
         ("escape",      "show_settings", "Ajustes"),
         ("q",             "quit",          "Salir"),
         ("ctrl+q",        "quit",          "Salir"),
@@ -860,6 +869,12 @@ class XyzSDRApp(App):
         previous_session_marker: dict | None = None,
         strict: bool = False,
         ai_enabled: bool = False,
+        auto_start_rx: bool | None = None,
+        display_diagnostics: bool = False,
+        headless_display: bool = False,
+        capture_duration: float = 8.0,
+        capture_export_dir: str | Path | None = None,
+        display_min_frames: int = 5,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -870,6 +885,19 @@ class XyzSDRApp(App):
         self.config = config or {}
         self.config_path = config_path
         self.debug_mode = debug_mode
+        self._display_diagnostics = bool(display_diagnostics or debug_mode)
+        self._headless_display = bool(headless_display)
+        self._capture_duration = float(capture_duration)
+        self._capture_export_dir = Path(capture_export_dir) if capture_export_dir else None
+        self._display_min_frames = max(1, int(display_min_frames))
+        self._display_frames_applied = 0
+        self._headless_done = False
+        self.last_display_report = None
+        app_cfg = self.config.get("app", {})
+        if auto_start_rx is None:
+            self._auto_start_rx = bool(app_cfg.get("auto_start_rx", True))
+        else:
+            self._auto_start_rx = bool(auto_start_rx)
         self.band_profile = band_profile
         self.strict = strict
         # AI: opt-in vía CLI (--ai) o [ai] del config. Combinado en ai.is_enabled().
@@ -1229,6 +1257,10 @@ class XyzSDRApp(App):
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
+        from core.console_utf8 import prepare_terminal_for_tui
+        from tui.splash import _splash_display_lines
+
+        prepare_terminal_for_tui(already_alternate=True)
         self._device = None
 
         self._sync_viewport(immediate=True)
@@ -1237,9 +1269,8 @@ class XyzSDRApp(App):
         self._set_waterfall_speed(10)
 
         log = self.query_one("#log_panel", Log)
-        for line in self._startup_logs:
-            if line.strip():
-                log.write_line(f"[BOOT] {line}")
+        for line in _splash_display_lines(self._startup_logs):
+            log.write_line(f"[BOOT] {line}")
         log.write_line("[INFO] Abriendo dispositivo SDR...")
 
         self._update_status()
@@ -1470,7 +1501,11 @@ class XyzSDRApp(App):
                 )
 
         log.write_line("[INFO] Pulsa [S] o el boton para iniciar recepcion")
+        if self._auto_start_rx:
+            log.write_line("[INFO] Auto-RX: iniciando espectro/cascada al abrir dispositivo…")
         log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | [ ] ancho PASS")
+        if self._display_diagnostics:
+            log.write_line("[INFO] Diagnóstico display: [P] captura → var/harness/")
         log.write_line("[INFO] Ratón: clic+arrastre en timeline/espectro = banda audible simétrica")
         if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
@@ -1480,6 +1515,81 @@ class XyzSDRApp(App):
         if pending:
             self._apply_band_profile(pending)
         self._update_status()
+        if self._auto_start_rx:
+            self.call_later(self._maybe_auto_start_rx)
+        self.set_timer(0.35, self._update_display_width, name="display_width_retry")
+
+    def _maybe_auto_start_rx(self) -> None:
+        """Arranca RX tras hardware listo (espectro/cascada sin pulsar S)."""
+        if not self._auto_start_rx or self._rx_active or not self._hardware_ready or not self._device:
+            return
+        if self._sdrplay_rx_blocked:
+            if not self._sdrplay_rx_blocked_notified:
+                self._sdrplay_rx_blocked_notified = True
+                self._log(
+                    "[INFO] RX SDRplay real bloqueado — modo SIM disponible con [S] "
+                    "o revisa preflight/diagnóstico"
+                )
+            return
+        self._start_rx()
+
+    def build_display_export_context(self):
+        from tui.harness.export import DisplayExportContext
+
+        _, _, seq = self._band_mailbox.peek_latest()
+        return DisplayExportContext(
+            tuned_frequency_hz=float(self.tuned_frequency),
+            sample_rate=float(self.sample_rate),
+            visible_span_hz=float(self.visible_span),
+            frames_published=int(seq),
+            frames_applied=int(self._display_frames_applied),
+            last_snr=float(self._last_snr),
+            device=self._device,
+        )
+
+    def action_capture_display(self) -> None:
+        """Exporta captura espectro/cascada (diagnóstico)."""
+        from datetime import datetime
+
+        from tui.harness.export import export_display_snapshot
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = Path("var/harness") / stamp
+        report = export_display_snapshot(
+            self,
+            self.build_display_export_context(),
+            out,
+            min_frames=self._display_min_frames,
+        )
+        self.last_display_report = report
+        level = "OK" if report.display_ok else "WARN"
+        self._log(f"[{level}] Captura display → {out}")
+        report_json = report.export_paths.get("report_json")
+        if report_json:
+            self._log(f"  report: {report_json}")
+
+    def _maybe_headless_display_export(self) -> None:
+        if not self._headless_display or self._headless_done:
+            return
+        if self._rx_started_at <= 0:
+            return
+        elapsed = time.time() - self._rx_started_at
+        if elapsed < self._capture_duration:
+            if self._display_frames_applied < self._display_min_frames:
+                return
+        self._headless_done = True
+        out = self._capture_export_dir or Path("var/harness/headless_run")
+        from tui.harness.export import export_display_snapshot
+
+        self.last_display_report = export_display_snapshot(
+            self,
+            self.build_display_export_context(),
+            out,
+            min_frames=self._display_min_frames,
+        )
+        self._stop_rx()
+        self._graceful_shutdown = True
+        self.exit()
 
     def _invalidate_band_cache(self) -> None:
         """Limpia caché espectral al cambiar bandwidth o reiniciar RX."""
@@ -1588,28 +1698,15 @@ class XyzSDRApp(App):
         display_cfg: dict,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Calcula suelo/techo por columna (per-column o global)."""
-        width = len(cols)
-        min_range_db = float(display_cfg.get("waterfall_min_range_db", 6.0))
-        low_pct = float(display_cfg.get("waterfall_level_low_pct", 5))
-        high_pct = float(display_cfg.get("waterfall_level_high_pct", 99))
-
-        if not self.waterfall_auto_level:
-            return np.full(width, -80.0), np.full(width, -20.0)
-
-        if self.display_level_mode == "per_column":
-            if self._level_tracker.width != width:
-                self._level_tracker.reconfigure(width, reset=True)
-            self._level_tracker.push_viewport_row(cols)
-            self._level_tracker.update(cols)
-            return self._level_tracker.floors, self._level_tracker.ceilings
-
-        level_min, level_max = compute_auto_levels(
+        return compute_column_levels(
             cols,
-            low_pct=low_pct,
-            high_pct=high_pct,
-            min_range_db=min_range_db,
+            display_cfg,
+            DisplayLevelState(
+                waterfall_auto_level=self.waterfall_auto_level,
+                display_level_mode=self.display_level_mode,
+                level_tracker=self._level_tracker,
+            ),
         )
-        return np.full(width, level_min), np.full(width, level_max)
 
     def _clear_spectrum_rx_waiting(self) -> None:
         try:
@@ -1694,66 +1791,59 @@ class XyzSDRApp(App):
                 self._display_no_frame_warned = True
                 if self.debug_mode:
                     self._log("[WARN] Espectro sin datos; revisar stream")
+            self._maybe_headless_display_export()
             return
 
         try:
             self._apply_display_frame(frame, snr, seq)
         except Exception as exc:
             logger.exception("Error actualizando espectro/cascada: %s", exc)
+        self._maybe_headless_display_export()
 
     def _apply_display_frame(self, frame, snr: float, seq: int) -> None:
         """Renderiza un frame en widgets de visualización (hilo principal)."""
-
-        self._display_sequence = seq
-        self._last_snr = snr
 
         ui_t0 = time.perf_counter()
         display_cfg = self.config.get("display", {})
         plot_width = max(int(self._display_width), 1)
         spectrum: SpectrumGraph | None = None
+        waterfall: WaterfallTimeline | None = None
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
             plot_width = max(plot_width, spectrum._column_width())
         except Exception:
             pass
+        try:
+            waterfall = self.query_one("#waterfall", WaterfallTimeline)
+        except Exception:
+            pass
 
         try:
-            cols = slice_band_to_viewport(
-                frame.band_cols,
-                frame.center_hz,
-                frame.sample_rate,
-                self.viewport_center,
-                self.visible_span,
-                plot_width,
+            seq, _cols = apply_band_frame_to_widgets(
+                frame,
+                snr,
+                seq,
+                spectrum=spectrum,
+                waterfall=waterfall,
+                ctx=DisplayFrameContext(
+                    viewport_center=self.viewport_center,
+                    visible_span=self.visible_span,
+                    passband_center_hz=self.passband_center_hz,
+                    passband_width_hz=self.passband_width_hz,
+                    passband_preview_width_hz=self._passband_preview_width,
+                    display_width=plot_width,
+                ),
+                display_cfg=display_cfg,
+                level_state=DisplayLevelState(
+                    waterfall_auto_level=self.waterfall_auto_level,
+                    display_level_mode=self.display_level_mode,
+                    level_tracker=self._level_tracker,
+                ),
+                scanner_step=self._handle_scanner_step if self._scanner.scanning else None,
             )
-
-            floors, ceilings = self._compute_column_levels(cols, display_cfg)
-
-            if self._scanner.scanning:
-                self._handle_scanner_step(frame, snr, floors, ceilings)
-
-            if spectrum is not None:
-                try:
-                    spectrum.set_viewport(self.viewport_center, self.visible_span)
-                    spectrum.passband_center_hz = self.passband_center_hz
-                    spectrum.passband_width_hz = self.passband_width_hz
-                    spectrum.passband_preview_width_hz = self._passband_preview_width
-                    spectrum.set_column_levels(floors, ceilings)
-                    spectrum.set_band_frame(frame, force=True)
-                    spectrum.set_viewport_cols(cols)
-                except Exception as exc:
-                    logger.exception("Error actualizando espectro: %s", exc)
-
-            try:
-                waterfall = self.query_one("#waterfall", WaterfallTimeline)
-                waterfall.set_viewport(self.viewport_center, self.visible_span)
-                waterfall.passband_center_hz = self.passband_center_hz
-                waterfall.passband_width_hz = self.passband_width_hz
-                waterfall.passband_preview_width_hz = self._passband_preview_width
-                waterfall.set_column_levels(floors, ceilings)
-                waterfall.add_viewport_row(cols, frame)
-            except Exception as exc:
-                logger.exception("Error actualizando waterfall: %s", exc)
+            self._display_sequence = seq
+            self._last_snr = snr
+            self._display_frames_applied += 1
 
             now = time.time()
             if now - self._status_last_update >= 0.2:
@@ -1814,6 +1904,8 @@ class XyzSDRApp(App):
         ui_fps = ui_frames / window_s
 
         parts = [f"[DEBUG] perf {window_s:.1f}s"]
+        _, _, pub_seq = self._band_mailbox.peek_latest()
+        parts.append(f"disp pub {pub_seq} app {self._display_frames_applied}")
         if rx_iters:
             avg_rx = sum(rx_proc) / len(rx_proc) if rx_proc else 0.0
             p95_rx = float(np.percentile(rx_proc, 95)) if rx_proc else 0.0
@@ -2242,22 +2334,35 @@ class XyzSDRApp(App):
         return result.ok
 
     def ensure_audio_output(self) -> None:
-        """Inicia audio tras la primera lectura IQ (worker RX)."""
+        """Inicia audio (fallback si no se abrió en _start_rx)."""
         if self._audio_output is not None or not self._rx_active:
             return
-        self.call_from_thread(self._start_audio_output_main)
+        if threading.current_thread() is threading.main_thread():
+            self._start_audio_output_main()
+        else:
+            self.call_from_thread(self._start_audio_output_main)
 
     def _start_audio_output_main(self) -> None:
         if self._audio_output is not None or not self._rx_active:
             return
         try:
-            self._audio_output = AudioOutputQueue(sample_rate=self._audio_rate)
+            from core.audio_output import AudioOutputQueue, output_device_label, resolve_output_device
+
+            dsp_cfg = self.config.get("dsp", {})
+            device_spec = dsp_cfg.get("audio_output_device")
+            device = resolve_output_device(device_spec)
+            self._audio_output = AudioOutputQueue(
+                sample_rate=self._audio_rate,
+                device=device,
+            )
             self._audio_output.set_volume(self.volume_value / 100.0)
             self._audio_output.start()
             self._audio_started = True
-            self._log(f"[OK]   Salida de audio iniciada ({self._audio_rate} Hz, callback)")
+            label = output_device_label(device)
+            self._log(f"[OK]   Salida de audio: {label} ({self._audio_rate} Hz)")
         except Exception as e:
             self._audio_output = None
+            self._audio_started = False
             self._log(f"[WARN] Sin salida de audio: {e}")
 
     def _start_rx(self) -> None:
@@ -2302,6 +2407,12 @@ class XyzSDRApp(App):
         except Exception:
             pass
         self._log("RX iniciado")
+        self._start_audio_output_main()
+        if self.squelch_enabled:
+            self._log(
+                f"[INFO] Squelch activo — umbral {self.squelch_threshold:.0f} dB SNR "
+                "(desactívalo en Ajustes si no hay audio)"
+            )
         if (
             self._device
             and not self._device.is_simulated
@@ -2314,6 +2425,7 @@ class XyzSDRApp(App):
             )
         self._stream_stats_snapshot = StreamStats()
         self._invalidate_band_cache()
+        self._display_frames_applied = 0
         self._fm_demod_state.reset()
         self._fm_agc.reset()
         self._rx_started_at = time.time()

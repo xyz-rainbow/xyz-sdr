@@ -19,6 +19,7 @@ bootstrap_project_caches(_ROOT)
 
 from core.console_utf8 import configure_console_encoding, prepare_terminal_for_tui, register_windows_console_restore, restore_terminal_after_tui
 from core.logging_config import detach_console_logging
+from core.startup_io import begin_native_stderr_suppression
 
 import argparse
 import atexit
@@ -47,7 +48,14 @@ class StartupHardwareError(Exception):
 
 def _will_use_startup_splash(args: argparse.Namespace) -> bool:
     """True si la TUI mostrará splash (no modos CLI ni --no-splash)."""
-    return not args.no_splash and not args.check and not args.list_dev and not args.diagnose_sdrplay
+    return (
+        not args.no_splash
+        and not args.check
+        and not args.list_dev
+        and not args.diagnose_sdrplay
+        and not args.harness
+        and not args.headless_display
+    )
 
 
 def parse_args():
@@ -58,6 +66,7 @@ def parse_args():
     parser.add_argument("--driver",   default=None, help="Driver SDR (auto, sdrplay, rtlsdr, hackrf...)")
     parser.add_argument("--freq",     type=float, default=None, help="Frecuencia inicial en MHz")
     parser.add_argument("--gain",     type=float, default=None, help="Ganancia en dB")
+    parser.add_argument("--sample-rate", type=float, default=None, help="Sample rate Hz (modo --harness)")
     parser.add_argument("--mode",     default=None,
                         choices=["wbfm", "nbfm", "am", "usb", "lsb", "cw", "dsb", "raw", "auto"],
                         help="Modo de demodulación")
@@ -71,6 +80,29 @@ def parse_args():
                         help="Perfil de banda (config/bands/<nombre>.toml, p. ej. fm_broadcast, airband)")
     parser.add_argument("--debug",    action="store_true", help="Activa logs de depuración e instrumentación en el panel")
     parser.add_argument("--no-splash", action="store_true", help="Omitir pantalla de carga (depuración TUI)")
+    parser.add_argument(
+        "--no-auto-rx",
+        action="store_true",
+        help="No iniciar RX automáticamente al abrir el dispositivo (por defecto: auto-RX ON)",
+    )
+    parser.add_argument(
+        "--harness",
+        action="store_true",
+        help="TUI mínima espectro/cascada (diagnóstico; mismo pipeline que la app principal)",
+    )
+    parser.add_argument(
+        "--headless-display",
+        action="store_true",
+        help="Captura automática espectro/cascada sin TUI interactiva (CI/diagnóstico)",
+    )
+    parser.add_argument("--display-duration", type=float, default=8.0, help="Segundos RX en --headless-display")
+    parser.add_argument("--display-export-dir", type=Path, default=None, help="Directorio de salida headless")
+    parser.add_argument("--display-min-frames", type=int, default=5, help="Frames mínimos para display_ok")
+    parser.add_argument(
+        "--display-preflight",
+        action="store_true",
+        help="Preflight SDRplay en modo --harness (subproceso aislado)",
+    )
     parser.add_argument("--diagnose-sdrplay", action="store_true", help="Informe diagnóstico SDRplay y salir")
     parser.add_argument(
         "--no-restart-sdrplay-service",
@@ -110,6 +142,148 @@ def load_config(path: str) -> dict:
     except Exception as e:
         logger.error(f"Error leyendo config: {e}")
         return {}
+
+
+def _run_harness_tui(
+    args: argparse.Namespace,
+    config: dict,
+    *,
+    driver: str,
+    center_freq: float,
+    gain: float,
+    sample_rate: float | None = None,
+) -> int:
+    """TUI mínima de diagnóstico (antes python -m tui.harness)."""
+    import asyncio
+    import json
+
+    from core.console_utf8 import prepare_terminal_for_tui, restore_terminal_after_tui
+    from core.logging_config import detach_console_logging
+    from core.startup_io import begin_native_stderr_suppression
+    from tui.harness.app import SdrDisplayHarnessApp, build_harness_host
+
+    if args.headless_display:
+        host = build_harness_host(
+            config,
+            driver=driver,
+            freq_hz=center_freq,
+            gain=gain,
+            sample_rate=sample_rate or config.get("device", {}).get("sample_rate"),
+        )
+        export_dir = args.display_export_dir or Path("var/harness/headless_run")
+        app = SdrDisplayHarnessApp(
+            host,
+            auto_rx=True,
+            headless_capture=True,
+            capture_duration=float(args.display_duration),
+            capture_export_dir=export_dir,
+            min_frames=int(args.display_min_frames),
+            run_preflight=bool(args.display_preflight),
+        )
+
+        async def _headless() -> None:
+            async with app.run_test(size=(100, 32)) as pilot:
+                await pilot.pause(float(args.display_duration) + 2.0)
+
+        prepare_terminal_for_tui()
+        detach_console_logging()
+        begin_native_stderr_suppression()
+        try:
+            asyncio.run(_headless())
+        finally:
+            restore_terminal_after_tui()
+        report = app.last_report
+        if report is not None:
+            print(json.dumps(report.to_dict(), indent=2))
+            return 0 if report.display_ok else 1
+        return 1
+
+    prepare_terminal_for_tui()
+    detach_console_logging()
+    begin_native_stderr_suppression()
+    try:
+        host = build_harness_host(
+            config,
+            driver=driver,
+            freq_hz=center_freq,
+            gain=gain,
+            sample_rate=sample_rate or config.get("device", {}).get("sample_rate"),
+        )
+        app = SdrDisplayHarnessApp(
+            host,
+            auto_rx=True,
+            min_frames=int(args.display_min_frames),
+            run_preflight=bool(args.display_preflight),
+        )
+        app.run(mouse=False)
+        return 0
+    finally:
+        restore_terminal_after_tui()
+
+
+def _run_headless_main_tui(
+    args: argparse.Namespace,
+    config: dict,
+    *,
+    driver: str,
+    center_freq: float,
+    gain: float,
+    volume: float,
+    demod_mode: str,
+    active_band: str | None,
+    enumerated_devices: list[dict],
+    previous_marker: dict | None,
+    startup_logs: list[str],
+) -> int:
+    """Headless con la TUI principal completa (export + report.json)."""
+    import asyncio
+    import json
+
+    from core.console_utf8 import prepare_terminal_for_tui, restore_terminal_after_tui
+    from core.logging_config import detach_console_logging
+    from core.startup_io import begin_native_stderr_suppression
+    from tui.app import XyzSDRApp
+
+    app = XyzSDRApp(
+        driver=driver,
+        center_freq=center_freq,
+        gain=gain,
+        volume=volume,
+        demod_mode=demod_mode,
+        config=config,
+        config_path=args.config,
+        debug_mode=True,
+        startup_logs=startup_logs,
+        band_profile=active_band,
+        enumerated_devices=enumerated_devices,
+        previous_session_marker=previous_marker,
+        strict=args.strict,
+        ai_enabled=args.ai,
+        auto_start_rx=True,
+        display_diagnostics=True,
+        headless_display=True,
+        capture_duration=float(args.display_duration),
+        capture_export_dir=args.display_export_dir,
+        display_min_frames=int(args.display_min_frames),
+    )
+
+    async def _headless() -> None:
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause(float(args.display_duration) + 3.0)
+
+    prepare_terminal_for_tui()
+    detach_console_logging()
+    begin_native_stderr_suppression()
+    try:
+        asyncio.run(_headless())
+    finally:
+        restore_terminal_after_tui()
+
+    report = app.last_display_report
+    if report is not None:
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0 if report.display_ok else 1
+    return 1
 
 
 def main():
@@ -277,6 +451,30 @@ def main():
 
     enumerated_devices: list[dict] = []
 
+    if args.harness:
+        if defer_config and not config:
+            config, active_band = _load_application_config()
+        if not args.sim:
+            from core.soapy_runtime import bootstrap_soapy
+
+            with suppress_startup_output():
+                bootstrap_soapy(force=True)
+        code = _run_harness_tui(
+            args,
+            config,
+            driver=driver,
+            center_freq=center_freq,
+            gain=gain,
+            sample_rate=args.sample_rate,
+        )
+        write_exit_marker(
+            "harness",
+            log_path=session_log_path,
+            exit_code=code,
+        )
+        close_session_log()
+        sys.exit(code)
+
     # ── Lanzar TUI ─────────────────────────────────────────────────────────
     try:
         from tui.app import XyzSDRApp
@@ -365,13 +563,41 @@ def main():
                 )
             _startup_phase_label("listo")
 
+        if args.headless_display:
+            _startup_phase()
+            code = _run_headless_main_tui(
+                args,
+                config,
+                driver=driver,
+                center_freq=center_freq,
+                gain=gain,
+                volume=volume,
+                demod_mode=demod_mode,
+                active_band=active_band,
+                enumerated_devices=enumerated_devices,
+                previous_marker=previous_marker,
+                startup_logs=startup_logs,
+            )
+            write_exit_marker(
+                "headless_display",
+                log_path=session_log_path,
+                exit_code=code,
+            )
+            close_session_log()
+            sys.exit(code)
+
         if args.no_splash:
             _startup_phase()
+            from core.console_utf8 import clear_console_scrollback
+
+            clear_console_scrollback()
+            prepare_terminal_for_tui()
         else:
             run_startup_splash(_startup_phase, status_lines=startup_logs)
+            prepare_terminal_for_tui(already_alternate=True)
 
-        prepare_terminal_for_tui()
         detach_console_logging()
+        begin_native_stderr_suppression()
 
         app = XyzSDRApp(
             driver=driver,
@@ -388,14 +614,26 @@ def main():
             previous_session_marker=previous_marker,
             strict=args.strict,
             ai_enabled=args.ai,
+            auto_start_rx=not args.no_auto_rx,
+            display_diagnostics=args.debug,
         )
         try:
-            # Textual: mouse habilitado (Windows incl.). XYZ_SDR_NO_MOUSE=1 para desactivar.
-            mouse = os.environ.get("XYZ_SDR_NO_MOUSE", "").strip().lower() not in (
+            # Ratón desactivado por defecto en Windows (SGR ensucia la consola).
+            # XYZ_SDR_MOUSE=1 para habilitar; XYZ_SDR_NO_MOUSE=1 fuerza off en cualquier OS.
+            no_mouse = os.environ.get("XYZ_SDR_NO_MOUSE", "").strip().lower() in (
                 "1",
                 "true",
                 "yes",
             )
+            want_mouse = os.environ.get("XYZ_SDR_MOUSE", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if sys.platform == "win32":
+                mouse = want_mouse and not no_mouse
+            else:
+                mouse = not no_mouse
             app.run(mouse=mouse)
         finally:
             restore_terminal_after_tui()

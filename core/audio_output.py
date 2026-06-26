@@ -16,6 +16,47 @@ import sounddevice as sd
 logger = logging.getLogger(__name__)
 
 
+def resolve_output_device(spec: str | int | None) -> int | None:
+    """Resuelve índice PortAudio/sounddevice para salida. None = dispositivo por defecto."""
+    if spec is None or spec == "":
+        return None
+    if isinstance(spec, int):
+        return spec
+    text = str(spec).strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo enumerar dispositivos de audio: {exc}") from exc
+    needle = text.lower()
+    matches: list[int] = []
+    for index, dev in enumerate(devices):
+        if int(dev.get("max_output_channels", 0)) <= 0:
+            continue
+        name = str(dev.get("name", "")).lower()
+        if needle in name:
+            matches.append(index)
+    if not matches:
+        raise RuntimeError(f"Dispositivo de audio no encontrado: {spec!r}")
+    if len(matches) > 1:
+        logger.warning("Varios dispositivos coinciden con %r; usando índice %s", spec, matches[0])
+    return matches[0]
+
+
+def output_device_label(device: int | None) -> str:
+    if device is None:
+        try:
+            device = sd.default.device[1]
+        except Exception:
+            return "default"
+    try:
+        info = sd.query_devices(device)
+        return str(info.get("name", device))
+    except Exception:
+        return str(device)
+
+
 class AudioOutputQueue:
     """Stream de salida con callback; el hilo RX encola chunks sin bloquear."""
 
@@ -24,9 +65,11 @@ class AudioOutputQueue:
         sample_rate: int = 48_000,
         blocksize: int = 1024,
         max_chunks: int = 8,
+        device: int | None = None,
     ):
         self.sample_rate = sample_rate
         self.blocksize = blocksize
+        self._device = device
         self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=max_chunks)
         self._volume = 1.0
         self._lock = threading.Lock()
@@ -97,14 +140,22 @@ class AudioOutputQueue:
         self._pending = np.zeros(0, dtype=np.float32)
         self._drain_queue()
         self.reset_stats()
-        self._stream = sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=self.blocksize,
-            callback=self._callback,
-        )
+        stream_kwargs: dict = {
+            "samplerate": self.sample_rate,
+            "channels": 1,
+            "dtype": "float32",
+            "blocksize": self.blocksize,
+            "callback": self._callback,
+        }
+        if self._device is not None:
+            stream_kwargs["device"] = self._device
+        self._stream = sd.OutputStream(**stream_kwargs)
         self._stream.start()
+        logger.info(
+            "AudioOutputQueue started: %s @ %s Hz",
+            output_device_label(self._device),
+            self.sample_rate,
+        )
 
     def stop(self) -> None:
         if self._stream:

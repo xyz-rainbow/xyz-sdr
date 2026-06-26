@@ -4,6 +4,8 @@ Plan de desarrollo incremental del controlador SDR en terminal.
 
 Índice: [README.md](README.md)
 
+> **Roadmap ampliado (sectores, harness, decoders, retención):** ver [roadmap-platform.md](roadmap-platform.md) y [api-control-plane.md](api-control-plane.md).
+
 ---
 
 ## Fases del proyecto
@@ -88,6 +90,22 @@ Claves TOML ya definidas en `[recorder]` y `[scanner]`.
 
 - FFT con `pyFFTW`
 - API WebSocket / cliente web remoto
+
+---
+
+## Fase 7+ (plataforma) — ver roadmap-platform.md
+
+| Fase | Tema | Estado |
+|------|------|--------|
+| A | Display + control RSP fiable (harness como verdad) | **P0 — en curso** |
+| I | Clean screen + lag TUI (alternate buffer, ratón) | **P0 — en curso** |
+| B | Retención logs / `var/` automática | planificado |
+| C | Grabación multi-formato + menú Esc Sonido | planificado |
+| D | Cobertura espectral + escáner mejorado | planificado |
+| E | Análisis capturas harness / imágenes | harness ✅ base |
+| F | Decoder Morse/CW | planificado |
+| G | Decoders satélite (plugins opcionales) | planificado |
+| H | Refactor `sdr_control` + sectores | planificado |
 
 ---
 

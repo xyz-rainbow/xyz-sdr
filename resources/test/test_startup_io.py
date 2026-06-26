@@ -34,3 +34,11 @@ def test_restore_stdio_reopens():
     restore_stdio()
     assert hasattr(sys.stderr, "write")
     sys.stderr.write("")
+
+
+def test_native_stderr_suppression_roundtrip():
+    from core.startup_io import begin_native_stderr_suppression, end_native_stderr_suppression
+
+    begin_native_stderr_suppression()
+    end_native_stderr_suppression()
+    assert hasattr(sys.stderr, "write")

@@ -267,6 +267,9 @@ Only change defaults when you observe problems — no tuning is required for a h
 | PATH not active | Terminal opened before install | New terminal or `install_drivers.ps1` [1] |
 | Driver change fails at runtime | Device open error | Esc menu rollback to previous driver or `simulated` |
 | TUI crash / unexpected exit | Native Soapy crash or abnormal exit | `var/log/xyz-sdr-*.log` (breadcrumbs). `.\scripts\diagnose_sdrplay.ps1` for DLL/plugin audit. Crash splash via `run.ps1` finally. Manual: `.\scripts\restore_terminal.ps1` |
+| Ghost text / code behind UI (`[11111;…M`, splash lines) | Scrollback or mouse SGR on primary buffer | `git pull` (alternate screen handoff). `$env:XYZ_SDR_NO_MOUSE="1"` then `.\scripts\run.ps1`. If stuck: `.\scripts\restore_terminal.ps1`. See [roadmap-platform.md](roadmap-platform.md) Fase I |
+| No audio / silent RX | Audio stream not started (race), squelch ON, or wrong output device | Log must show `[OK] Salida de audio: …`. Disable squelch in settings. Set `audio_output_device` in `defaults.toml`. `python -c "import sounddevice as sd; print(sd.query_devices())"` |
+| TUI lag / stutter | Mouse tracking + high display FPS | `XYZ_SDR_NO_MOUSE=1`; lower `display_fps` in `defaults.toml`; `--debug` off |
 | TUI crash ~6 s on **INICIAR RX** (SDRplay) | Native crash in `setSampleRate` before/during stream activate | See [Safe SDRplay RX startup](#safe-sdrplay-rx-startup-crash-on-iniciar-rx). `diagnose_sdrplay.ps1` reports `minimal` vs `legacy` stream path |
 | RX error, TUI stays open | Preflight caught segfault in subprocess | Close SDRuno; restart `SDRplayAPIService`; `setup/install_sdrplay_api.bat` |
 

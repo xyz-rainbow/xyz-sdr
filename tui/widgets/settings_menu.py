@@ -39,7 +39,7 @@ class SettingsScreen(ModalScreen):
     DEFAULT_CSS = """
     SettingsScreen {
         align: center middle;
-        background: rgba(9, 13, 22, 0.85);
+        background: #090d16;
         padding: 2 1;
         layers: base modal_overlay;
     }

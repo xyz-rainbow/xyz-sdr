@@ -27,7 +27,7 @@ class BusyOverlay(Widget):
         width: 100%;
         height: 100%;
         align: center middle;
-        background: rgba(9, 13, 22, 0.92);
+        background: #090d16;
     }
 
     #busy_card {

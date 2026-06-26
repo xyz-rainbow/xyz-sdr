@@ -24,6 +24,32 @@ _TERMINAL_RESTORE_SEQUENCE = (
     "\033[0m"
 )
 
+# Limpia scrollback + pantalla visible (buffer principal).
+_TERMINAL_CLEAR_SCROLLBACK_SEQUENCE = (
+    "\033[3J"       # erase scrollback (xterm / Windows Terminal)
+    "\033[2J"       # erase display
+    "\033[H"        # cursor home
+    "\033[0m"
+)
+
+# Pantalla alterna + clear antes de Textual (evita scrollback/splash sobre la UI).
+_TERMINAL_PREPARE_SEQUENCE = (
+    _TERMINAL_CLEAR_SCROLLBACK_SEQUENCE
+    + "\033[?1049h"   # alternate screen on
+    + "\033[2J"       # erase display
+    + "\033[H"        # cursor home
+    + "\033[?25l"     # hide cursor (Textual lo gestiona)
+    + "\033[0m"
+)
+
+# Solo limpia el buffer alterno activo (splash ya dentro de alternate).
+_TERMINAL_CLEAR_ALTERNATE_SEQUENCE = (
+    "\033[2J"
+    "\033[H"
+    "\033[?25l"
+    "\033[0m"
+)
+
 
 def configure_console_encoding() -> bool:
     """
@@ -88,23 +114,72 @@ def _write_windows_console(text: str) -> None:
         pass
 
 
-def prepare_terminal_for_tui() -> None:
-    """Deja la consola lista para Textual tras el splash (no reabre stdout)."""
+def clear_console_scrollback() -> None:
+    """Borra scrollback y pantalla visible en el buffer principal."""
     configure_console_encoding()
     for stream in (sys.__stdout__, sys.stdout):
         try:
             if stream and stream.isatty():
-                stream.write("\033[0m\033[?25h")
+                stream.write(_TERMINAL_CLEAR_SCROLLBACK_SEQUENCE)
                 stream.flush()
         except Exception:
             pass
+    if sys.platform == "win32":
+        _write_windows_console(_TERMINAL_CLEAR_SCROLLBACK_SEQUENCE)
+
+
+def enter_alternate_screen() -> None:
+    """Activa pantalla alterna (splash/TUI sin ensuciar scrollback)."""
+    sequence = "\033[?1049h" + _TERMINAL_CLEAR_ALTERNATE_SEQUENCE
+    for stream in (sys.__stdout__, sys.stdout):
+        try:
+            if stream and stream.isatty():
+                stream.write(sequence)
+                stream.flush()
+        except Exception:
+            pass
+    if sys.platform == "win32":
+        _write_windows_console(sequence)
+
+
+def clear_alternate_screen() -> None:
+    """Limpia la pantalla alterna activa sin salir de ella."""
+    for stream in (sys.__stdout__, sys.stdout):
+        try:
+            if stream and stream.isatty():
+                stream.write(_TERMINAL_CLEAR_ALTERNATE_SEQUENCE)
+                stream.flush()
+        except Exception:
+            pass
+    if sys.platform == "win32":
+        _write_windows_console(_TERMINAL_CLEAR_ALTERNATE_SEQUENCE)
+
+
+def prepare_terminal_for_tui(*, already_alternate: bool = False) -> None:
+    """Deja la consola lista para Textual: pantalla alterna limpia, sin scrollback visible."""
+    configure_console_encoding()
+    sequence = (
+        _TERMINAL_CLEAR_ALTERNATE_SEQUENCE
+        if already_alternate
+        else _TERMINAL_PREPARE_SEQUENCE
+    )
+    for stream in (sys.__stdout__, sys.stdout):
+        try:
+            if stream and stream.isatty():
+                stream.write(sequence)
+                stream.flush()
+        except Exception:
+            pass
+    if sys.platform == "win32":
+        _write_windows_console(sequence)
 
 
 def restore_terminal_after_tui() -> None:
     """Restaura ratón/cursor/colores tras salir de Textual (normal o crash)."""
     try:
-        from core.startup_io import restore_stdio
+        from core.startup_io import end_native_stderr_suppression, restore_stdio
 
+        end_native_stderr_suppression()
         restore_stdio()
     except Exception:
         pass
