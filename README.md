@@ -119,6 +119,7 @@ xyz-sdr/
 │   └── …
 ├── scripts/
 │   ├── run.ps1                 # Launcher Windows (atajos)
+│   ├── bench_rx_fps.py         # Benchmark RX/display FPS (agentes/CI)
 │   ├── xyz-sdr.cmd             # Doble clic
 │   ├── run.sh / test.sh
 │   └── test.ps1
@@ -150,6 +151,8 @@ xyz-sdr/
 | `[` / `]` | Estrechar / ensanchar PASS |
 | `G` / `V` | Ganancia / volumen |
 | `Esc` | Menú ajustes |
+| `Ctrl+B` | Ocultar / mostrar panel de controles |
+| `P` | Captura espectro/cascada → `var/harness/` (con `--debug`) |
 | `Q` / `Ctrl+Q` / `Ctrl+C` | Salir (salida rápida; no bloquea en Soapy colgado) |
 
 Ratón: clic y arrastre en timeline/espectro para PASS; rueda = scroll; `Ctrl+rueda` = zoom.
@@ -170,6 +173,15 @@ Ratón: clic y arrastre en timeline/espectro para PASS; rueda = scroll; `Ctrl+ru
 | Arquitectura | [docs/architecture.md](docs/architecture.md) |
 | DSP / audio / display | [docs/dsp.md](docs/dsp.md), [docs/audio.md](docs/audio.md), [docs/display.md](docs/display.md) |
 | Plan de ruta (fases) | [docs/roadmap.md](docs/roadmap.md) |
+
+### Agentes Cursor / IA
+
+Skill de proyecto para operar la app, medir FPS y depurar display:
+
+- **[`.cursor/skills/xyz-sdr-control/`](.cursor/skills/xyz-sdr-control/)** — CLI, API, arquitectura RX/display, benchmarks, workflows
+- **[`.cursor/skills/mario-agent-protocol/`](.cursor/skills/mario-agent-protocol/)** — protocolo de trabajo con Mario (fases, gates)
+
+Invocación: *"usa la skill xyz-sdr-control"* o dejar que el agente la descubra por descripción.
 
 ---
 

@@ -169,6 +169,8 @@ Where the evidence is: [Link, log path, file, or document snapshot]
 
 ## xyz-sdr context (project-specific)
 
+**Skill técnica operativa:** `.cursor/skills/xyz-sdr-control/` — CLI, API, FPS/bench, bugs display, workflows agente.
+
 When this skill applies to xyz-sdr / SDRplay work:
 
 - **Veredicto LOG:** API 3.15 OK; Soapy stream SEGFAULT en setupStream — ver `var/log/sdrplay-matrix-*.json`.
