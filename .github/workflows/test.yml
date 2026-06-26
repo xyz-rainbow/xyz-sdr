@@ -72,11 +72,7 @@ jobs:
         env:
           PYTHONPYCACHEPREFIX: ${{ github.workspace }}/var/pycache
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            New-Item -ItemType Directory -Force -Path var/pycache,var/pytest_cache,var/pytest-tmp | Out-Null
-          else
-            mkdir -p var/pycache var/pytest_cache var/pytest-tmp
-          fi
+          python -c "import os; [os.makedirs(p, exist_ok=True) for p in ('var/pycache', 'var/pytest_cache', 'var/pytest-tmp')]"
           python -m pytest resources/test -q -m "not slow" --cov=core --cov=setup --cov=tui --cov-report=xml --cov-report=term-missing --cov-fail-under=40 --durations=20 --durations-min=1.0
 
       - name: Upload coverage report
