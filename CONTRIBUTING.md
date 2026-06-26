@@ -76,7 +76,7 @@ Todos los tests viven en `resources/test/` con naming `test_<module>.py`.
 - **Marcadores disponibles**:
   - `@pytest.mark.slow` — tests que tardan varios segundos.
   - `@pytest.mark.integration` — requieren hardware o red (declarado pero poco usado todavía).
-- **Cobertura**: `--cov=core --cov=setup --cov=tui` en CI; umbral actual `--cov-fail-under=48` (subida gradual 40 → 45 → 48; los siguientes PRs deberían apuntar a 52-55 cubriendo `tui/app.py`, `python_runtime.py` helpers de Windows-only, y `setup/check_env.py`).
+- **Cobertura**: `--cov=core --cov=setup --cov=tui` en CI; umbral actual `--cov-fail-under=50` (subida gradual 40 → 45 → 48 → 50; próximos PRs deberían apuntar a 55 cubriendo `tui/app.py`, `core/sdrplay_forensics.py`, `setup/install_menu.py`, `setup/windows_installers.py`).
 - **No romper tests existentes**: corre `python -m pytest resources/test/ --co` antes y después para confirmar.
 
 ### Comandos útiles
