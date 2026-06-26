@@ -2098,8 +2098,6 @@ class XyzSDRApp(App):
         self._rx_warmup_iters_left = RX_WARMUP_ITERS
         self._audio_started = False
         self._audio_output = None
-        self._sdrplay_preflight_done = False
-        self._sdrplay_preflight_ok = False
 
         self._maybe_restart_sdrplay_before_rx()
 
