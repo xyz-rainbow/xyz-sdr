@@ -8,7 +8,9 @@ Documentación detallada: [docs/sdrplay-matrix.md](docs/sdrplay-matrix.md) | [dr
 
 ## Veredicto baseline (LOG — 2026-06)
 
-> **No es hardware ni API rota:** el probe confirma API 3.15. El fallo está en **SoapySDRPlay3 al abrir el stream**, con plugin embebido y compilado (`0.5.2-6cc3131`).
+> **Resumen del instalador:** Entorno de radio listo para ejecución tras reparar USB/API en Windows. RSP1 inicialmente no visible (código 28/45), pero recuperado tras reinstalar API 3.15 y reiniciar el servicio SDRplayAPIService. SoapySDRPlay3 resuelve correctamente la enumeración finalizando en estado "READY FOR HARDWARE" / "All set".
+>
+> **Fallo previo de RX:** el probe confirma API 3.15. El fallo histórico reside en **SoapySDRPlay3 al abrir el stream**, con plugin embebido y compilado (`0.5.2-6cc3131`).
 
 | Capa | Estado |
 |------|--------|
