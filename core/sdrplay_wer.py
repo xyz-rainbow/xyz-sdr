@@ -27,6 +27,17 @@ from core.runtime_paths import project_root
 _WER_EXECUTABLES = ("python.exe", "sdrplay_apiService.exe", "SoapySDRUtil.exe")
 
 
+def _is_windows() -> bool:
+    """Indica si el proceso corre en Windows.
+
+    Helper aislado (no usar ``os.name`` directamente en condicionales) para
+    que los tests puedan monkeypatchear el check sin tocar el módulo ``os``
+    -- monkeypatchear ``os.name`` rompe pytest internals en runners Windows
+    (Path(os.getcwd()) vs config.invocation_params.dir -> PosixPath crash).
+    """
+    return os.name == "nt"
+
+
 def _require_winreg():
     """Devuelve el módulo ``winreg`` si estamos en Windows; raise si no.
 
@@ -72,7 +83,7 @@ def _read_wer_key(hive: int, exe_name: str = "python.exe") -> dict[str, str | in
 
 def registry_dump_folder(*, dumps_dir: Path | None = None) -> Path:
     """Carpeta WER efectiva (HKCU gana sobre HKLM si existe)."""
-    if os.name != "nt":
+    if not _is_windows():
         # No Windows: caer al default local (sin tocar registro).
         return (dumps_dir or default_dumps_dir()).resolve()
     for hive, _label in _wer_hives():
@@ -94,7 +105,7 @@ def wer_status(*, dumps_dir: Path | None = None) -> dict[str, str | int | bool]:
     """Estado best-effort de LocalDumps para python.exe (solo Windows)."""
     folder = registry_dump_folder(dumps_dir=dumps_dir)
     status: dict[str, str | int | bool] = {
-        "supported": os.name == "nt",
+        "supported": _is_windows(),
         "configured": False,
         "configured_hkcu": False,
         "configured_hklm": False,
@@ -102,7 +113,7 @@ def wer_status(*, dumps_dir: Path | None = None) -> dict[str, str | int | bool]:
         "dump_type": 0,
         "dump_count": 0,
     }
-    if os.name != "nt":
+    if not _is_windows():
         return status
     for hive, label in _wer_hives():
         cfg = _read_wer_key(hive, "python.exe")
@@ -140,7 +151,7 @@ def enable_wer_minidumps(
 
     Intenta HKCU (sin admin) y luego HKLM. Devuelve (ok, mensaje).
     """
-    if os.name != "nt":
+    if not _is_windows():
         return False, "WER LocalDumps solo aplica en Windows"
 
     winreg = _require_winreg()
