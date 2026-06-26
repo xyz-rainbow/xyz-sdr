@@ -117,7 +117,10 @@ def test_sdrplay_open_defers_native_settings(monkeypatch):
     monkeypatch.setattr("core.device._soapy_mod", _FakeModule)
     monkeypatch.setattr("core.device._load_soapy", lambda: True)
     monkeypatch.setattr("core.device.resolve_device", lambda _d: {"driver": "sdrplay"})
-    monkeypatch.setattr("core.device.run_sdr_io", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(
+        "core.device.run_sdr_io",
+        lambda func, *args, timeout=120.0, **kwargs: func(*args, **kwargs),
+    )
 
     dev = SDRDevice(driver="sdrplay")
     dev.open()
@@ -139,7 +142,10 @@ def test_set_frequency_restarts_active_stream(monkeypatch):
     dev.center_freq = 100_600_000.0
 
     monkeypatch.setattr("core.device.soapysdr_available", lambda: True)
-    monkeypatch.setattr("core.device.run_sdr_io", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(
+        "core.device.run_sdr_io",
+        lambda func, *args, timeout=120.0, **kwargs: func(*args, **kwargs),
+    )
 
     dev.set_frequency(98_000_000.0)
 
@@ -162,7 +168,10 @@ def test_sdrplay_stream_starts_at_safe_rate(monkeypatch):
     dev.center_freq = 98_000_000.0
 
     monkeypatch.setattr("core.device.soapysdr_available", lambda: True)
-    monkeypatch.setattr("core.device.run_sdr_io", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(
+        "core.device.run_sdr_io",
+        lambda func, *args, timeout=120.0, **kwargs: func(*args, **kwargs),
+    )
     monkeypatch.setattr("core.device.time.sleep", lambda _s: None)
 
     dev.start_stream()
@@ -194,7 +203,10 @@ def test_sdrplay_minimal_activate_skips_prepare_before_activate(monkeypatch):
         prepare_calls.append(float(rate_hz or dev.sample_rate))
 
     monkeypatch.setattr("core.device.soapysdr_available", lambda: True)
-    monkeypatch.setattr("core.device.run_sdr_io", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(
+        "core.device.run_sdr_io",
+        lambda func, *args, timeout=120.0, **kwargs: func(*args, **kwargs),
+    )
     monkeypatch.setattr("core.device.time.sleep", lambda _s: None)
     monkeypatch.setattr(dev, "_prepare_stream_unlocked", _track_prepare)
 

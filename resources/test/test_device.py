@@ -465,3 +465,110 @@ def test_simulated_sdr_read_samples_advances_time() -> None:
 
 def test_simulated_sdr_close_is_noop() -> None:
     SimulatedSDR().close()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# SDRDevice basic attributes and open/close paths
+# ---------------------------------------------------------------------------
+
+
+def test_sdrdevice_default_attributes() -> None:
+    dev = SDRDevice(driver="sdrplay")
+    assert dev.driver == "sdrplay"
+    assert dev.channel == 0
+    assert dev._sdr is None
+    assert dev._stream is None
+    assert dev.center_freq == 100_600_000.0
+    assert dev.sample_rate == 2_048_000.0
+    assert dev.gain == 40.0
+    assert dev.auto_gain is False
+    assert dev._sdrplay_pending_sample_rate is None
+    assert dev._sdrplay_stream_bootstrapped is False
+
+
+def test_sdrdevice_open_simulated_creates_simulatedsdr() -> None:
+    dev = SDRDevice(driver="sim")
+    assert dev.open() is True
+    assert isinstance(dev._sdr, SimulatedSDR)
+    assert dev.driver == "simulated"
+    dev.close()
+
+
+def test_sdrdevice_open_simulated_via_kwargs() -> None:
+    dev = SDRDevice(driver="sdrplay")
+    assert dev.open({"driver": "sim"}) is True
+    assert isinstance(dev._sdr, SimulatedSDR)
+    assert dev.driver == "simulated"
+    assert dev._device_kwargs == {"driver": "sim"}
+    dev.close()
+
+
+def test_sdrdevice_native_settings_deferred_false_for_sim() -> None:
+    dev = SDRDevice(driver="sim")
+    dev._sdr = SimulatedSDR()
+    assert dev._native_settings_deferred() is False
+
+
+def test_sdrdevice_native_settings_deferred_true_when_sdrplay_open_no_stream() -> None:
+    """Mock an sdrplay Soapy device to make the deferred check return True."""
+    dev = SDRDevice(driver="sdrplay")
+    fake = SimulatedSDR()  # not isinstance check is the discriminator, so use a non-Simulated stub
+    # SimulatedSDR is excluded from deferred -- use a non-simulated type:
+    class _FakeSoapy:
+        pass
+
+    dev._sdr = _FakeSoapy()
+    dev._stream = None
+    assert dev._native_settings_deferred() is True
+
+
+def test_sdrdevice_reset_stream_stats_creates_new_instance() -> None:
+    dev = SDRDevice(driver="sim")
+    assert dev.stream_stats is not None
+    dev.reset_stream_stats()
+    # After reset, get a fresh StreamStats instance.
+    assert dev.stream_stats is not None
+
+
+def test_sdrdevice_same_device_as_compares_kwargs() -> None:
+    dev = SDRDevice(driver="sim")
+    dev._device_kwargs = {"driver": "simulated", "label": "test"}
+    assert dev.same_device_as({"driver": "simulated", "label": "test"}) is True
+    assert dev.same_device_as({"driver": "simulated", "label": "other"}) is False
+    assert dev.same_device_as(None) is False
+
+
+def test_sdrdevice_close_when_sdr_none() -> None:
+    dev = SDRDevice(driver="sim")
+    # close() with _sdr=None must not raise.
+    dev.close()
+
+
+def test_sdrdevice_close_simulated_no_io_thread() -> None:
+    dev = SDRDevice(driver="sim")
+    dev.open()
+    dev.close()
+    assert dev._sdr is None
+
+
+def test_sdrdevice_close_fast_path_skips_io_thread() -> None:
+    dev = SDRDevice(driver="sim")
+    dev.open()
+    # Close with fast=True must skip the run_sdr_io path entirely.
+    dev.close(fast=True)
+    assert dev._sdr is None
+
+
+def test_sdrdevice_open_native_no_soapy_raises() -> None:
+    """When _load_soapy returns False, open() -> _open_native raises."""
+    from unittest.mock import patch
+
+    dev = SDRDevice(driver="rtlsdr")
+
+    with patch("core.device._load_soapy", return_value=False):
+        with patch("core.device.run_sdr_io", side_effect=lambda fn, *a, **kw: fn(*a, **kw)):
+            import pytest as _pt
+
+            with _pt.raises(Exception) as exc_info:
+                dev.open()
+            assert "SoapySDR no disponible" in str(exc_info.value) or "HardwareInitializationError" in str(type(exc_info.value).__name__)

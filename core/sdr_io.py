@@ -38,7 +38,7 @@ def on_sdr_io_thread() -> bool:
     return _sdr_io_thread_id is not None and threading.get_ident() == _sdr_io_thread_id
 
 
-def run_sdr_io(func: Callable[..., T], *args, **kwargs) -> T:
+def run_sdr_io(func: Callable[..., T], /, *args, timeout: float = 120.0, **kwargs) -> T:
     """
     Ejecuta *func* en el hilo sdr-io (o inline si ya estamos ahí).
 
@@ -51,7 +51,7 @@ def run_sdr_io(func: Callable[..., T], *args, **kwargs) -> T:
     executor = _ensure_executor()
     future = executor.submit(func, *args, **kwargs)
     try:
-        return future.result(timeout=120.0)
+        return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError as exc:
         try:
             from core.session_log import log_breadcrumb

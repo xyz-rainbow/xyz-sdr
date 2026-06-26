@@ -943,22 +943,22 @@ class SDRDevice:
             self._apply_native_sample_rate_unlocked(target_hz)
         log_breadcrumb("sdrplay: ramp sample_rate ok")
 
-    def stop_stream(self) -> None:
+    def stop_stream(self, *, timeout: float = 5.0) -> None:
         """Detiene el stream RX (p. ej. al pulsar DETENER RX)."""
         if isinstance(self._sdr, SimulatedSDR) or self._sdr is None:
             self._stop_stream_impl()
             return
-        run_sdr_io(self._stop_stream_impl)
+        run_sdr_io(self._stop_stream_impl, timeout=timeout)
 
     def _stop_stream_impl(self) -> None:
         with self._lock:
             self._stop_stream()
 
-    def start_stream(self) -> None:
+    def start_stream(self, *, timeout: float = 20.0) -> None:
         """Activa el stream RX bajo demanda (no al abrir el dispositivo)."""
         if isinstance(self._sdr, SimulatedSDR) or not self._sdr or not soapysdr_available():
             return
-        run_sdr_io(self._start_stream_impl)
+        run_sdr_io(self._start_stream_impl, timeout=timeout)
 
     def _start_stream_impl(self) -> None:
         log_breadcrumb(
@@ -1073,12 +1073,18 @@ class SDRDevice:
         with self._lock:
             self._stream_stats.read_calls += 1
             self._stream_stats.samples_requested += num_samples
+            stream = self._stream
+
+        if not stream:
+            logger.warning("read_samples llamado sin stream RX activo")
+            return np.zeros(num_samples, dtype=np.complex64)
 
         buff = np.zeros(num_samples, dtype=np.complex64)
         read = 0
         chunk = min(num_samples, 65536)
         overflow_retries = 0
         use_cs16 = self.driver == "sdrplay" and _sdrplay_uses_cs16()
+        read_timeout_us = 200_000
 
         if use_cs16:
             tmp_iq = np.empty(chunk * 2, dtype=np.int16)
@@ -1089,18 +1095,19 @@ class SDRDevice:
             to_read = min(chunk, num_samples - read)
             try:
                 with self._lock:
-                    if not self._stream:
-                        break
-                    if use_cs16:
-                        tmp_view = tmp_iq[: to_read * 2]
-                        sr = self._sdr.readStream(
-                            self._stream, [tmp_view], to_read, timeoutUs=int(1e6)
-                        )
-                    else:
-                        tmp_view = tmp[:to_read]
-                        sr = self._sdr.readStream(
-                            self._stream, [tmp_view], to_read, timeoutUs=int(1e6)
-                        )
+                    stream = self._stream
+                if not stream:
+                    break
+                if use_cs16:
+                    tmp_view = tmp_iq[: to_read * 2]
+                    sr = self._sdr.readStream(
+                        stream, [tmp_view], to_read, timeoutUs=read_timeout_us
+                    )
+                else:
+                    tmp_view = tmp[:to_read]
+                    sr = self._sdr.readStream(
+                        stream, [tmp_view], to_read, timeoutUs=read_timeout_us
+                    )
             except Exception as exc:
                 logger.warning("readStream excepción: %s", exc)
                 with self._lock:

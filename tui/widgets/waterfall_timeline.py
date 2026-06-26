@@ -587,6 +587,8 @@ class WaterfallTimeline(Widget):
             return Text("...")
 
         if self._visual_dirty or self._slice_cache is None:
+            if self._slice_cache is None and len(self._history) > 0 and self._view_width() >= 5:
+                self._rebuild_slice_cache()
             if self._slice_cache is None:
                 return Text("...", style="dim")
             self._sync_slice_cache()

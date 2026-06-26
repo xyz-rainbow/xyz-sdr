@@ -26,3 +26,12 @@ def test_is_sdrplay_api_fault_false_when_device_found():
 def test_is_sdrplay_api_fault_false_without_api_on_disk():
     with patch("core.soapy_runtime.check_sdrplay_api", return_value=False):
         assert is_sdrplay_api_fault() is False
+
+
+def test_message_indicates_sdrplay_api_fault():
+    from core.soapy_runtime import message_indicates_sdrplay_api_fault
+
+    assert message_indicates_sdrplay_api_fault(
+        "error in activateStream() - Init() failed: sdrplay_api_ServiceNotResponding"
+    )
+    assert not message_indicates_sdrplay_api_fault("device not found")

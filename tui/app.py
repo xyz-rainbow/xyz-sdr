@@ -936,6 +936,7 @@ class XyzSDRApp(App):
         self._display_width: int = 120
         self._band_mailbox = BandFrameMailbox()
         self._display_sequence: int = 0
+        self._rx_worker_token: int = 0
 
         # Instrumentación --debug
         self._debug_lock = threading.Lock()
@@ -1650,14 +1651,14 @@ class XyzSDRApp(App):
         try:
             spectrum = self.query_one("#spectrum", SpectrumGraph)
             spectrum.set_column_levels(floors, ceilings)
-            spectrum.set_viewport_cols(cols)
+            spectrum.set_band_frame(frame, force=True)
         except Exception:
             pass
 
         try:
             waterfall = self.query_one("#waterfall", WaterfallTimeline)
             waterfall.set_column_levels(floors, ceilings)
-            waterfall.add_viewport_row(cols, frame)
+            waterfall.add_band_row(frame)
         except Exception as exc:
             logger.exception("Error actualizando waterfall: %s", exc)
 
@@ -1776,14 +1777,88 @@ class XyzSDRApp(App):
             pass
 
     def on_unmount(self) -> None:
-        if self._rx_active:
-            self._stop_rx()
-        elif self._audio_output:
-            self._audio_output.stop()
-            self._audio_output = None
+        if not self._shutting_down:
+            if self._rx_active:
+                self._abort_rx_worker()
+            elif self._audio_output:
+                self._audio_output.stop()
+                self._audio_output = None
         if self._device:
             self._device.close()
         self._restore_console()
+
+    def _prepare_for_exit(self) -> None:
+        """Detiene RX/audio y timers antes de que Textual desmonte la app."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+
+        if self._viewport_debounce_timer is not None:
+            try:
+                self._viewport_debounce_timer.stop()
+            except Exception:
+                pass
+            self._viewport_debounce_timer = None
+
+        self._abort_rx_worker()
+        if self._audio_output:
+            try:
+                self._audio_output.stop()
+            except Exception:
+                pass
+            self._audio_output = None
+
+    def _abort_rx_worker(self) -> None:
+        """Detiene RX sin bloquear la TUI (cancela I/O Soapy pendiente)."""
+        self._rx_active = False
+        self._rx_worker_token += 1
+        try:
+            from core.sdr_io import shutdown_sdr_io
+
+            shutdown_sdr_io()
+        except Exception:
+            pass
+        if not self._rx_stop_event.wait(timeout=0.75):
+            self._rx_stop_event.set()
+        try:
+            btn = self.query_one("#btn_rx", Button)
+            btn.label = ">> INICIAR RX"
+            btn.variant = "success"
+        except Exception:
+            pass
+
+    def _recover_sdrplay_service_for_rx(self, *, from_worker: bool = False) -> bool:
+        """Reinicia SDRplay API si el servicio no responde antes de activateStream."""
+        if not self._device or self._device.is_simulated or self._device.driver != "sdrplay":
+            return True
+        from core.soapy_runtime import is_sdrplay_api_fault
+        from core.sdrplay_service import restart_sdrplay_service
+
+        def _emit(message: str) -> None:
+            if from_worker:
+                self.call_from_thread(self._log, message)
+            else:
+                self._log(message)
+
+        if not is_sdrplay_api_fault(timeout=8.0):
+            return True
+        _emit("[WARN] SDRplay API no responde — reiniciando servicio...")
+        ok, msg = restart_sdrplay_service(stop_wait_s=8.0, start_wait_s=6.0)
+        _emit(f"{'[OK]' if ok else '[ERR]'} SDRplay API: {msg}")
+        return ok
+
+    def _on_sdrplay_stream_start_failed(self, detail: str) -> None:
+        from core.soapy_runtime import message_indicates_sdrplay_api_fault
+        from core.sdrplay_service import restart_sdrplay_service
+
+        short = detail.strip().replace("\n", " ")[:160]
+        self._log(f"[ERR] Stream RX: {short}")
+        if message_indicates_sdrplay_api_fault(detail):
+            self._log("[INFO] Reiniciando SDRplay API tras fallo de stream...")
+            ok, msg = restart_sdrplay_service(stop_wait_s=8.0, start_wait_s=6.0)
+            level = "[OK]" if ok else "[WARN]"
+            self._log(f"{level} {msg}")
+        self._on_rx_worker_crashed()
 
     def _restore_console(self) -> None:
         try:
@@ -2124,16 +2199,36 @@ class XyzSDRApp(App):
         self._invalidate_band_cache()
         self._fm_demod_state.reset()
         self._fm_agc.reset()
-        self._rx_worker()
+        self._rx_worker_token += 1
+        token = self._rx_worker_token
+        self._rx_worker(token)
 
     def _stop_rx(self) -> None:
         if not self._rx_active and self._rx_stop_event.is_set():
             return
 
         self._rx_active = False
+        self._rx_worker_token += 1
+
+        if self._device and not self._device.is_simulated:
+            try:
+                self._device.stop_stream(timeout=3.0)
+            except Exception:
+                try:
+                    from core.sdr_io import shutdown_sdr_io
+
+                    shutdown_sdr_io()
+                except Exception:
+                    pass
 
         if not self._rx_stop_event.wait(timeout=3.0):
             self._log("[WARN] Timeout esperando fin del worker RX")
+            try:
+                from core.sdr_io import shutdown_sdr_io
+
+                shutdown_sdr_io()
+            except Exception:
+                pass
             self._rx_stop_event.set()
 
         if self._audio_output:
@@ -2316,11 +2411,13 @@ class XyzSDRApp(App):
 
     def action_quit(self) -> None:
         """Salida limpia con pantalla de cierre."""
-        if self._recording:
-            self._stop_recording(log_stopped=False)
-        self._prepare_for_exit()
-        self._graceful_shutdown = True
-        self.exit()
+        try:
+            if self._recording:
+                self._stop_recording(log_stopped=False)
+            self._prepare_for_exit()
+        finally:
+            self._graceful_shutdown = True
+            self.exit()
 
     def _persist_config(self, section: str, **updates) -> bool:
         """Unificado: delega a StorageController.persist_config().
@@ -3164,9 +3261,14 @@ class XyzSDRApp(App):
         self._log("[WARN] RX detenido por error de hardware — verifica el dispositivo y pulsa INICIAR RX de nuevo")
 
     @work(thread=True)
-    def _rx_worker(self) -> None:
+    def _rx_worker(self, token: int) -> None:
         """Loop de recepcion en hilo separado."""
         from core.session_log import log_breadcrumb
+        from core.startup_io import suppress_startup_output
+
+        if token != self._rx_worker_token:
+            self._rx_stop_event.set()
+            return
 
         logger.info("RX worker iniciado")
         log_breadcrumb("rx.worker start")
@@ -3178,22 +3280,26 @@ class XyzSDRApp(App):
                     worker_error_handled = True
                     self.call_from_thread(self._on_rx_worker_crashed)
                     return
+                if not self._recover_sdrplay_service_for_rx(from_worker=True):
+                    worker_error_handled = True
+                    self.call_from_thread(self._on_rx_worker_crashed)
+                    return
+                if token != self._rx_worker_token or not self._rx_active:
+                    return
                 try:
                     log_breadcrumb("rx.worker before start_stream")
-                    self._device.start_stream()
+                    with suppress_startup_output():
+                        self._device.start_stream(timeout=20.0)
                     stream_started = True
                     log_breadcrumb("rx.worker start_stream ok")
                 except Exception as exc:
                     logger.exception("No se pudo iniciar stream RX: %s", exc)
                     worker_error_handled = True
-                    self.call_from_thread(
-                        self._log,
-                        f"[ERROR] No se pudo iniciar stream RX: {exc}",
-                    )
-                    self.call_from_thread(self._on_rx_worker_crashed)
+                    detail = str(exc)
+                    self.call_from_thread(self._on_sdrplay_stream_start_failed, detail)
                     return
 
-            while self._rx_active:
+            while self._rx_active and token == self._rx_worker_token:
                 try:
                     run_rx_iteration(self)
                     time.sleep(0.002)
@@ -3206,10 +3312,10 @@ class XyzSDRApp(App):
         finally:
             if stream_started and self._device and not self._device.is_simulated:
                 try:
-                    self._device.stop_stream()
+                    self._device.stop_stream(timeout=3.0)
                 except Exception as exc:
                     logger.warning("Error deteniendo stream RX: %s", exc)
-            if self._rx_active:
+            if self._rx_active and token == self._rx_worker_token:
                 self._rx_active = False
                 if not worker_error_handled:
                     self.call_from_thread(self._on_rx_worker_crashed)

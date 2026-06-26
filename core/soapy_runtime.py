@@ -568,6 +568,12 @@ def is_sdrplay_api_fault(*, timeout: float = 12.0) -> bool:
     return any(marker in compact for marker in _API_FAULT_MARKERS)
 
 
+def message_indicates_sdrplay_api_fault(message: str) -> bool:
+    """True si un mensaje de excepción/log apunta a fallo del servicio SDRplay API."""
+    compact = str(message).lower().replace("_", "").replace(" ", "")
+    return any(marker in compact for marker in _API_FAULT_MARKERS)
+
+
 def check_sdrplay_plugin(timeout: float = 10.0) -> bool:
     """True si SoapySDRUtil enumera al menos un dispositivo con driver sdrplay."""
     found, _, _ = run_sdrplay_find(timeout=timeout)
