@@ -7,6 +7,8 @@ Comparte el eje X con SpectrumGraph y WaterfallTimeline.
 from __future__ import annotations
 
 import math
+import os
+import time
 from typing import Optional
 
 from rich.text import Text
@@ -17,6 +19,14 @@ from textual import events
 
 from core.passband import freq_to_col
 from tui.widgets.passband_messages import PassbandDragMixin
+
+# Límite de refrescos por hover (evita lag con ratón).
+_HOVER_REFRESH_MIN_S = 1.0 / 30.0
+_MOUSE_DISABLED = os.environ.get("XYZ_SDR_NO_MOUSE", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 class FrequencyTimeline(PassbandDragMixin, Widget):
@@ -30,13 +40,20 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
     }
     """
 
-    viewport_center_hz: reactive[float] = reactive(100_600_000.0)
-    visible_span_hz: reactive[float] = reactive(2_048_000.0)
-    tuned_freq_hz: reactive[float] = reactive(100_600_000.0)
-    passband_center_hz: reactive[float] = reactive(100_600_000.0)
-    passband_width_hz: reactive[float] = reactive(200_000.0)
-    passband_preview_width_hz: reactive[Optional[float]] = reactive(None)
-    hover_col: reactive[Optional[int]] = reactive(None)
+    viewport_center_hz: reactive[float] = reactive(100_600_000.0, repaint=False)
+    visible_span_hz: reactive[float] = reactive(2_048_000.0, repaint=False)
+    tuned_freq_hz: reactive[float] = reactive(100_600_000.0, repaint=False)
+    passband_center_hz: reactive[float] = reactive(100_600_000.0, repaint=False)
+    passband_width_hz: reactive[float] = reactive(200_000.0, repaint=False)
+    passband_preview_width_hz: reactive[Optional[float]] = reactive(None, repaint=False)
+    hover_col: reactive[Optional[int]] = reactive(None, repaint=False)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._suppress_refresh = 0
+        self._render_cache_key: tuple | None = None
+        self._render_cache: Text | None = None
+        self._last_hover_refresh = 0.0
 
     class ScrollRequest(Message):
         """Peticion para desplazar la sintonia."""
@@ -51,6 +68,49 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
         def __init__(self, direction: int) -> None:
             self.direction = direction
             super().__init__()
+
+    def update_display_state(
+        self,
+        *,
+        viewport_center_hz: float | None = None,
+        visible_span_hz: float | None = None,
+        tuned_freq_hz: float | None = None,
+        passband_center_hz: float | None = None,
+        passband_width_hz: float | None = None,
+        passband_preview_width_hz: float | None = None,
+        clear_preview: bool = False,
+    ) -> None:
+        """Actualiza varios reactives en un solo refresh (evita lag en scroll)."""
+        self._suppress_refresh += 1
+        try:
+            if viewport_center_hz is not None:
+                self.viewport_center_hz = viewport_center_hz
+            if visible_span_hz is not None:
+                self.visible_span_hz = visible_span_hz
+            if tuned_freq_hz is not None:
+                self.tuned_freq_hz = tuned_freq_hz
+            if passband_center_hz is not None:
+                self.passband_center_hz = passband_center_hz
+            if passband_width_hz is not None:
+                self.passband_width_hz = passband_width_hz
+            if clear_preview:
+                self.passband_preview_width_hz = None
+            elif passband_preview_width_hz is not None:
+                self.passband_preview_width_hz = passband_preview_width_hz
+        finally:
+            self._suppress_refresh -= 1
+        self._invalidate_render_cache()
+        self.refresh()
+
+    def _invalidate_render_cache(self) -> None:
+        self._render_cache_key = None
+        self._render_cache = None
+
+    def _maybe_refresh(self) -> None:
+        if self._suppress_refresh > 0:
+            return
+        self._invalidate_render_cache()
+        self.refresh()
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         event.stop()
@@ -67,12 +127,16 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
             self.post_message(self.ScrollRequest(direction=-1))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        if self.hover_col != event.x:
-            self.hover_col = event.x
+        if not _MOUSE_DISABLED:
+            now = time.monotonic()
+            if event.x != self.hover_col and now - self._last_hover_refresh >= _HOVER_REFRESH_MIN_S:
+                self._last_hover_refresh = now
+                self.hover_col = event.x
         PassbandDragMixin.on_mouse_move(self, event)
 
     def on_mouse_leave(self, event: events.MouseLeave) -> None:
-        self.hover_col = None
+        if self.hover_col is not None:
+            self.hover_col = None
 
     def _effective_passband_width(self) -> float | None:
         preview = self.passband_preview_width_hz
@@ -102,10 +166,27 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
         )
         return min(col_l, col_r), max(col_l, col_r)
 
+    def _render_cache_tuple(self, width: int) -> tuple:
+        return (
+            width,
+            round(self.viewport_center_hz, 3),
+            round(self.visible_span_hz, 3),
+            round(self.tuned_freq_hz, 3),
+            round(self.passband_center_hz, 3),
+            round(self.passband_width_hz, 3),
+            None if self.passband_preview_width_hz is None else round(self.passband_preview_width_hz, 3),
+            self.hover_col,
+            bool(getattr(self, "_passband_drag_active", False)),
+        )
+
     def render(self) -> Text:
         width = self.size.width
         if width < 10:
             return Text("...")
+
+        cache_key = self._render_cache_tuple(width)
+        if cache_key == self._render_cache_key and self._render_cache is not None:
+            return self._render_cache
 
         left_hz = self.viewport_center_hz - self.visible_span_hz / 2
         tick_spacing = self._nice_tick_spacing(width)
@@ -218,6 +299,9 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
         result.append(row_ticks)
         result.append("\n")
         result.append(row_labels)
+
+        self._render_cache_key = cache_key
+        self._render_cache = result
         return result
 
     def _freq_to_col(self, freq_hz: float, width: int) -> int:
@@ -287,22 +371,22 @@ class FrequencyTimeline(PassbandDragMixin, Widget):
         return row
 
     def watch_viewport_center_hz(self, value: float) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_visible_span_hz(self, value: float) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_tuned_freq_hz(self, value: float) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_passband_center_hz(self, value: float) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_passband_width_hz(self, value: float) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_passband_preview_width_hz(self, value: Optional[float]) -> None:
-        self.refresh()
+        self._maybe_refresh()
 
     def watch_hover_col(self, value: Optional[int]) -> None:
-        self.refresh()
+        self._maybe_refresh()

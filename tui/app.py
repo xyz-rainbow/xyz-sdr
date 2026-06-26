@@ -119,6 +119,9 @@ ZOOM_SPAN_STEPS = [
 # Velocidades de cascada (FPS)
 WATERFALL_SPEEDS = [1, 2, 3, 5, 10, 25, 50]
 WATERFALL_SPD_BTN_HEIGHT = 3
+PERFORMANCE_DISPLAY_FPS = 10
+PERFORMANCE_WATERFALL_FPS = 2
+SIDEBAR_WIDTH = 32
 from tui.viewport import VIEWPORT_DEBOUNCE_S
 
 # Limites de frecuencia del hardware
@@ -334,11 +337,23 @@ class XyzSDRApp(App):
 
     #controls {
         width: 32;
+        min-width: 32;
+        max-width: 32;
         background: #0b0f19;
         padding: 0 1;
         overflow-y: auto;
         scrollbar-size: 0 0;
         border-right: round #1e293b;
+    }
+
+    #controls.-collapsed {
+        display: none;
+        width: 0;
+        min-width: 0;
+        max-width: 0;
+        padding: 0;
+        border: none;
+        overflow: hidden;
     }
 
     #controls Label {
@@ -830,6 +845,7 @@ class XyzSDRApp(App):
         ("[",           "passband_narrow", "PASS -"),
         ("]",           "passband_widen",  "PASS +"),
         ("b",           "focus_bandwidth", "BW"),
+        ("ctrl+b",      "toggle_sidebar", "Sidebar"),
         ("g",           "focus_gain",    "Gain"),
         ("v",           "focus_volume",  "Volumen"),
         ("shift+up",    "scroll_history_newer", "WF ↑"),
@@ -893,11 +909,13 @@ class XyzSDRApp(App):
         self._display_frames_applied = 0
         self._headless_done = False
         self.last_display_report = None
+        self._sidebar_collapsed = False
         app_cfg = self.config.get("app", {})
         if auto_start_rx is None:
             self._auto_start_rx = bool(app_cfg.get("auto_start_rx", True))
         else:
             self._auto_start_rx = bool(auto_start_rx)
+        self._performance_ui = bool(app_cfg.get("performance_ui", True))
         self.band_profile = band_profile
         self.strict = strict
         # AI: opt-in vía CLI (--ai) o [ai] del config. Combinado en ai.is_enabled().
@@ -1045,9 +1063,12 @@ class XyzSDRApp(App):
         preview = self._passband_preview_width
         try:
             timeline = self.query_one("#timeline", FrequencyTimeline)
-            timeline.passband_center_hz = self.passband_center_hz
-            timeline.passband_width_hz = self.passband_width_hz
-            timeline.passband_preview_width_hz = preview
+            timeline.update_display_state(
+                passband_center_hz=self.passband_center_hz,
+                passband_width_hz=self.passband_width_hz,
+                passband_preview_width_hz=preview,
+                clear_preview=preview is None,
+            )
         except Exception:
             pass
         try:
@@ -1266,7 +1287,7 @@ class XyzSDRApp(App):
         self._sync_viewport(immediate=True)
         self._sync_passband_widgets()
         self._update_mode_ui()
-        self._set_waterfall_speed(10)
+        self._set_waterfall_speed(self._initial_waterfall_speed(), log=False)
 
         log = self.query_one("#log_panel", Log)
         for line in _splash_display_lines(self._startup_logs):
@@ -1276,7 +1297,7 @@ class XyzSDRApp(App):
         self._update_status()
         self.call_after_refresh(self._update_display_width)
 
-        display_fps = float(self.config.get("dsp", {}).get("display_fps", 20))
+        display_fps = self._display_fps_cap()
         self.set_interval(1.0 / max(1.0, display_fps), self._flush_display_frames)
         if self.debug_mode:
             self.set_interval(3.0, self._report_debug_metrics)
@@ -1506,6 +1527,11 @@ class XyzSDRApp(App):
         log.write_line(f"[INFO] Controles: <-/-> scroll | up/dn step | ctrl+<-/-> zoom | B bandwidth | [ ] ancho PASS")
         if self._display_diagnostics:
             log.write_line("[INFO] Diagnóstico display: [P] captura → var/harness/")
+        if self._performance_ui:
+            log.write_line(
+                f"[INFO] Rendimiento UI: display {int(self._display_fps_cap())} FPS, "
+                f"cascada {self._initial_waterfall_speed()} FPS, Ctrl+B panel"
+            )
         log.write_line("[INFO] Ratón: clic+arrastre en timeline/espectro = banda audible simétrica")
         if self.debug_mode:
             log.write_line("[DEBUG] Instrumentación activa (FPS/latencia en panel cada ~3s con RX)")
@@ -1567,6 +1593,53 @@ class XyzSDRApp(App):
         report_json = report.export_paths.get("report_json")
         if report_json:
             self._log(f"  report: {report_json}")
+
+    def _display_fps_cap(self) -> float:
+        """FPS máximo del timer espectro/cascada (preset rendimiento = 10)."""
+        dsp_cfg = self.config.get("dsp", {})
+        default_fps = PERFORMANCE_DISPLAY_FPS if self._performance_ui else 20.0
+        configured = float(dsp_cfg.get("display_fps", default_fps))
+        if self._performance_ui:
+            return min(configured, float(PERFORMANCE_DISPLAY_FPS))
+        return configured
+
+    def _initial_waterfall_speed(self) -> int:
+        """Velocidad inicial de la cascada (preset rendimiento = 2 FPS)."""
+        display_cfg = self.config.get("display", {})
+        if "waterfall_scroll_fps" in display_cfg:
+            return int(display_cfg["waterfall_scroll_fps"])
+        return PERFORMANCE_WATERFALL_FPS if self._performance_ui else 10
+
+    def action_toggle_sidebar(self) -> None:
+        """Ctrl+B: oculta/muestra el panel de controles."""
+        self._apply_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _apply_sidebar_collapsed(self, collapsed: bool) -> None:
+        self._sidebar_collapsed = collapsed
+        try:
+            panel = self.query_one("#controls", Vertical)
+        except Exception as exc:
+            logger.warning("No se pudo alternar sidebar: %s", exc)
+            return
+
+        if collapsed:
+            panel.add_class("-collapsed")
+            panel.styles.width = 0
+            panel.styles.min_width = 0
+            panel.styles.max_width = 0
+        else:
+            panel.remove_class("-collapsed")
+            panel.styles.width = SIDEBAR_WIDTH
+            panel.styles.min_width = SIDEBAR_WIDTH
+            panel.styles.max_width = SIDEBAR_WIDTH
+
+        try:
+            self.query_one("#main_area", Horizontal).refresh(layout=True)
+        except Exception:
+            pass
+        self.call_after_refresh(self._update_display_width)
+        state = "oculto" if collapsed else "visible"
+        self._log(f"[INFO] Panel controles {state} (Ctrl+B)")
 
     def _maybe_headless_display_export(self) -> None:
         if not self._headless_display or self._headless_done:
@@ -2107,12 +2180,15 @@ class XyzSDRApp(App):
         """Propaga viewport: timeline al instante; espectro/waterfall con debounce."""
         try:
             timeline = self.query_one("#timeline", FrequencyTimeline)
-            timeline.viewport_center_hz = self.viewport_center
-            timeline.visible_span_hz = self.visible_span
-            timeline.tuned_freq_hz = self.tuned_frequency
-            timeline.passband_center_hz = self.passband_center_hz
-            timeline.passband_width_hz = self.passband_width_hz
-            timeline.passband_preview_width_hz = self._passband_preview_width
+            timeline.update_display_state(
+                viewport_center_hz=self.viewport_center,
+                visible_span_hz=self.visible_span,
+                tuned_freq_hz=self.tuned_frequency,
+                passband_center_hz=self.passband_center_hz,
+                passband_width_hz=self.passband_width_hz,
+                passband_preview_width_hz=self._passband_preview_width,
+                clear_preview=self._passband_preview_width is None,
+            )
         except Exception:
             pass
 
@@ -3310,7 +3386,7 @@ class XyzSDRApp(App):
             self._refresh_preset_select()
             self._log(f"[OK] Guardado bookmark: {bookmark[0]}")
 
-    def _set_waterfall_speed(self, speed: int) -> None:
+    def _set_waterfall_speed(self, speed: int, *, log: bool = True) -> None:
         """Establece la velocidad de la cascada (FPS) y actualiza los estilos de los botones."""
         try:
             waterfall = self.query_one("#waterfall", WaterfallTimeline)
@@ -3318,7 +3394,6 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
-        # Actualizar clases CSS activas de los botones de velocidad
         for s in WATERFALL_SPEEDS:
             try:
                 btn = self.query_one(f"#btn_spd_{s}", Button)
@@ -3328,7 +3403,8 @@ class XyzSDRApp(App):
                     btn.remove_class("active-spd")
             except Exception:
                 pass
-        self._log(f"Velocidad de cascada: {speed} FPS")
+        if log:
+            self._log(f"Velocidad de cascada: {speed} FPS")
 
     def on_click(self, event: events.Click) -> None:
         if event.widget and event.widget.id and event.widget.id.startswith("btn_mode_"):

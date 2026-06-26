@@ -1,7 +1,7 @@
 [device]
 driver = "sdrplay"
-sample_rate = 250000
-center_freq = 7100000
+sample_rate = 500000
+center_freq = 6451767
 gain = 50.0
 auto_gain = false
 ppm_correction = 0
@@ -11,7 +11,7 @@ fft_size = 2048
 fft_overlap = 0.5
 fft_avg_windows = 4
 band_cache_cols = 1024
-display_fps = 20
+display_fps = 10
 demod_mode = "wbfm"
 audio_rate = 48000
 wbfm_bandwidth = 180000
@@ -26,6 +26,7 @@ squelch_threshold = 10
 squelch_hang_ms = 500
 
 [display]
+waterfall_scroll_fps = 2
 waterfall_history = 100
 waterfall_history_buffer_ratio = 0.667
 waterfall_auto_level = false
@@ -45,6 +46,7 @@ color_theme = "cyberpunk"
 [app]
 active_band_profile = ""
 auto_start_rx = true
+performance_ui = true
 
 [recorder]
 output_dir = ""
