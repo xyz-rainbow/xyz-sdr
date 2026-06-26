@@ -1370,6 +1370,13 @@ class XyzSDRApp(App):
                 - ``used_fallback``: True si se cayó a simulated.
         """
         device, hw_open_error, used_fallback = payload
+        
+        # Sincronizar el resultado del preflight asíncrono al hilo de la TUI
+        if device is not None and not device.is_simulated and device.driver == "sdrplay":
+            # Si el arranque completó con éxito, se preserva el estado del preflight
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = not used_fallback
+
         if used_fallback:
             self.driver = "simulated"
         if device is None:
@@ -2703,6 +2710,9 @@ class XyzSDRApp(App):
         self._driver_changing = False
         self._device = device
         self.driver = resolved_driver if device is not None else self.driver
+        
+        # Resetear siempre preflight al cambiar de driver para que el nuevo hardware
+        # ejecute el preflight obligatoriamente antes de abrir RX.
         self._sdrplay_preflight_done = False
         self._sdrplay_preflight_ok = False
 
