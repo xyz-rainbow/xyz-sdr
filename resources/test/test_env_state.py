@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,7 +15,12 @@ from setup.env_state import (
     EnvironmentState,
     _count_sdrplay_devices,
     _same_python_executable,
+    check_core_libs,
+    check_soapy_import,
     path_contains_pothos,
+    probe_environment,
+    probe_soapy_in_python,
+    read_path_from_registry,
 )
 
 
@@ -268,3 +276,372 @@ def test_count_sdrplay_devices_case_insensitive() -> None:
 def test_count_sdrplay_devices_handles_missing_driver_key() -> None:
     devices = [{}, {"driver": "sdrplay"}]
     assert _count_sdrplay_devices(devices) == 1
+
+
+# ---------------------------------------------------------------------------
+# read_path_from_registry
+# ---------------------------------------------------------------------------
+
+
+def test_read_path_from_registry_returns_empty_on_posix(monkeypatch):
+    monkeypatch.setattr("os.name", "posix")
+    assert read_path_from_registry() == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="winreg only available on Windows")
+def test_read_path_from_registry_joins_hives(monkeypatch):
+    """En Windows, lee Path de HKCU y HKLM y los une."""
+    import winreg
+
+    def fake_open(root, subkey):
+        m = MagicMock()
+        m.__enter__ = lambda s: s
+        m.__exit__ = lambda s, *a: False
+        return m
+
+    def fake_query(key, name):
+        if name == "Path":
+            if key is fake_open.hkcu_key:
+                return r"C:\Program Files\PothosSDR\bin;C:\Windows", 1
+            return r"C:\Program Files\Git\cmd", 1
+        raise FileNotFoundError(name)
+
+    hkcu_key = fake_open(winreg.HKEY_CURRENT_USER, "Environment")
+    fake_open.hkcu_key = hkcu_key
+    hklm_key = fake_open(winreg.HKEY_LOCAL_MACHINE, "...")
+    fake_open.hklm_key = hklm_key
+
+    def open_dispatch(root, subkey):
+        if root == winreg.HKEY_CURRENT_USER:
+            return hkcu_key
+        return hklm_key
+
+    monkeypatch.setattr(winreg, "OpenKey", open_dispatch)
+    monkeypatch.setattr(winreg, "QueryValueEx", fake_query)
+    result = read_path_from_registry()
+    assert "PothosSDR" in result
+    assert "Git" in result
+
+
+def test_read_path_from_registry_handles_missing_keys(monkeypatch):
+    """Si OpenKey lanza OSError, sigue con la siguiente hive."""
+    import winreg
+
+    def fake_open(root, subkey):
+        raise OSError("missing")
+
+    monkeypatch.setattr(winreg, "OpenKey", fake_open)
+    monkeypatch.setattr("os.name", "nt")
+    assert read_path_from_registry() == ""
+
+
+def test_read_path_from_registry_handles_missing_path_value(monkeypatch):
+    """Si la hive no tiene valor Path, continúa."""
+    import winreg
+
+    empty_key = MagicMock()
+    empty_key.__enter__ = lambda s: s
+    empty_key.__exit__ = lambda s, *a: False
+
+    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **kw: empty_key)
+    monkeypatch.setattr(winreg, "QueryValueEx", MagicMock(side_effect=FileNotFoundError("Path")))
+    monkeypatch.setattr("os.name", "nt")
+    assert read_path_from_registry() == ""
+
+
+# ---------------------------------------------------------------------------
+# check_core_libs
+# ---------------------------------------------------------------------------
+
+
+def test_check_core_libs_parses_installed_missing(monkeypatch):
+    payload = json.dumps({"installed": ["numpy", "scipy"], "missing": ["sounddevice"]})
+    mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout=payload))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    installed, missing = check_core_libs("/fake/python")
+    assert installed == ["numpy", "scipy"]
+    assert missing == ["sounddevice"]
+
+
+def test_check_core_libs_handles_nonzero_returncode(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=1, stdout=""))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    installed, missing = check_core_libs("/fake/python")
+    assert installed == []
+    assert missing == list(["numpy", "scipy", "sounddevice", "textual", "rich"])
+
+
+def test_check_core_libs_handles_invalid_json(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="not json"))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    installed, missing = check_core_libs("/fake/python")
+    assert installed == []
+    assert missing == list(["numpy", "scipy", "sounddevice", "textual", "rich"])
+
+
+def test_check_core_libs_handles_subprocess_exception(monkeypatch):
+    def raise_exc(*_a, **_kw):
+        raise OSError("boom")
+
+    monkeypatch.setattr("subprocess.run", raise_exc)
+    installed, missing = check_core_libs("/fake/python")
+    assert installed == []
+    assert len(missing) >= 1
+
+
+# ---------------------------------------------------------------------------
+# check_soapy_import
+# ---------------------------------------------------------------------------
+
+
+def test_check_soapy_import_returns_true_on_success(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    assert check_soapy_import("/fake/python") is True
+
+
+def test_check_soapy_import_returns_false_on_nonzero(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=1))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    assert check_soapy_import("/fake/python") is False
+
+
+def test_check_soapy_import_returns_false_on_exception(monkeypatch):
+    def raise_exc(*_a, **_kw):
+        raise OSError("boom")
+
+    monkeypatch.setattr("subprocess.run", raise_exc)
+    assert check_soapy_import("/fake/python") is False
+
+
+# ---------------------------------------------------------------------------
+# probe_soapy_in_python
+# ---------------------------------------------------------------------------
+
+
+def test_probe_soapy_in_python_success(monkeypatch):
+    payload = json.dumps({"ok": True, "devices": [{"driver": "sdrplay", "label": "RSP1"}]})
+    mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout=payload))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    ok, devices = probe_soapy_in_python("/fake/python", quiet=True, bootstrap=True, project_root="/proj")
+    assert ok is True
+    assert len(devices) == 1
+
+
+def test_probe_soapy_in_python_failure(monkeypatch):
+    payload = json.dumps({"ok": False, "error": "no module"})
+    mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout=payload))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    ok, devices = probe_soapy_in_python("/fake/python")
+    assert ok is False
+    assert devices == []
+
+
+def test_probe_soapy_in_python_nonzero_returncode(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=1, stdout=""))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    ok, devices = probe_soapy_in_python("/fake/python")
+    assert ok is False
+    assert devices == []
+
+
+def test_probe_soapy_in_python_handles_exception(monkeypatch):
+    def raise_exc(*_a, **_kw):
+        raise OSError("boom")
+
+    monkeypatch.setattr("subprocess.run", raise_exc)
+    ok, devices = probe_soapy_in_python("/fake/python")
+    assert ok is False
+    assert devices == []
+
+
+def test_probe_soapy_in_python_no_bootstrap_branch(monkeypatch):
+    """Sin bootstrap, no se incluye bootstrap_block."""
+    payload = json.dumps({"ok": True, "devices": []})
+    mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout=payload))
+    monkeypatch.setattr("subprocess.run", mock_run)
+    ok, devices = probe_soapy_in_python("/fake/python", bootstrap=False)
+    assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# probe_environment
+# ---------------------------------------------------------------------------
+
+
+def test_probe_environment_assembles_state(monkeypatch, tmp_path):
+    """Probe agrega resultados de los checks en un EnvironmentState."""
+    fake_py = tmp_path / "python.exe"
+    fake_py.write_text("# fake")
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: "C:/Pothos")
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: True)
+    fake_status = MagicMock(import_ok=True, has_devices=True, devices=[{"driver": "sdrplay"}])
+    monkeypatch.setattr("core.soapy_runtime.bootstrap_soapy", lambda **kw: fake_status)
+    monkeypatch.setattr("setup.env_state._same_python_executable", lambda l, r: True)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: True)
+    monkeypatch.setattr("setup.env_state.check_core_libs", lambda _p: (["numpy"], []))
+    monkeypatch.setattr("setup.env_state.check_soapy_import", lambda _p: True)
+    monkeypatch.setattr("os.environ", {"PATH": "C:/Pothos/bin"})
+
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=True)
+    assert state.sdrplay_ok is True
+    assert state.pothos_installed is True
+    assert state.path_in_process is True
+    assert state.venv_path == fake_py
+    assert state.venv_ok is True
+    assert state.python_libs_missing == []
+    assert state.soapy_import_ok is True
+    assert state.has_devices is True
+    assert state.has_sdrplay_devices is True
+    assert state.drivers_ready is True
+
+
+def test_probe_environment_collects_blockers(monkeypatch, tmp_path):
+    fake_py = tmp_path / "missing.exe"  # venv_ok=False
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: False)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: None)
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: False)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: False)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: False)
+    monkeypatch.setattr("os.environ", {"PATH": ""})
+
+    state = probe_environment(bootstrap_soapy=False, inprocess_soapy=False)
+    assert "sdrplay_api" in state.blockers
+    assert "pothos" in state.blockers
+    assert "venv" in state.blockers
+    assert state.sdrplay_ok is False
+
+
+def test_probe_environment_uses_subprocess_when_not_inprocess(monkeypatch, tmp_path):
+    """Si _same_python_executable devuelve False, usa probe_soapy_in_python."""
+    fake_py = tmp_path / "python.exe"
+    fake_py.write_text("# fake")
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: "C:/Pothos")
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: True)
+    monkeypatch.setattr("setup.env_state._same_python_executable", lambda l, r: False)
+    monkeypatch.setattr("setup.env_state.probe_soapy_in_python", lambda *a, **kw: (True, [{"driver": "sdrplay"}]))
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: True)
+    monkeypatch.setattr("setup.env_state.check_core_libs", lambda _p: ([], []))
+    monkeypatch.setattr("setup.env_state.check_soapy_import", lambda _p: True)
+    monkeypatch.setattr("os.environ", {"PATH": "C:/Pothos/bin"})
+
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=True)
+    assert state.has_sdrplay_devices is True
+
+
+def test_probe_environment_skips_soapy_when_no_venv(monkeypatch, tmp_path):
+    """Sin venv_ok, no se llama a bootstrap ni probe_soapy_in_python."""
+    fake_py = tmp_path / "missing.exe"
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: "C:/Pothos")
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: True)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: True)
+    monkeypatch.setattr("os.environ", {"PATH": "C:/Pothos/bin"})
+    soapy_called = {"v": False}
+    monkeypatch.setattr(
+        "core.soapy_runtime.bootstrap_soapy",
+        lambda **kw: soapy_called.__setitem__("v", True) or MagicMock(import_ok=True, has_devices=False, devices=[]),
+    )
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=True)
+    assert soapy_called["v"] is False  # venv_ok=False, no se llama
+    assert state.soapy_import_ok is False
+
+
+def test_probe_environment_adds_soapy_sdrplay3_blocker(monkeypatch, tmp_path):
+    """Si sdrplay+pothos OK pero no hay módulo Soapy, marca soapy_sdrplay3."""
+    fake_py = tmp_path / "python.exe"
+    fake_py.write_text("# fake")
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: "C:/Pothos")
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: False)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: False)
+    monkeypatch.setattr("setup.env_state._same_python_executable", lambda l, r: True)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: True)
+    monkeypatch.setattr("setup.env_state.check_core_libs", lambda _p: ([], []))
+    monkeypatch.setattr("setup.env_state.check_soapy_import", lambda _p: True)
+    monkeypatch.setattr("os.environ", {"PATH": "C:/Pothos/bin"})
+    monkeypatch.setattr("core.soapy_runtime.bootstrap_soapy", lambda **kw: MagicMock(import_ok=True, has_devices=False, devices=[]))
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=True)
+    assert "soapy_sdrplay3" in state.blockers
+
+
+def test_probe_environment_adds_enumeration_blocker(monkeypatch, tmp_path):
+    """Si todo OK pero plugin no enumera, marca sdrplay_enumeration."""
+    fake_py = tmp_path / "python.exe"
+    fake_py.write_text("# fake")
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=False, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: "C:/Pothos")
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: False)
+    monkeypatch.setattr("setup.env_state._same_python_executable", lambda l, r: True)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: True)
+    monkeypatch.setattr("setup.env_state.check_core_libs", lambda _p: ([], []))
+    monkeypatch.setattr("setup.env_state.check_soapy_import", lambda _p: True)
+    monkeypatch.setattr("os.environ", {"PATH": "C:/Pothos/bin"})
+    monkeypatch.setattr("core.soapy_runtime.bootstrap_soapy", lambda **kw: MagicMock(import_ok=True, has_devices=False, devices=[]))
+    state = probe_environment(bootstrap_soapy=True, inprocess_soapy=True)
+    assert "sdrplay_enumeration" in state.blockers
+
+
+def test_probe_environment_usb_issue(monkeypatch, tmp_path):
+    """Si USB falla (present=True, ok=False), marca sdrplay_usb_issue."""
+    fake_py = tmp_path / "python.exe"
+    fake_py.write_text("# fake")
+    monkeypatch.setattr("core.runtime_paths.project_root", lambda: tmp_path)
+    monkeypatch.setattr("core.python_runtime.project_venv_python", lambda _r: fake_py)
+    monkeypatch.setattr("core.sdrplay_usb.probe_sdrplay_usb_with_retry", lambda **kw: MagicMock(present=True, ok=False))
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_api", lambda: True)
+    monkeypatch.setattr("core.soapy_runtime.find_pothos_install", lambda: None)
+    monkeypatch.setattr("core.soapy_runtime.is_sdrplay_soapy_module_ok", lambda: False)
+    monkeypatch.setattr("core.soapy_runtime.check_sdrplay_plugin", lambda: False)
+    monkeypatch.setattr("setup.env_state.path_contains_pothos", lambda p: False)
+    monkeypatch.setattr("os.environ", {"PATH": ""})
+    state = probe_environment(bootstrap_soapy=False, inprocess_soapy=False)
+    assert state.sdrplay_usb_issue is True
+
+
+# ---------------------------------------------------------------------------
+# Helpers para tests
+# ---------------------------------------------------------------------------
+
+
+class _MockKey:
+    def __init__(self, values: dict) -> None:
+        self._values = values
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def __iter__(self):
+        return iter([])
+
+    def QueryValueEx(self, name: str):
+        if name not in self._values:
+            raise FileNotFoundError(name)
+        return self._values[name], 1
