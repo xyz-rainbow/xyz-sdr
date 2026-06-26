@@ -3,7 +3,7 @@
 Estructura de tests, convenciones, mapeo test → módulo, comandos útiles.
 
 > **Tests:** ~52 archivos en `resources/test/`, ~280 funciones, marcadores `slow` + `integration`.
-> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=51` (subida gradual 40 → 45 → 48 → 50 → 51; últimos填补: `tui/splash.py` helpers, `setup/check_env.py` print + non-verbose path, `setup/env_state.py` property matrix, `setup/repo_update.py` git wrapper, `core/sdrplay_service.py` crash detection).
+> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=55` (subida gradual 40 → 45 → 48 → 50 → 51 → 55; últimos填补: `tui/splash.py` helpers, `setup/check_env.py` print + non-verbose path, `setup/env_state.py` property matrix, `setup/repo_update.py` git wrapper, `core/sdrplay_service.py` crash detection, `core/soapy_runtime.py` pure helpers + SoapyStatus).
 
 ---
 
@@ -270,6 +270,33 @@ pytest --cov=core --cov=setup --cov=tui --cov-report=html --cov-report=term-miss
 # Abrir reporte
 start htmlcov/index.html
 ```
+
+---
+
+## Harness espectro/waterfall (diagnóstico)
+
+TUI mínima aislada de la app principal para validar RX → espectro → cascada y exportar capturas.
+
+```powershell
+# Interactivo (RSP real)
+.\scripts\harness.ps1 -Driver sdrplay -FreqHz 7100000
+
+# Atajos en TUI: S=RX, ←→=frecuencia, +/-=gain, P=captura, Q=salir
+
+# Headless (agente/CI) — exporta a var/harness/
+.\scripts\harness.ps1 -Headless -Sim -Duration 2 -MinFrames 1 -ExportDir var/harness/agent_run
+
+# Salida: report.json (display_ok), frame.npz, ui.svg, spectrum.png, waterfall.png
+```
+
+Interpretación de `report.json`:
+
+| Campo | Significado |
+|-------|-------------|
+| `display_ok` | `true` si hubo frames, cascada, espectro y contraste dB > 3 |
+| `frames_published` | Frames generados por el worker RX |
+| `frames_applied` | Frames pintados en widgets |
+| `waterfall_rows` | Filas en historial de cascada |
 
 ---
 

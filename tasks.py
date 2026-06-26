@@ -41,7 +41,7 @@ def test(c, slow=False, cov=True, verbose=False):
             "--cov=setup",
             "--cov=tui",
             "--cov-report=term-missing",
-            "--cov-fail-under=51",
+            "--cov-fail-under=55",
         ])
     else:
         args.append("--no-cov")
