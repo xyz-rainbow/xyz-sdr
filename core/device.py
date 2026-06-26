@@ -850,14 +850,8 @@ class SDRDevice:
         probe_ret = self._sdrplay_probe_read_unlocked()
         log_breadcrumb(f"device.sdrplay.probe_read ok ret={probe_ret}")
 
-        try:
-            self._sdrplay_apply_tuning_unlocked(apply_rate, mode="live")
-            self._sdrplay_stream_bootstrapped = True
-            log_breadcrumb("device.sdrplay.minimal_activate stream ready (live tune)")
-            return
-        except Exception as exc:
-            log_breadcrumb(f"device.sdrplay live tune failed: {exc}")
-
+        # En dispositivos RSP1, live tuning puede silenciar/congelar el stream sin lanzar excepción.
+        # Forzamos la sintonización con el stream parado (stopped) para garantizar flujo continuo.
         self._stop_stream()
         try:
             self._sdr.closeStream(self._stream)
