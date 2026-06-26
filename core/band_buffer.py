@@ -29,11 +29,10 @@ def compact_band_cols(
         return src.copy()
 
     edges = np.linspace(0, len(src), target + 1, dtype=np.int32)
-    out = np.empty(target, dtype=np.float32)
-    for i in range(target):
-        segment = src[edges[i] : edges[i + 1]]
-        out[i] = float(np.max(segment)) if segment.size else float(src[min(edges[i], len(src) - 1)])
-    return out
+    # np.maximum.reduceat es la versión vectorizada del max-pool por segmento.
+    # Para segmentos vacíos (edges[i] == edges[i+1]) reduceat devuelve src[edges[i]],
+    # igual que el fallback del bucle Python original.
+    return np.maximum.reduceat(src, edges[:-1]).astype(np.float32, copy=False)
 
 
 @dataclass(frozen=True)

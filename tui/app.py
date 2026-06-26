@@ -3608,16 +3608,24 @@ class XyzSDRApp(App):
                     self.call_from_thread(self._on_sdrplay_stream_start_failed, detail)
                     return
 
+            consecutive_errors = 0
+            max_consecutive_errors = 5
             while self._rx_active and token == self._rx_worker_token:
                 try:
                     run_rx_iteration(self)
+                    consecutive_errors = 0
                     time.sleep(0.002)
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:
                         continue
-                    logger.exception("RX error: %s", e)
-                    self.call_from_thread(self._log, f"[ERROR] RX: {e}")
-                    break
+                    consecutive_errors += 1
+                    logger.exception("RX error (attempt %d/%d): %s", consecutive_errors, max_consecutive_errors, e)
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.call_from_thread(self._log, f"[ERROR] RX: {e} (worker detenido tras {consecutive_errors} errores)")
+                        break
+                    # Backoff exponencial: 50ms, 100ms, 200ms, 400ms, 800ms (cap a 1000ms).
+                    backoff = min(1.0, 0.05 * (2 ** (consecutive_errors - 1)))
+                    time.sleep(backoff)
         finally:
             if stream_started and self._device and not self._device.is_simulated:
                 try:

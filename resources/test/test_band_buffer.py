@@ -39,6 +39,56 @@ def test_compact_band_cols_short_input_copies():
     assert np.array_equal(out, src)
 
 
+def test_compact_band_cols_exact_size_passes_through():
+    """src exactamente target → no pooling, copia directa."""
+    src = np.arange(512, dtype=np.float32)
+    out = compact_band_cols(src, target=512)
+    np.testing.assert_array_equal(out, src)
+    assert out.dtype == np.float32
+
+
+def test_compact_band_cols_non_divisible_pool():
+    """src con tamaño no divisible por target."""
+    src = np.linspace(-90, -10, 1000, dtype=np.float32)
+    out = compact_band_cols(src, target=512)
+    assert out.shape == (512,)
+    assert out.dtype == np.float32
+    # El máximo total debe estar contenido en al menos un segmento.
+    assert float(out.max()) >= float(src.max()) - 1e-3
+
+
+def test_compact_band_cols_target_one():
+    """target=1 debe devolver el máximo global."""
+    src = np.array([1.0, 5.0, 2.0, 8.0, 3.0], dtype=np.float32)
+    out = compact_band_cols(src, target=1)
+    assert out.shape == (1,)
+    assert float(out[0]) == 8.0
+
+
+def test_compact_band_cols_handles_duplicates():
+    """El pooling por max no debe perder duplicados si están en el mismo segmento."""
+    src = np.full(1024, -42.0, dtype=np.float32)
+    src[100] = 99.0  # spike en un segmento cualquiera
+    out = compact_band_cols(src, target=512)
+    assert float(out.max()) == 99.0
+
+
+def test_compact_band_cols_does_not_alias_input():
+    """El resultado no debe ser una vista del input (debe ser copia)."""
+    src = np.arange(1024, dtype=np.float32)
+    out = compact_band_cols(src, target=512)
+    out[0] = -1.0
+    # Si fuera vista, modificar out modificaría src.
+    assert src[0] != -1.0
+
+
+def test_compact_band_cols_dtype_preserved():
+    """El dtype debe ser float32 siempre."""
+    src = np.arange(1024, dtype=np.float64)  # input en float64
+    out = compact_band_cols(src, target=512)
+    assert out.dtype == np.float32
+
+
 def test_slice_band_to_viewport_full_bandwidth(flat_band_cols, center_hz, sample_rate):
     cols = slice_band_to_viewport(
         flat_band_cols,
