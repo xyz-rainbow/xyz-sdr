@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,10 @@ def test_same_python_executable_different_paths() -> None:
     assert _same_python_executable("/usr/bin/python3", "/usr/local/bin/python3") is False
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows-style backslash path semantics; skip on POSIX.",
+)
 def test_same_python_executable_handles_trailing_slashes() -> None:
     # Both Windows-style with trailing backslash.
     assert _same_python_executable(
