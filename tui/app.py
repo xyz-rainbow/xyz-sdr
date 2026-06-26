@@ -3196,6 +3196,7 @@ class XyzSDRApp(App):
             while self._rx_active:
                 try:
                     run_rx_iteration(self)
+                    time.sleep(0.002)
                 except Exception as e:
                     if self._bandwidth_changing or not self._rx_active:
                         continue

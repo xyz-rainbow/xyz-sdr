@@ -53,20 +53,20 @@ def test_tui_app_reopen_device_concurrency():
         mock_sdr_device_class.return_value = mock_dev
         
         app = XyzSDRApp()
-        app.driver = "sdrplay"
+        app.driver = "simulated"
         app._device = mock_dev
         app._rx_active = False
         app._driver_changing = False
         
         with patch.object(app, "_reopen_device_async") as mock_reopen:
             # Schedule driver change 1 - should succeed
-            res1 = app.change_device_driver("simulated")
+            res1 = app.change_device_driver("sdrplay")
             assert res1 is True
             assert app._driver_changing is True
             assert mock_reopen.call_count == 1
             
             # Schedule driver change 2 immediately - should be rejected because _driver_changing is True
-            res2 = app.change_device_driver("simulated")
+            res2 = app.change_device_driver("sdrplay")
             assert res2 is False
             assert app._driver_changing is True
             assert mock_reopen.call_count == 1
