@@ -1613,6 +1613,12 @@ class XyzSDRApp(App):
             return
 
         try:
+            spectrum = self.query_one("#spectrum", SpectrumGraph)
+            spectrum.set_rx_waiting(True)
+        except Exception:
+            pass
+
+        try:
             frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
         except Exception as exc:
             logger.exception("Error leyendo frame espectral: %s", exc)
@@ -1634,13 +1640,21 @@ class XyzSDRApp(App):
 
         ui_t0 = time.perf_counter()
         display_cfg = self.config.get("display", {})
+        plot_width = max(int(self._display_width), 1)
+        spectrum: SpectrumGraph | None = None
+        try:
+            spectrum = self.query_one("#spectrum", SpectrumGraph)
+            plot_width = max(plot_width, spectrum._column_width())
+        except Exception:
+            pass
+
         cols = slice_band_to_viewport(
             frame.band_cols,
             frame.center_hz,
             frame.sample_rate,
             self.viewport_center,
             self.visible_span,
-            self._display_width,
+            plot_width,
         )
 
         floors, ceilings = self._compute_column_levels(cols, display_cfg)
@@ -1648,17 +1662,27 @@ class XyzSDRApp(App):
         if self._scanner.scanning:
             self._handle_scanner_step(frame, snr, floors, ceilings)
 
-        try:
-            spectrum = self.query_one("#spectrum", SpectrumGraph)
-            spectrum.set_column_levels(floors, ceilings)
-            spectrum.set_band_frame(frame, force=True)
-        except Exception:
-            pass
+        if spectrum is not None:
+            try:
+                spectrum.set_viewport(self.viewport_center, self.visible_span)
+                spectrum.passband_center_hz = self.passband_center_hz
+                spectrum.passband_width_hz = self.passband_width_hz
+                spectrum.passband_preview_width_hz = self._passband_preview_width
+                spectrum.set_column_levels(floors, ceilings)
+                spectrum.set_band_frame(frame, force=True)
+                spectrum.set_viewport_cols(cols)
+                spectrum.set_rx_waiting(False)
+            except Exception as exc:
+                logger.exception("Error actualizando espectro: %s", exc)
 
         try:
             waterfall = self.query_one("#waterfall", WaterfallTimeline)
+            waterfall.set_viewport(self.viewport_center, self.visible_span)
+            waterfall.passband_center_hz = self.passband_center_hz
+            waterfall.passband_width_hz = self.passband_width_hz
+            waterfall.passband_preview_width_hz = self._passband_preview_width
             waterfall.set_column_levels(floors, ceilings)
-            waterfall.add_band_row(frame)
+            waterfall.add_viewport_row(cols, frame)
         except Exception as exc:
             logger.exception("Error actualizando waterfall: %s", exc)
 

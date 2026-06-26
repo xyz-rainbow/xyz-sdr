@@ -56,3 +56,14 @@ def test_set_band_frame_refreshes_after_set_viewport_clears_paint():
     assert spectrum._band_frame is not None
     assert spectrum._paint_cache is None
 
+
+def test_set_viewport_cols_invalidates_cache_under_rate_limit():
+    spectrum = SpectrumGraph()
+    spectrum._frequency_columns = 80
+    cols = np.linspace(-70.0, -30.0, 80, dtype=np.float64)
+    spectrum._last_refresh_at = time.perf_counter()
+
+    spectrum.set_viewport_cols(cols)
+    assert spectrum._viewport_cols is not None
+    assert spectrum._paint_cache is None
+

@@ -71,6 +71,15 @@ class SpectrumGraph(PassbandDragMixin, Widget):
         self._refresh_min_interval: float = 0.05
         self._paint_cache: Text | None = None
         self._paint_cache_key: tuple | None = None
+        self._rx_waiting: bool = False
+
+    def set_rx_waiting(self, waiting: bool) -> None:
+        """True mientras RX está activo pero aún no hay frame espectral."""
+        if waiting == self._rx_waiting:
+            return
+        self._rx_waiting = waiting
+        self._invalidate_cache()
+        self.refresh()
 
     def set_frequency_columns(self, width: int) -> None:
         """Fija el ancho de columnas espectrales (debe coincidir con el espectro)."""
@@ -190,16 +199,17 @@ class SpectrumGraph(PassbandDragMixin, Widget):
                 constant_values=np.nan,
             )[:width]
         self._viewport_cols = viewport
+        self._invalidate_cache()
         now = time.perf_counter()
         if now - self._last_refresh_at < self._refresh_min_interval:
             return
         self._last_refresh_at = now
-        self._invalidate_cache()
         self.refresh()
 
     def clear(self) -> None:
         self._band_frame = None
         self._viewport_cols = None
+        self._rx_waiting = False
         self._invalidate_cache()
         self.refresh()
 
@@ -243,7 +253,10 @@ class SpectrumGraph(PassbandDragMixin, Widget):
 
         if self._viewport_cols is None:
             lines = [""] * height
-            msg = "Esperando senal... [S] para iniciar RX"
+            if self._rx_waiting:
+                msg = "Sincronizando espectro..."
+            else:
+                msg = "Esperando senal... [S] para iniciar RX"
             mid = height // 2
             pad = max(0, (width - len(msg)) // 2)
             lines[mid] = " " * pad + msg

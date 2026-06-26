@@ -39,10 +39,11 @@ def test_apply_frame_survives_viewport_sync():
     spectrum.set_column_levels(floors, ceilings)
     spectrum.set_viewport(center, span)
     spectrum.set_band_frame(frame)
+    spectrum.set_viewport_cols(cols)
 
     waterfall.set_column_levels(floors, ceilings)
     waterfall.set_viewport(center, span)
-    waterfall.add_band_row(frame)
+    waterfall.add_viewport_row(cols, frame)
 
     assert spectrum._viewport_cols is not None
     assert spectrum._band_frame is not None
