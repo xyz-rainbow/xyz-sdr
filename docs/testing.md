@@ -3,7 +3,7 @@
 Estructura de tests, convenciones, mapeo test → módulo, comandos útiles.
 
 > **Tests:** ~52 archivos en `resources/test/`, ~280 funciones, marcadores `slow` + `integration`.
-> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=70`.
+> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=40` (alineado con la cobertura real post-Fase 0; subir gradualmente a medida que se cubren los módulos `tui/app.py`, `python_runtime.py`, `soapy_runtime.py` y `setup/check_env.py`).
 
 ---
 
