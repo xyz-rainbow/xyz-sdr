@@ -141,3 +141,129 @@ def test_reexec_with_python_includes_script_and_args(tmp_path):
 
     assert captured["cmd"] == [r"C:\fake\python.exe", str(script.resolve()), "--debug"]
     assert captured["env"]["XYZ_SDR_REEXEC_DONE"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers (added in coverage-gradual pass) -- no subprocess, no fs.
+# ---------------------------------------------------------------------------
+
+
+def test_current_version_matches_sys_version_info() -> None:
+    from core.python_runtime import current_version
+
+    assert current_version() == sys.version_info[:3]
+
+
+def test_is_python_64bit_matches_struct_calcsize() -> None:
+    import struct
+
+    from core.python_runtime import is_python_64bit
+
+    assert is_python_64bit() is (struct.calcsize("P") * 8 == 64)
+
+
+def test_version_in_range_branches() -> None:
+    from core.python_runtime import _version_in_range
+
+    assert _version_in_range((3, 11), (3, 10), (3, 12)) is True
+    assert _version_in_range((3, 10), (3, 10), (3, 12)) is True
+    assert _version_in_range((3, 12), (3, 10), (3, 12)) is True
+    assert _version_in_range((3, 9), (3, 10), (3, 12)) is False
+    assert _version_in_range((3, 13), (3, 10), (3, 12)) is False
+
+
+def test_python_candidate_version_short_and_label() -> None:
+    from core.python_runtime import PythonCandidate
+
+    cand = PythonCandidate("/usr/bin/python3.12", (3, 12, 9), "system")
+    assert cand.version_short == (3, 12)
+    assert cand.label() == "Python 3.12.9 (system)"
+
+
+@pytest.mark.parametrize(
+    ("pothos_versions", "expected"),
+    [
+        ([(3, 9)], (3, 9)),
+        ([(3, 11)], (3, 11)),
+        ([], (3, 12)),
+    ],
+)
+def test_provision_target_version_with_pothos(pothos_versions, expected) -> None:
+    from core.python_runtime import provision_target_version
+
+    with patch(
+        "core.python_runtime.list_pothos_python_versions",
+        return_value=pothos_versions,
+    ):
+        assert provision_target_version() == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_key"),
+    [
+        ((3, 9), "py_install_python39_prompt"),
+        ((3, 12), "py_install_python_prompt"),
+    ],
+)
+def test_provision_i18n_keys_follow_target_version(target, expected_key) -> None:
+    from core.python_runtime import (
+        provision_fail_i18n_key,
+        provision_manual_i18n_key,
+        provision_prompt_i18n_key,
+        provision_running_i18n_key,
+    )
+
+    with patch("core.python_runtime.provision_target_version", return_value=target):
+        assert provision_prompt_i18n_key() == expected_key
+        assert provision_running_i18n_key() == expected_key.replace("prompt", "running")
+        assert provision_fail_i18n_key() == expected_key.replace("prompt", "fail")
+        assert provision_manual_i18n_key() == expected_key.replace("prompt", "manual")
+
+
+def test_provision_i18n_key_suffix_mapping_for_3_12() -> None:
+    from core.python_runtime import (
+        provision_fail_i18n_key,
+        provision_manual_i18n_key,
+        provision_prompt_i18n_key,
+        provision_running_i18n_key,
+    )
+
+    with patch("core.python_runtime.provision_target_version", return_value=(3, 12)):
+        assert provision_prompt_i18n_key() == "py_install_python_prompt"
+        assert provision_running_i18n_key() == "py_install_python_running"
+        assert provision_fail_i18n_key() == "py_install_python_fail"
+        assert provision_manual_i18n_key() == "py_install_python_manual"
+
+
+def test_is_current_soapy_compatible_uses_current_version() -> None:
+    from core.python_runtime import is_current_soapy_compatible
+
+    with patch("core.python_runtime.current_version", return_value=(3, 12, 9)):
+        # 3.12 is in PIP_SOAPY range and no pothos -> still compatible.
+        with patch("core.python_runtime.find_pothos_install", return_value=None):
+            assert is_current_soapy_compatible() is True
+
+    with patch("core.python_runtime.current_version", return_value=(3, 14, 0)):
+        with patch("core.python_runtime.find_pothos_install", return_value=None):
+            assert is_current_soapy_compatible() is False
+
+
+def test_project_venv_python_returns_none_when_missing(tmp_path: Path) -> None:
+    from core.python_runtime import project_venv_python
+
+    # tmp_path has no .venv -> None on every OS.
+    assert project_venv_python(root=tmp_path) is None
+
+
+def test_project_venv_python_returns_executable_when_present(tmp_path: Path) -> None:
+    import sys as _sys
+
+    from core.python_runtime import project_venv_python
+
+    if _sys.platform == "win32":
+        candidate = tmp_path / ".venv" / "Scripts" / "python.exe"
+    else:
+        candidate = tmp_path / ".venv" / "bin" / "python"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("# fake", encoding="utf-8")
+    assert project_venv_python(root=tmp_path) == candidate

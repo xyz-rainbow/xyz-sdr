@@ -3,7 +3,7 @@
 Estructura de tests, convenciones, mapeo test → módulo, comandos útiles.
 
 > **Tests:** ~52 archivos en `resources/test/`, ~280 funciones, marcadores `slow` + `integration`.
-> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=45` (subida gradual desde 40 tras cerrar los tests de sdrplay_wer y los 4 mocks de probe_sdrplay_usb; siguiente paso: cubrir `tui/app.py`, `python_runtime.py`, `soapy_runtime.py` y `setup/check_env.py`).
+> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=48` (subida gradual 40 → 45 → 48; últimos填补: `core/formatting.py`, `core/logging_config.py`, helpers puros de `core/python_runtime.py`, y movimiento de `setup/test_install_context.py` a `resources/test/`).
 
 ---
 
