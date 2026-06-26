@@ -23,7 +23,9 @@ def test_probe_sdrplay_usb_failed_install():
         }
     )
     proc = MagicMock(returncode=0, stdout=payload, stderr="")
-    with patch("core.sdrplay_usb.subprocess.run", return_value=proc):
+    with patch("core.sdrplay_usb.os.name", "nt"), patch(
+        "core.sdrplay_usb.subprocess.run", return_value=proc
+    ):
         status = probe_sdrplay_usb()
     assert status.present is True
     assert status.ok is False
@@ -40,7 +42,9 @@ def test_probe_sdrplay_usb_symbolic_problem_code():
         }
     )
     proc = MagicMock(returncode=0, stdout=payload, stderr="")
-    with patch("core.sdrplay_usb.subprocess.run", return_value=proc):
+    with patch("core.sdrplay_usb.os.name", "nt"), patch(
+        "core.sdrplay_usb.subprocess.run", return_value=proc
+    ):
         status = probe_sdrplay_usb()
     assert status.present is True
     assert status.ok is False
@@ -56,7 +60,9 @@ def test_probe_sdrplay_usb_ok():
         }
     )
     proc = MagicMock(returncode=0, stdout=payload, stderr="")
-    with patch("core.sdrplay_usb.subprocess.run", return_value=proc):
+    with patch("core.sdrplay_usb.os.name", "nt"), patch(
+        "core.sdrplay_usb.subprocess.run", return_value=proc
+    ):
         status = probe_sdrplay_usb()
     assert status.present is True
     assert status.ok is True

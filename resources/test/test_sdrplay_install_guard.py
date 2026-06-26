@@ -85,7 +85,10 @@ def test_blocking_process_summary_truncates():
 
 
 def test_terminate_process_uses_tree_only_for_external_apps():
-    with patch("core.sdrplay_install_guard.subprocess.run", return_value=MagicMock(returncode=0)) as run:
+    with patch("core.sdrplay_install_guard.os.name", "nt"), patch(
+        "core.sdrplay_install_guard.subprocess.run",
+        return_value=MagicMock(returncode=0),
+    ) as run:
         from core.sdrplay_install_guard import _terminate_process
 
         _terminate_process(42, tree=False)
