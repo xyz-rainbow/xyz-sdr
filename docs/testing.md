@@ -3,7 +3,7 @@
 Estructura de tests, convenciones, mapeo test → módulo, comandos útiles.
 
 > **Tests:** ~52 archivos en `resources/test/`, ~280 funciones, marcadores `slow` + `integration`.
-> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=50` (subida gradual 40 → 45 → 48 → 50; últimos填补: `tui/splash.py` helpers, `setup/check_env.py` print + non-verbose path, `setup/env_state.py` property matrix, `setup/repo_update.py` git wrapper, `core/sdrplay_service.py` crash detection, `core/soapy_runtime.py` pure helpers + SoapyStatus, `core/sdrplay_forensics.py` parsers, `core/console_utf8.py` UTF-8 + ANSI sequences, `setup/soapy_sdrplay3.py` winget/build helpers + main()).
+> **Cobertura:** instrumentada en CI (`--cov=core --cov=setup --cov=tui`), umbral `--cov-fail-under=51` (subida gradual 40 → 45 → 48 → 50 → 51; últimos填补: `tui/splash.py` helpers, `setup/check_env.py` print + non-verbose path, `setup/env_state.py` property matrix + registry/probe helpers, `setup/repo_update.py` git wrapper, `core/sdrplay_service.py` crash detection, `core/soapy_runtime.py` pure helpers + SoapyStatus, `core/sdrplay_forensics.py` parsers, `core/console_utf8.py` UTF-8 + ANSI sequences, `setup/soapy_sdrplay3.py` winget/build helpers + main(), `setup/install_drivers.py` CLI parser + main()).
 
 ---
 
