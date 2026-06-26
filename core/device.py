@@ -1052,7 +1052,7 @@ class SDRDevice:
             return self._read_samples_sim(num_samples)
         if not self._sdr or not soapysdr_available():
             return np.zeros(num_samples, dtype=np.complex64)
-        return run_sdr_io(self._read_samples_impl, num_samples)
+        return run_sdr_io(self._read_samples_impl, num_samples, timeout=30.0)
 
     def _read_samples_sim(self, num_samples: int) -> np.ndarray:
         with self._lock:

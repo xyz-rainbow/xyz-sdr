@@ -937,6 +937,10 @@ class XyzSDRApp(App):
         self._band_mailbox = BandFrameMailbox()
         self._display_sequence: int = 0
         self._rx_worker_token: int = 0
+        self._sdrplay_device_needs_reopen = False
+        self._sdrplay_api_restarted_at: float = 0.0
+        self._rx_started_at: float = 0.0
+        self._display_no_frame_warned = False
 
         # Instrumentación --debug
         self._debug_lock = threading.Lock()
@@ -1607,16 +1611,68 @@ class XyzSDRApp(App):
         )
         return np.full(width, level_min), np.full(width, level_max)
 
+    def _clear_spectrum_rx_waiting(self) -> None:
+        try:
+            self.query_one("#spectrum", SpectrumGraph).set_rx_waiting(False)
+        except Exception:
+            pass
+
+    def _set_spectrum_rx_waiting(self, waiting: bool) -> None:
+        try:
+            self.query_one("#spectrum", SpectrumGraph).set_rx_waiting(waiting)
+        except Exception:
+            pass
+
+    def _device_soapy_open(self) -> bool:
+        return bool(self._device and getattr(self._device, "_sdr", None) is not None)
+
+    def _after_sdrplay_api_restart(self) -> None:
+        """Cierra handle obsoleto tras reinicio de SDRplay API; guía reapertura manual."""
+        if self._rx_active:
+            self._rx_active = False
+            self._rx_worker_token += 1
+            if not self._rx_stop_event.wait(timeout=2.0):
+                self._rx_stop_event.set()
+        self._clear_spectrum_rx_waiting()
+        if self._device and not self._device.is_simulated:
+            try:
+                self._device.close()
+            except Exception as exc:
+                logger.warning("Error cerrando dispositivo tras reinicio API: %s", exc)
+        self._sdrplay_device_needs_reopen = True
+        self._sdrplay_api_restarted_at = time.time()
+        self._log(
+            "[INFO] API SDRplay reiniciada. Pulsa INICIAR RX de nuevo; "
+            "si falla, reinicia la app o desconecta/reconecta el RSP."
+        )
+
+    def _reopen_sdrplay_device_if_needed(self) -> bool:
+        """Reabre el dispositivo en el siguiente INICIAR RX tras reinicio API."""
+        if not self._sdrplay_device_needs_reopen or not self._device or self._device.is_simulated:
+            return True
+        kwargs = dict(self._device._device_kwargs) if self._device._device_kwargs else None
+        try:
+            self._device.close()
+            if kwargs:
+                opened = self._device.open(kwargs)
+            else:
+                opened = self._device.open()
+            if not opened:
+                self._log("[ERR] No se pudo reabrir SDRplay tras reinicio de API")
+                return False
+            self._device.set_frequency(self.tuned_frequency)
+            self._device.set_gain(self.gain_value)
+            self._sdrplay_device_needs_reopen = False
+            self._log("[OK]   Dispositivo SDRplay reabierto")
+            return True
+        except Exception as exc:
+            self._log(f"[ERR] No se pudo reabrir SDRplay: {exc}")
+            return False
+
     def _flush_display_frames(self) -> None:
         """Coalescing: aplica el frame más reciente al espectro y waterfall."""
         if not self._rx_active:
             return
-
-        try:
-            spectrum = self.query_one("#spectrum", SpectrumGraph)
-            spectrum.set_rx_waiting(True)
-        except Exception:
-            pass
 
         try:
             frame, snr, seq = self._band_mailbox.consume_if_new(self._display_sequence)
@@ -1624,7 +1680,20 @@ class XyzSDRApp(App):
             logger.exception("Error leyendo frame espectral: %s", exc)
             return
 
+        if frame is None and self._display_sequence == 0:
+            latest, latest_snr, latest_seq = self._band_mailbox.peek_latest()
+            if latest is not None and latest_seq > 0:
+                frame, snr, seq = latest, latest_snr, latest_seq
+
         if frame is None:
+            if (
+                not self._display_no_frame_warned
+                and self._rx_started_at > 0
+                and time.time() - self._rx_started_at > 5.0
+            ):
+                self._display_no_frame_warned = True
+                if self.debug_mode:
+                    self._log("[WARN] Espectro sin datos; revisar stream")
             return
 
         try:
@@ -1648,60 +1717,62 @@ class XyzSDRApp(App):
         except Exception:
             pass
 
-        cols = slice_band_to_viewport(
-            frame.band_cols,
-            frame.center_hz,
-            frame.sample_rate,
-            self.viewport_center,
-            self.visible_span,
-            plot_width,
-        )
-
-        floors, ceilings = self._compute_column_levels(cols, display_cfg)
-
-        if self._scanner.scanning:
-            self._handle_scanner_step(frame, snr, floors, ceilings)
-
-        if spectrum is not None:
-            try:
-                spectrum.set_viewport(self.viewport_center, self.visible_span)
-                spectrum.passband_center_hz = self.passband_center_hz
-                spectrum.passband_width_hz = self.passband_width_hz
-                spectrum.passband_preview_width_hz = self._passband_preview_width
-                spectrum.set_column_levels(floors, ceilings)
-                spectrum.set_band_frame(frame, force=True)
-                spectrum.set_viewport_cols(cols)
-                spectrum.set_rx_waiting(False)
-            except Exception as exc:
-                logger.exception("Error actualizando espectro: %s", exc)
-
         try:
-            waterfall = self.query_one("#waterfall", WaterfallTimeline)
-            waterfall.set_viewport(self.viewport_center, self.visible_span)
-            waterfall.passband_center_hz = self.passband_center_hz
-            waterfall.passband_width_hz = self.passband_width_hz
-            waterfall.passband_preview_width_hz = self._passband_preview_width
-            waterfall.set_column_levels(floors, ceilings)
-            waterfall.add_viewport_row(cols, frame)
-        except Exception as exc:
-            logger.exception("Error actualizando waterfall: %s", exc)
+            cols = slice_band_to_viewport(
+                frame.band_cols,
+                frame.center_hz,
+                frame.sample_rate,
+                self.viewport_center,
+                self.visible_span,
+                plot_width,
+            )
 
-        now = time.time()
-        if now - self._status_last_update >= 0.2:
-            self._update_status()
-            self._status_last_update = now
+            floors, ceilings = self._compute_column_levels(cols, display_cfg)
 
-        if self.debug_mode:
-            ui_ms = (time.perf_counter() - ui_t0) * 1000.0
-            latency_ms = max(0.0, (time.time() - frame.timestamp) * 1000.0)
-            with self._debug_lock:
-                self._debug_display_frames += 1
-                self._debug_ui_proc_ms.append(ui_ms)
-                self._debug_frame_latency_ms.append(latency_ms)
-                if len(self._debug_ui_proc_ms) > 120:
-                    self._debug_ui_proc_ms.pop(0)
-                if len(self._debug_frame_latency_ms) > 120:
-                    self._debug_frame_latency_ms.pop(0)
+            if self._scanner.scanning:
+                self._handle_scanner_step(frame, snr, floors, ceilings)
+
+            if spectrum is not None:
+                try:
+                    spectrum.set_viewport(self.viewport_center, self.visible_span)
+                    spectrum.passband_center_hz = self.passband_center_hz
+                    spectrum.passband_width_hz = self.passband_width_hz
+                    spectrum.passband_preview_width_hz = self._passband_preview_width
+                    spectrum.set_column_levels(floors, ceilings)
+                    spectrum.set_band_frame(frame, force=True)
+                    spectrum.set_viewport_cols(cols)
+                except Exception as exc:
+                    logger.exception("Error actualizando espectro: %s", exc)
+
+            try:
+                waterfall = self.query_one("#waterfall", WaterfallTimeline)
+                waterfall.set_viewport(self.viewport_center, self.visible_span)
+                waterfall.passband_center_hz = self.passband_center_hz
+                waterfall.passband_width_hz = self.passband_width_hz
+                waterfall.passband_preview_width_hz = self._passband_preview_width
+                waterfall.set_column_levels(floors, ceilings)
+                waterfall.add_viewport_row(cols, frame)
+            except Exception as exc:
+                logger.exception("Error actualizando waterfall: %s", exc)
+
+            now = time.time()
+            if now - self._status_last_update >= 0.2:
+                self._update_status()
+                self._status_last_update = now
+
+            if self.debug_mode:
+                ui_ms = (time.perf_counter() - ui_t0) * 1000.0
+                latency_ms = max(0.0, (time.time() - frame.timestamp) * 1000.0)
+                with self._debug_lock:
+                    self._debug_display_frames += 1
+                    self._debug_ui_proc_ms.append(ui_ms)
+                    self._debug_frame_latency_ms.append(latency_ms)
+                    if len(self._debug_ui_proc_ms) > 120:
+                        self._debug_ui_proc_ms.pop(0)
+                    if len(self._debug_frame_latency_ms) > 120:
+                        self._debug_frame_latency_ms.pop(0)
+        finally:
+            self._clear_spectrum_rx_waiting()
 
     def _report_debug_metrics(self) -> None:
         """Escribe métricas de rendimiento en el panel de log (--debug)."""
@@ -1855,6 +1926,9 @@ class XyzSDRApp(App):
         """Reinicia SDRplay API si el servicio no responde antes de activateStream."""
         if not self._device or self._device.is_simulated or self._device.driver != "sdrplay":
             return True
+        if self._device_soapy_open():
+            return True
+
         from core.soapy_runtime import is_sdrplay_api_fault
         from core.sdrplay_service import restart_sdrplay_service
 
@@ -1869,19 +1943,35 @@ class XyzSDRApp(App):
         _emit("[WARN] SDRplay API no responde — reiniciando servicio...")
         ok, msg = restart_sdrplay_service(stop_wait_s=8.0, start_wait_s=6.0)
         _emit(f"{'[OK]' if ok else '[ERR]'} SDRplay API: {msg}")
+        if ok:
+            self._sdrplay_api_restarted_at = time.time()
         return ok
 
     def _on_sdrplay_stream_start_failed(self, detail: str) -> None:
         from core.soapy_runtime import message_indicates_sdrplay_api_fault
         from core.sdrplay_service import restart_sdrplay_service
 
+        compact = detail.strip().replace("\n", " ").lower()
         short = detail.strip().replace("\n", " ")[:160]
-        self._log(f"[ERR] Stream RX: {short}")
-        if message_indicates_sdrplay_api_fault(detail):
-            self._log("[INFO] Reiniciando SDRplay API tras fallo de stream...")
-            ok, msg = restart_sdrplay_service(stop_wait_s=8.0, start_wait_s=6.0)
-            level = "[OK]" if ok else "[WARN]"
-            self._log(f"{level} {msg}")
+        now = time.time()
+        is_timeout = "timed out" in compact or "timeout" in compact
+        is_api_fault = message_indicates_sdrplay_api_fault(detail)
+
+        if is_timeout:
+            self._log(
+                "[ERR] Stream RX: sesión SDRplay inválida o API sin respuesta "
+                "(timeout). Reinicia la app o reconecta el RSP USB."
+            )
+            self._after_sdrplay_api_restart()
+        else:
+            self._log(f"[ERR] Stream RX: {short}")
+            if is_api_fault and now - self._sdrplay_api_restarted_at > 60.0:
+                self._log("[INFO] Reiniciando SDRplay API tras fallo de stream...")
+                ok, msg = restart_sdrplay_service(stop_wait_s=8.0, start_wait_s=6.0)
+                level = "[OK]" if ok else "[WARN]"
+                self._log(f"{level} {msg}")
+                if ok:
+                    self._after_sdrplay_api_restart()
         self._on_rx_worker_crashed()
 
     def _restore_console(self) -> None:
@@ -2186,6 +2276,9 @@ class XyzSDRApp(App):
             self._log("[ERROR] Dispositivo SDR no inicializado — reinicia la app")
             return
 
+        if not self._reopen_sdrplay_device_if_needed():
+            return
+
         if not self._rx_stop_event.is_set():
             if not self._rx_stop_event.wait(timeout=3.0):
                 self._log("[WARN] Worker RX previo no finalizó; continuando")
@@ -2223,6 +2316,9 @@ class XyzSDRApp(App):
         self._invalidate_band_cache()
         self._fm_demod_state.reset()
         self._fm_agc.reset()
+        self._rx_started_at = time.time()
+        self._display_no_frame_warned = False
+        self._set_spectrum_rx_waiting(True)
         self._rx_worker_token += 1
         token = self._rx_worker_token
         self._rx_worker(token)
@@ -2236,24 +2332,16 @@ class XyzSDRApp(App):
 
         if self._device and not self._device.is_simulated:
             try:
-                self._device.stop_stream(timeout=3.0)
-            except Exception:
-                try:
-                    from core.sdr_io import shutdown_sdr_io
+                self._device.stop_stream(timeout=5.0)
+            except Exception as exc:
+                logger.warning("Error deteniendo stream RX: %s", exc)
 
-                    shutdown_sdr_io()
-                except Exception:
-                    pass
-
-        if not self._rx_stop_event.wait(timeout=3.0):
+        if not self._rx_stop_event.wait(timeout=5.0):
             self._log("[WARN] Timeout esperando fin del worker RX")
-            try:
-                from core.sdr_io import shutdown_sdr_io
-
-                shutdown_sdr_io()
-            except Exception:
-                pass
             self._rx_stop_event.set()
+
+        self._clear_spectrum_rx_waiting()
+        self._rx_started_at = 0.0
 
         if self._audio_output:
             try:
@@ -2396,11 +2484,20 @@ class XyzSDRApp(App):
     def _restart_sdrplay_service_async(self) -> None:
         from core.sdrplay_enumerate import recover_sdrplay_enumeration
 
+        had_open_device = self._device_soapy_open()
         found, msg, _status = recover_sdrplay_enumeration(restart_if_missing=True)
-        self.call_from_thread(self._on_sdrplay_service_recovered, found, msg)
+        self.call_from_thread(self._on_sdrplay_service_recovered, found, msg, had_open_device)
 
-    def _on_sdrplay_service_recovered(self, found: bool, message: str) -> None:
-        self._refresh_enumerated_devices_if_safe()
+    def _on_sdrplay_service_recovered(
+        self,
+        found: bool,
+        message: str,
+        had_open_device: bool = False,
+    ) -> None:
+        if had_open_device:
+            self._after_sdrplay_api_restart()
+        else:
+            self._refresh_enumerated_devices_if_safe()
         level = "[OK]" if found else "[WARN]"
         self._log(f"{level} SDRplay API: {message}")
         screen = self.screen

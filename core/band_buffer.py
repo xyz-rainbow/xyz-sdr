@@ -208,6 +208,13 @@ class BandFrameMailbox:
                 return None, self._snr, last_sequence
             return self._frame, self._snr, self._sequence
 
+    def peek_latest(self) -> tuple[BandFrame | None, float, int]:
+        """Último frame publicado (sin consumir), para resync de secuencia."""
+        with self._lock:
+            if self._frame is None:
+                return None, self._snr, self._sequence
+            return self._frame, self._snr, self._sequence
+
     def clear(self) -> None:
         with self._lock:
             self._frame = None
