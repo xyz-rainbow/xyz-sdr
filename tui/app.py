@@ -1392,6 +1392,7 @@ class XyzSDRApp(App):
         hw_open_error: str | None,
     ) -> None:
         self._device = device
+        self._sync_simulated_device_state()
         self._device.set_frequency(self.tuned_frequency)
         self._device.set_gain(self.gain_value)
         self.sample_rate = self._device.sample_rate
@@ -1430,7 +1431,8 @@ class XyzSDRApp(App):
             log.write_line(f"[ERR]  Hardware no disponible: {hw_open_error}")
             log.write_line("[WARN] Modo SIMULACION activado")
             if (
-                self._sdrplay_preflight_done
+                not self._device.is_simulated
+                and self._sdrplay_preflight_done
                 and not self._sdrplay_preflight_ok
                 and self.driver == "sdrplay"
             ):
@@ -2543,6 +2545,24 @@ class XyzSDRApp(App):
         """Callback del StorageController tras import_bookmarks_from."""
         self._refresh_preset_select()
 
+    def _sync_simulated_device_state(self) -> None:
+        """Alinea driver/preflight cuando el backend es SimulatedSDR."""
+        if self._device and self._device.is_simulated:
+            self.driver = "simulated"
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = True
+            self._sdrplay_rx_blocked = False
+
+    def _apply_desired_rx_state(self, desired_rx: bool | None) -> None:
+        """Honra el interruptor RX del menú Ajustes sin reabrir el driver."""
+        if desired_rx is None or self._driver_changing or not self._hardware_ready:
+            return
+        if desired_rx:
+            if not self._rx_active:
+                self._start_rx()
+        elif self._rx_active:
+            self._stop_rx()
+
     def change_device(self, device_kwargs: dict, *, desired_rx: bool | None = None) -> bool:
         """Abre un dispositivo Soapy concreto por kwargs (label/serial únicos)."""
         kwargs = dict(device_kwargs)
@@ -2550,6 +2570,7 @@ class XyzSDRApp(App):
         if driver in ("simulated", "sim"):
             return self.change_device_driver("simulated", desired_rx=desired_rx)
         if self._device and self._device.same_device_as(kwargs):
+            self._apply_desired_rx_state(desired_rx)
             return True
         self.driver = driver or self.driver
         return self._schedule_reopen_device(
@@ -2567,9 +2588,19 @@ class XyzSDRApp(App):
         if new_driver == "sim":
             new_driver = "simulated"
 
-        if new_driver == self.driver and self._device:
-            if new_driver in ("simulated", "sim") or self._device._device_kwargs:
+        if new_driver == "simulated":
+            if self._device and self._device.is_simulated:
+                self.driver = "simulated"
+                self._sync_simulated_device_state()
+                self._apply_desired_rx_state(desired_rx)
                 return True
+        elif (
+            new_driver == self.driver
+            and self._device
+            and self._device._device_kwargs
+        ):
+            self._apply_desired_rx_state(desired_rx)
+            return True
 
         self.driver = new_driver
         return self._schedule_reopen_device(desired_rx=desired_rx)
@@ -2708,11 +2739,17 @@ class XyzSDRApp(App):
         self._driver_changing = False
         self._device = device
         self.driver = resolved_driver if device is not None else self.driver
-        
-        # Resetear siempre preflight al cambiar de driver para que el nuevo hardware
-        # ejecute el preflight obligatoriamente antes de abrir RX.
-        self._sdrplay_preflight_done = False
-        self._sdrplay_preflight_ok = False
+
+        if device is not None:
+            self._sync_simulated_device_state()
+
+        # Resetear preflight al cambiar de driver (simulación no requiere preflight SDRplay).
+        if device is not None and device.is_simulated:
+            self._sdrplay_preflight_done = True
+            self._sdrplay_preflight_ok = True
+        else:
+            self._sdrplay_preflight_done = False
+            self._sdrplay_preflight_ok = False
 
         if device is None:
             self._update_status()
