@@ -440,7 +440,8 @@ def test_run_full_setup_delegates_to_repair_all() -> None:
 def test_run_repo_update_action_no_restart() -> None:
     ctx = _ctx()
     result = type("R", (), {"updated": False, "needs_installer_restart": False})()
-    with patch("setup.repo_update.run_repo_update", return_value=result):
+    # install_actions imports run_repo_update at module level, so patch there.
+    with patch("setup.install_actions.run_repo_update", return_value=result):
         run_repo_update_action(ctx)
     # No restart_installer call expected; just verify no exception.
 
@@ -448,7 +449,7 @@ def test_run_repo_update_action_no_restart() -> None:
 def test_run_repo_update_action_triggers_restart_when_needed() -> None:
     ctx = _ctx()
     result = type("R", (), {"updated": True, "needs_installer_restart": True})()
-    with patch("setup.repo_update.run_repo_update", return_value=result):
+    with patch("setup.install_actions.run_repo_update", return_value=result):
         with patch("setup.repo_update.restart_installer") as mock_restart:
             run_repo_update_action(ctx)
             # Assert inside the patch context so the mock isn't reset yet.
