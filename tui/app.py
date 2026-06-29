@@ -1841,7 +1841,7 @@ class XyzSDRApp(App):
 
     def _flush_display_frames(self) -> None:
         """Coalescing: aplica el frame más reciente al espectro y waterfall."""
-        if not self._rx_active:
+        if not self._rx_active or self._bandwidth_changing:
             return
 
         try:
@@ -3309,6 +3309,10 @@ class XyzSDRApp(App):
 
             self._device.set_sample_rate(new_rate)
             self.sample_rate = float(new_rate)
+            self._invalidate_band_cache()
+            plot_width = max(int(self._display_width), 1)
+            self._level_tracker.reconfigure(plot_width, reset=True)
+            self._tracker_viewport_span = None
             self._rebuild_zoom_levels()
             previous_span, new_span = self._adapt_viewport_to_bandwidth()
 

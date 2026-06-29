@@ -378,6 +378,35 @@ class WaterfallTimeline(Widget):
             self._update_normalization()
         self._mark_visual_dirty()
 
+    def _reset_slice_state(self) -> None:
+        self._slice_cache = None
+        self._slice_cache_rows = 0
+        self._slice_cache_width = 0
+        self._slice_ring = None
+        self._slice_ring_height = 0
+
+    def _ensure_slice_ring(self, height: int, width: int) -> np.ndarray:
+        if (
+            self._slice_ring is None
+            or self._slice_ring_height != height
+            or self._slice_ring.shape[1] != width
+        ):
+            self._slice_ring = np.full((height, width), np.nan, dtype=np.float64)
+            self._slice_ring_height = height
+        return self._slice_ring
+
+    def _prior_rows_for_prepend(self, height: int, width: int) -> np.ndarray | None:
+        if self._slice_cache is None or self._slice_cache.shape[1] != width:
+            return None
+        needed = height - 1
+        cache_rows = int(self._slice_cache.shape[0])
+        if cache_rows < needed:
+            tail = np.full((needed, width), np.nan, dtype=np.float64)
+            if cache_rows > 0:
+                tail[needed - cache_rows :] = self._slice_cache[-cache_rows:]
+            return tail
+        return self._slice_cache[:needed]
+
     def _prepend_viewport_row(self, new_row: np.ndarray, height: int, width: int) -> None:
         if width < 5 or height < 1:
             return
@@ -386,12 +415,14 @@ class WaterfallTimeline(Widget):
             and self._slice_cache_width == width
             and self._slice_cache.shape[1] == width
         ):
-            if self._slice_ring is None or self._slice_ring_height != height:
-                self._slice_ring = np.full((height, width), np.nan, dtype=np.float64)
-                self._slice_ring_height = height
-            self._slice_ring[1:] = self._slice_cache[: height - 1]
-            self._slice_ring[0] = new_row[0]
-            self._slice_cache = self._slice_ring
+            prior_rows = self._prior_rows_for_prepend(height, width)
+            if prior_rows is None or prior_rows.shape != (height - 1, width):
+                self._rebuild_slice_cache()
+                return
+            ring = self._ensure_slice_ring(height, width)
+            ring[1:] = prior_rows
+            ring[0] = new_row[0]
+            self._slice_cache = ring
         else:
             self._rebuild_slice_cache()
             return
@@ -449,13 +480,14 @@ class WaterfallTimeline(Widget):
             and self._slice_cache_width == width
             and self._slice_cache.shape[1] == width
         ):
-            n = min(self._slice_cache.shape[0], height - 1)
-            if self._slice_ring is None or self._slice_ring_height != height:
-                self._slice_ring = np.full((height, width), np.nan, dtype=np.float64)
-                self._slice_ring_height = height
-            self._slice_ring[1 : 1 + n] = self._slice_cache[:n]
-            self._slice_ring[0] = new_row[0]
-            self._slice_cache = self._slice_ring[: 1 + n]
+            prior_rows = self._prior_rows_for_prepend(height, width)
+            if prior_rows is None or prior_rows.shape != (height - 1, width):
+                self._rebuild_slice_cache()
+                return
+            ring = self._ensure_slice_ring(height, width)
+            ring[1:] = prior_rows
+            ring[0] = new_row[0]
+            self._slice_cache = ring
         else:
             self._rebuild_slice_cache()
             return
@@ -468,7 +500,7 @@ class WaterfallTimeline(Widget):
         self._history.clear()
         self._history_offset = 0
         self._last_row_time = 0.0
-        self._slice_cache = None
+        self._reset_slice_state()
         self._invalidate_rich_cache()
         self.refresh()
 

@@ -300,11 +300,46 @@ Interpretación de `report.json`:
 
 ---
 
+## Soak bandwidth (crash temporal espectro/cascada)
+
+Prueba de estrés **temporal** subiendo/bajando presets IQ (`250k … 8M`) en FM ~98 MHz, con sidebar y scroll waterfall.
+
+```powershell
+# Sim ~90 s (pytest)
+.\scripts\soak_bandwidth.ps1
+
+# Sim 10 min (runner directo)
+.\scripts\soak_bandwidth.ps1 -RunnerOnly -DurationMin 10
+
+# Hardware (RSP conectado)
+.\scripts\soak_bandwidth.ps1 -Hardware -RunnerOnly -DurationMin 15
+
+# Pytest explícito
+pytest resources/test/test_bandwidth_display_soak.py::test_bw_cycle_sim_no_exceptions -v
+pytest resources/test/test_change_bandwidth_display.py -q
+pytest resources/test/test_waterfall_stress.py -q -k "prepend or clear_history or bandwidth"
+```
+
+Salida: `var/harness/bw_soak_{sim|hw}_<timestamp>.json`
+
+| Campo | Significado |
+|-------|-------------|
+| `ok` | Sin fallos en transiciones BW ni errores display |
+| `display_errors` | Excepciones en loop espectro/cascada (log `tui.app`) |
+| `bandwidth_changes` | Transiciones BW ejecutadas |
+| `transitions[]` | `{from_hz, to_hz, ok, duration_ms, error?}` |
+| `frames_applied` | Frames pintados al final del soak |
+
+---
+
 ## Comandos rápidos
 
 ```powershell
-# Todos los tests (sin slow)
-.\scripts\test.ps1
+# E2E FM 98 MHz (pilot Textual)
+.\scripts\test_fm98.ps1
+
+# Soak bandwidth / crash temporal
+.\scripts\soak_bandwidth.ps1
 
 # Solo smoke/imports (rápido)
 pytest -q --co  # solo collection, sin ejecutar

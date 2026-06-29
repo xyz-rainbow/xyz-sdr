@@ -39,6 +39,15 @@ Salida: `var/harness/bench_*.json` — series `ui_fps`, `pub_rate`, `rx_iter_s`,
 .\.venv\Scripts\python.exe main.py --headless-display --auto-rx --sim --debug --display-duration 15
 ```
 
+### 4. Soak bandwidth (crash al subir BW)
+
+```powershell
+.\scripts\soak_bandwidth.ps1
+.\scripts\soak_bandwidth.ps1 -RunnerOnly -DurationMin 10
+```
+
+JSON: `var/harness/bw_soak_*.json` — campo `display_errors` debe ser 0.
+
 ## Baseline medido (referencia)
 
 | Escenario | UI FPS | RX iter/s | UI draw | Latencia frame |
@@ -55,24 +64,27 @@ Coalescing: ~80% frames publicados no se pintan (esperado y sano).
 3. **Ratón** — hover timeline → refresh; mitigar `XYZ_SDR_NO_MOUSE=1`
 4. **Múltiples refresh reactive** — mitigado en timeline, pendiente en spectrum/waterfall passband assigns
 
-## Bug P0 — Waterfall `_prepend_viewport_row`
+## Bug P0 — Waterfall slice ring (BW / resize)
 
-**Archivo:** `tui/widgets/waterfall_timeline.py` ~381–393
+**Archivos:** `tui/widgets/waterfall_timeline.py`, `tui/app.py` (`change_bandwidth`, `_flush_display_frames`)
 
-**Error:**
+**Errores típicos:**
 
 ```
-ValueError: could not broadcast input array from shape (2,86) into shape (10,86)
+ValueError: could not broadcast input array from shape (14,118) into shape (14,86)
+Error actualizando espectro/cascada: ...
 ```
 
-**Causa:** `_slice_cache` con pocas filas; widget `height=10`; asignación `self._slice_ring[1:] = self._slice_cache[: height - 1]` sin validar shapes.
+**Causas:** historial/`_slice_ring` del BW anterior; `clear_history` sin resetear ring; prepend con width/height distintos tras Ctrl+B o cambio IQ.
 
-**Efecto:** excepción en cada `_flush_display_frames` → cascada rota → presión stream → overflow.
+**Fix aplicado:**
 
-**Fix esperado (para agente implementador):**
+- `change_bandwidth` → `_invalidate_band_cache()` + reset level tracker antes de `_sync_viewport`
+- `clear_history` → `_reset_slice_state()` (ring + metadatos)
+- `_prepend_viewport_row` / `_prepend_slice_row` → padding seguro + recrear ring si cambia width
+- `_flush_display_frames` → skip si `_bandwidth_changing`
 
-- Si `self._slice_cache.shape[0] < height - 1`: `_rebuild_slice_cache()` o pad con NaN
-- En `on_resize`: invalidar `_slice_ring` y `_slice_cache`
+**Verificación:** `.\scripts\soak_bandwidth.ps1` y `pytest resources/test/test_waterfall_stress.py -q`
 
 ## Tuning config (rápido)
 

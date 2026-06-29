@@ -102,13 +102,17 @@ Push solo si lo pide.
 
 ---
 
-## Workflow G — Fix waterfall crash (P0 pendiente)
+## Workflow G — Soak bandwidth / crash display
 
-1. Reproducir: `bench_rx_fps.py` sin `--sim`
-2. Confirmar stack en `_prepend_viewport_row`
-3. Fix: validar shapes antes de asignar ring; rebuild on resize
-4. Test nuevo: resize height change con slice_cache pequeño
-5. Re-bench HW 25s — sin ValueError loop
+```
+.\scripts\soak_bandwidth.ps1
+.\scripts\soak_bandwidth.ps1 -RunnerOnly -DurationMin 10
+.\scripts\soak_bandwidth.ps1 -Hardware -RunnerOnly -DurationMin 15
+```
+
+Revisar `bw_soak_*.json` → `display_errors`, `transitions[]`, `frames_applied`.
+
+Si falla al subir BW: verificar `change_bandwidth` invalida display, `clear_history` resetea `_slice_ring`, y no hay loop `ValueError` en log.
 
 ---
 
