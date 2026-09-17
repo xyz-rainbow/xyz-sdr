@@ -1,8 +1,11 @@
 ![xyz-sdr Banner](resources/svg/header.svg)
 
 [![CI](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/test.yml/badge.svg)](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/test.yml)
-[![Lint](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/lint.yml/badge.svg)](https://github.com/<owner>/xyz-sdr/actions/workflows/lint.yml)
+[![Lint](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/lint.yml/badge.svg)](https://github.com/xyz-rainbow/xyz-sdr/actions/workflows/lint.yml)
 [![codecov](https://codecov.io/gh/xyz-rainbow/xyz-sdr/graph/badge.svg)](https://codecov.io/gh/xyz-rainbow/xyz-sdr/xyz-sdr)
+![python](https://img.shields.io/badge/python-3.9%2B-00f0ff?style=flat-square&logo=python&logoColor=white)
+![sdr](https://img.shields.io/badge/SDR-SoapySDR-c8ff00?style=flat-square)
+![tui](https://img.shields.io/badge/TUI-Windows-ff2bd6?style=flat-square)
 
 
 # 🛰️ xyz-sdr — SDR Terminal Controller
