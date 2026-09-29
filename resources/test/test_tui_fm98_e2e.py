@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 import pytest
 
 from resources.test.fm98_e2e_runner import run_fm98_e2e
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_async(coro):
@@ -20,9 +23,15 @@ def _run_async(coro):
 
 
 def test_fm98_e2e_sim(tmp_path: Path):
+    config_path = tmp_path / "defaults.toml"
+    shutil.copy(_REPO_ROOT / "config" / "defaults.toml", config_path)
     export = tmp_path / "fm98_sim.json"
     report = _run_async(
-        run_fm98_e2e(driver="simulated", export_path=export)
+        run_fm98_e2e(
+            driver="simulated",
+            config_path=str(config_path),
+            export_path=export,
+        )
     )
     assert export.is_file()
     assert report.ok, report.to_dict()
