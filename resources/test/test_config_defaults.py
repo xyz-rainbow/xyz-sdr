@@ -20,8 +20,8 @@ def _load_defaults() -> dict:
 
 def test_defaults_factory_sample_rate_is_conservative():
     cfg = _load_defaults()
-    # 250 kHz = ventana visible ~125 kHz (conservadora para RSP1 / PothosSDR 2021).
-    assert cfg["device"]["sample_rate"] == 250_000
+    # 500 kHz = ventana visible ~250 kHz (conservadora para RSP1 / PothosSDR 2021).
+    assert cfg["device"]["sample_rate"] == 500_000
 
 
 def test_defaults_factory_no_active_band_profile():

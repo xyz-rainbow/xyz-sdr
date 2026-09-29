@@ -156,7 +156,6 @@ class StatusBar(Static):
         text-style: bold;
         padding: 0 1;
         overflow: hidden;
-        text-wrap: nowrap;
     }
     """
 
@@ -823,7 +822,6 @@ class XyzSDRApp(App):
         background: #0f172a;
         color: #e2e8f0;
         overflow: hidden;
-        text-wrap: nowrap;
     }
 
     .sep { color: #374151; }

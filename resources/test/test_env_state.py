@@ -325,26 +325,27 @@ def test_read_path_from_registry_joins_hives(monkeypatch):
 
 def test_read_path_from_registry_handles_missing_keys(monkeypatch):
     """Si OpenKey lanza OSError, sigue con la siguiente hive."""
-    import winreg
-
-    def fake_open(root, subkey):
-        raise OSError("missing")
-
-    monkeypatch.setattr(winreg, "OpenKey", fake_open)
+    fake_winreg = MagicMock()
+    fake_winreg.HKEY_CURRENT_USER = 1
+    fake_winreg.HKEY_LOCAL_MACHINE = 2
+    fake_winreg.OpenKey = MagicMock(side_effect=OSError("missing"))
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
     monkeypatch.setattr("os.name", "nt")
     assert read_path_from_registry() == ""
 
 
 def test_read_path_from_registry_handles_missing_path_value(monkeypatch):
     """Si la hive no tiene valor Path, continúa."""
-    import winreg
-
     empty_key = MagicMock()
     empty_key.__enter__ = lambda s: s
     empty_key.__exit__ = lambda s, *a: False
 
-    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **kw: empty_key)
-    monkeypatch.setattr(winreg, "QueryValueEx", MagicMock(side_effect=FileNotFoundError("Path")))
+    fake_winreg = MagicMock()
+    fake_winreg.HKEY_CURRENT_USER = 1
+    fake_winreg.HKEY_LOCAL_MACHINE = 2
+    fake_winreg.OpenKey = MagicMock(return_value=empty_key)
+    fake_winreg.QueryValueEx = MagicMock(side_effect=FileNotFoundError("Path"))
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
     monkeypatch.setattr("os.name", "nt")
     assert read_path_from_registry() == ""
 

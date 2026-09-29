@@ -60,7 +60,7 @@ def test_sync_simulated_device_state_after_hardware_ready():
         app, "_refresh_bandwidth_select"
     ), patch.object(
         app, "query_one", return_value=MagicMock()
-    ):
+    ), patch.object(app, "set_timer"), patch.object(app, "call_later"):
         app._on_hardware_ready(device, "preflight failed")
 
     assert app.driver == "simulated"

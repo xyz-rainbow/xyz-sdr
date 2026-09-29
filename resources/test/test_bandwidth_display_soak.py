@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 import pytest
 
 from resources.test.bw_soak_runner import run_bw_soak
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_async(coro):
@@ -20,12 +23,15 @@ def _run_async(coro):
 
 
 def test_bw_cycle_sim_no_exceptions(tmp_path: Path):
+    config_path = tmp_path / "defaults.toml"
+    shutil.copy(_REPO_ROOT / "config" / "defaults.toml", config_path)
     report = _run_async(
         run_bw_soak(
             driver="simulated",
             duration_s=90.0,
             cycle_pause_s=1.0,
             include_sidebar=True,
+            config_path=str(config_path),
             export_path=tmp_path / "bw_soak_sim.json",
         )
     )
