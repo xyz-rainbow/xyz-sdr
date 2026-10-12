@@ -17,6 +17,7 @@ from typing import Optional
 from rich.text import Text
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, Container, VerticalGroup
 from textual.widgets import (
     Header, Static, Label, Button,
@@ -851,9 +852,9 @@ class XyzSDRApp(App):
         ("r",           "record",        "Grabar"),
         ("p",           "capture_display", "Captura"),
         ("escape",      "show_settings", "Ajustes"),
-        ("q",             "quit",          "Salir"),
-        ("ctrl+q",        "quit",          "Salir"),
-        ("ctrl+c",        "quit",          "Salir"),
+        Binding("q", "quit", "Salir", priority=True),
+        Binding("ctrl+q", "quit", "Salir", priority=True),
+        Binding("ctrl+c", "quit", "Salir", priority=True),
     ]
 
     TITLE = "xyz-sdr -- Terminal SDR Controller"

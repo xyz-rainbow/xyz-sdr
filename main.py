@@ -46,6 +46,37 @@ class StartupHardwareError(Exception):
         super().__init__("\n".join(lines))
 
 
+def resolve_driver_without_hardware(
+    *,
+    strict: bool,
+    import_ok: bool,
+    help_text: str | None,
+    startup_logs: list[str],
+    driver: str,
+) -> tuple[str, list[dict]]:
+    """Si no hay SDR, ``--strict`` aborta; si no, la TUI usa ``simulated``."""
+    lines: list[str] = []
+    if not import_ok:
+        lines.append("SoapySDR no disponible en Python (bindings/DLL/PATH).")
+    else:
+        lines.append("SoapySDR OK pero no se detectó ningún dispositivo SDR conectado.")
+    if help_text:
+        lines.append(help_text)
+    lines.append("")
+    lines.append("Configura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
+    lines.append("Ejecuta la app: .\\scripts\\run.ps1")
+    lines.append("Pruebas sin hardware (opcional): .\\scripts\\run.ps1 --sim")
+    if strict:
+        raise StartupHardwareError(lines)
+    for line in lines:
+        startup_logs.append(f"[WARN] {line}")
+    startup_logs.append(
+        "[INFO] Sin hardware SDR: la TUI arrancará en modo simulado "
+        "(usa --sim o --strict para forzar otro comportamiento)."
+    )
+    return "simulated", []
+
+
 def _will_use_startup_splash(args: argparse.Namespace) -> bool:
     """True si la TUI mostrará splash (no modos CLI ni --no-splash)."""
     return (
@@ -537,19 +568,17 @@ def main():
                 has_hardware = status.import_ok and bool(sdr_devices)
 
                 if not has_hardware:
-                    lines: list[str] = []
-                    if not status.import_ok:
-                        lines.append("SoapySDR no disponible en Python (bindings/DLL/PATH).")
-                    else:
-                        lines.append("SoapySDR OK pero no se detectó ningún dispositivo SDR conectado.")
                     help_text = format_hardware_help(status)
-                    if help_text:
-                        lines.append(help_text)
-                    lines.append("")
-                    lines.append("Configura el entorno: .\\setup\\install_drivers.ps1 → opción 3")
-                    lines.append("Ejecuta la app: .\\scripts\\run.ps1")
-                    lines.append("Pruebas sin hardware (opcional): .\\scripts\\run.ps1 --sim")
-                    raise StartupHardwareError(lines)
+                    driver, enumerated_devices = resolve_driver_without_hardware(
+                        strict=bool(args.strict),
+                        import_ok=status.import_ok,
+                        help_text=help_text,
+                        startup_logs=startup_logs,
+                        driver=driver,
+                    )
+                    log_breadcrumb(
+                        f"startup: no SDR hardware; using driver={driver!r}"
+                    )
 
                 if driver in ("auto", ""):
                     try:

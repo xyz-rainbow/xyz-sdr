@@ -47,13 +47,19 @@ def test_xyz_sdr_app_has_css():
 
 def test_xyz_sdr_app_has_quit_bindings():
     """Salida debe estar en Q, Ctrl+Q y Ctrl+C."""
+    from textual.binding import Binding
+
     from tui.app import XyzSDRApp
 
-    quit_keys = {
-        key
-        for key, action, _label in XyzSDRApp.BINDINGS
-        if action == "quit"
-    }
+    quit_keys: set[str] = set()
+    for entry in XyzSDRApp.BINDINGS:
+        if isinstance(entry, Binding):
+            if entry.action == "quit":
+                quit_keys.add(str(entry.key))
+        else:
+            key, action, _label = entry
+            if action == "quit":
+                quit_keys.add(key)
     assert "q" in quit_keys
     assert "ctrl+q" in quit_keys
     assert "ctrl+c" in quit_keys

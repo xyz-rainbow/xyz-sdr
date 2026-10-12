@@ -11,7 +11,8 @@ import threading
 from typing import Optional
 
 import numpy as np
-import sounddevice as sd
+
+from core.sounddevice_runtime import sd
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class AudioOutputQueue:
         self._volume = 1.0
         self._lock = threading.Lock()
         self._pending = np.zeros(0, dtype=np.float32)
-        self._stream: Optional[sd.OutputStream] = None
+        self._stream: Optional[object] = None
         self.underrun_count = 0
         self.dropped_chunks = 0
 

@@ -5,9 +5,11 @@ Biblioteca de efectos de sonido sintéticos para la terminal UI.
 
 from __future__ import annotations
 
-import numpy as np
-import sounddevice as sd
 import logging
+
+import numpy as np
+
+from core.sounddevice_runtime import sd
 
 logger = logging.getLogger(__name__)
 
