@@ -8,6 +8,22 @@ import numpy as np
 import pytest
 
 from core.band_buffer import BandFrameMailbox
+from core.sdr_io import shutdown_sdr_io
+from core.sounddevice_runtime import terminate_portaudio
+
+
+@pytest.fixture(autouse=True)
+def _release_native_backends_after_test():
+    """Evita hilos PortAudio/Soapy vivos durante GC (segfault macOS + Hypothesis)."""
+    yield
+    shutdown_sdr_io()
+    terminate_portaudio()
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if "test_hypothesis.py" in item.nodeid:
+        shutdown_sdr_io()
+        terminate_portaudio()
 
 
 @pytest.fixture
