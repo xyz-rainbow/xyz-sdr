@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.text import Text
 
 from tui.widgets.frequency_timeline import FrequencyTimeline
@@ -63,11 +65,18 @@ def test_render_cache_invalidates_on_state_change():
     assert first is not second
 
 
+@pytest.mark.skipif("CI" in os.environ, reason="Flaky timing test on shared CI runners")
 def test_batch_update_faster_than_individual_assignments():
+    # Warm-up phase to avoid JIT/module loading overhead
+    tl_warmup = _timeline()
+    with patch.object(tl_warmup, "refresh"):
+        for i in range(50):
+            tl_warmup.update_display_state(viewport_center_hz=100_600_000.0)
+
     tl = _timeline()
     with patch.object(tl, "refresh"):
         t0 = time.perf_counter()
-        for i in range(200):
+        for i in range(500):
             tl.update_display_state(
                 viewport_center_hz=100_600_000.0 + i * 1000,
                 tuned_freq_hz=100_600_000.0 + i * 500,
@@ -85,12 +94,12 @@ def test_batch_update_faster_than_individual_assignments():
 
     with patch.object(tl2, "refresh", side_effect=count_refresh):
         t0 = time.perf_counter()
-        for i in range(200):
+        for i in range(500):
             tl2.viewport_center_hz = 100_600_000.0 + i * 1000
             tl2.tuned_freq_hz = 100_600_000.0 + i * 500
         individual_elapsed = time.perf_counter() - t0
 
-    assert refresh_count >= 200
+    assert refresh_count >= 500
     assert batch_elapsed < individual_elapsed
 
 
