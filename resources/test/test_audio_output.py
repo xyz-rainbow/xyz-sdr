@@ -29,9 +29,12 @@ def test_resolve_output_device_by_index_string():
 
 
 def test_resolve_output_device_by_name_substring():
+    import sys
+    from unittest.mock import MagicMock
     fake_devices = [
         {"name": "Microsoft Sound Mapper", "max_output_channels": 2},
         {"name": "Realtek HD Audio", "max_output_channels": 2},
     ]
-    with patch("core.audio_output.sd.query_devices", return_value=fake_devices):
-        assert resolve_output_device("realtek") == 1
+    with patch.dict(sys.modules, {"sounddevice": MagicMock()}):
+        with patch("core.audio_output.sd.query_devices", return_value=fake_devices):
+            assert resolve_output_device("realtek") == 1

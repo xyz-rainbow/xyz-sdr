@@ -24,9 +24,11 @@ import pytest
 def mock_sounddevice_play():
     """Mockea sounddevice.play para tests sin audio real."""
     from unittest.mock import MagicMock
-    with patch("core.audio_effects.sd") as mock_sd:
-        mock_sd.play = MagicMock(return_value=None)
-        yield mock_sd
+    import sys
+    with patch.dict(sys.modules, {"sounddevice": MagicMock()}):
+        with patch("core.audio_effects.sd") as mock_sd:
+            mock_sd.play = MagicMock(return_value=None)
+            yield mock_sd
 
 
 def test_audio_effects_module_imports():
