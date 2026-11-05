@@ -89,7 +89,7 @@ def freq_to_col(
     visible_span_hz: float,
 ) -> int:
     if widget_width <= 0 or visible_span_hz <= 0:
-        return widget_width // 2
+        return max(0, widget_width // 2)
     left_hz = viewport_center_hz - visible_span_hz / 2
     col = int((freq_hz - left_hz) / visible_span_hz * widget_width)
     return max(-1, min(col, widget_width))

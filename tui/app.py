@@ -1994,10 +1994,10 @@ class XyzSDRApp(App):
             avg_dur = sum(chunk_ms) / len(chunk_ms) if chunk_ms else 0.0
             parts.append(f"iq {avg_chunk} smp {avg_dur:.0f}ms")
         if demod_ms:
-            avg_demod = sum(demod_ms) / len(demod_ms)
+            avg_demod = sum(demod_ms) / len(demod_ms) if demod_ms else 0.0
             parts.append(f"demod {avg_demod:.1f}ms")
         if audio_out:
-            avg_audio = int(sum(audio_out) / len(audio_out))
+            avg_audio = int(sum(audio_out) / len(audio_out)) if audio_out else 0
             parts.append(f"audio {avg_audio} smp/iter")
         if underruns or dropped:
             parts.append(f"audio u/d {underruns}/{dropped}")

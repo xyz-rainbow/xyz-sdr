@@ -45,11 +45,11 @@ class StreamStats:
     def delta(before: StreamStats, after: StreamStats) -> StreamStats:
         """Diferencia entre dos instantáneas (ventana de observabilidad)."""
         return StreamStats(
-            samples_requested=after.samples_requested - before.samples_requested,
-            samples_received=after.samples_received - before.samples_received,
-            overflows=after.overflows - before.overflows,
-            read_errors=after.read_errors - before.read_errors,
-            timeouts=after.timeouts - before.timeouts,
-            recoveries=after.recoveries - before.recoveries,
-            read_calls=after.read_calls - before.read_calls,
+            samples_requested=max(0, after.samples_requested - before.samples_requested),
+            samples_received=max(0, after.samples_received - before.samples_received),
+            overflows=max(0, after.overflows - before.overflows),
+            read_errors=max(0, after.read_errors - before.read_errors),
+            timeouts=max(0, after.timeouts - before.timeouts),
+            recoveries=max(0, after.recoveries - before.recoveries),
+            read_calls=max(0, after.read_calls - before.read_calls),
         )

@@ -102,3 +102,13 @@ def sdr_mock_host() -> MagicMock:
     host._squelch_gate.is_open.return_value = True
     host.consume_rx_warmup_samples.side_effect = lambda requested: requested
     return host
+
+@pytest.fixture
+def require_sdrplay():
+    try:
+        import SoapySDR
+        results = SoapySDR.Device.enumerate({"driver": "sdrplay"})
+        if not results:
+            pytest.skip("SDRplay hardware not found.")
+    except Exception as e:
+        pytest.skip(f"Could not initialize SoapySDR or find sdrplay: {e}")
