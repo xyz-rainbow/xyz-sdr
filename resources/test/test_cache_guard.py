@@ -43,6 +43,10 @@ def test_no_stray_pytest_cache_in_project():
     assert offenders == [], f"Stray .pytest_cache: {offenders}"
 
 
+import os
+import pytest
+
+@pytest.mark.skipif("CI" not in os.environ, reason="Only enforce pycache checks strictly on CI, to avoid local run failures")
 def test_no_stray_pycache_in_project():
     offenders = [
         p

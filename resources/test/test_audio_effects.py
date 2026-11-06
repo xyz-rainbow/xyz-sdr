@@ -24,9 +24,11 @@ import pytest
 def mock_sounddevice_play():
     """Mockea sounddevice.play para tests sin audio real."""
     from unittest.mock import MagicMock
-    with patch("core.audio_effects.sd") as mock_sd:
-        mock_sd.play = MagicMock(return_value=None)
-        yield mock_sd
+    import sys
+    with patch.dict(sys.modules, {"sounddevice": MagicMock()}):
+        with patch("core.audio_effects.sd") as mock_sd:
+            mock_sd.play = MagicMock(return_value=None)
+            yield mock_sd
 
 
 def test_audio_effects_module_imports():
@@ -118,15 +120,18 @@ def test_audio_effects_disabled_silent(mock_sounddevice_play):
 
 def test_audio_effects_tolerates_sd_exception():
     """Si sounddevice lanza excepción, play_* no debe propagarla."""
+    import sys
+    from unittest.mock import MagicMock
     from core.audio_effects import AudioEffects
 
-    with patch("core.audio_effects.sd") as mock_sd:
-        mock_sd.play.side_effect = Exception("PortAudioError")
+    with patch.dict(sys.modules, {"sounddevice": MagicMock()}):
+        with patch("core.audio_effects.sd") as mock_sd:
+            mock_sd.play.side_effect = Exception("PortAudioError")
 
-        effects = AudioEffects(sample_rate=44100)
-        # No debe lanzar
-        effects.play_click()
-        effects.play_error()
+            effects = AudioEffects(sample_rate=44100)
+            # No debe lanzar
+            effects.play_click()
+            effects.play_error()
 
 
 @pytest.mark.parametrize("sample_rate", [22050, 44100, 48000])
