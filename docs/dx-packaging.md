@@ -10,14 +10,14 @@ Guía de lanzamiento en Windows, atajos de `run.ps1`, acceso directo en escritor
 
 ```mermaid
 flowchart LR
-  A["install_drivers.ps1 [1]"]
+  A["install-drivers.ps1 [1]"]
   B["install_app.ps1"]
   C["run.ps1 / xyz-sdr.cmd"]
   D["TUI xyz-sdr"]
   A --> B --> C --> D
 ```
 
-1. **`setup/install_drivers.ps1`** — drivers Soapy, Python `.venv`, dependencias.
+1. **`install-drivers.ps1`** o **`install-drivers.bat`** (atajos en la raíz) — drivers Soapy, Python `.venv`, dependencias (llama a `setup/install_drivers.ps1`).
 2. **`setup/install_app.ps1`** — acceso directo en escritorio (opcional).
 3. **`scripts/run.ps1`** o **`scripts/xyz-sdr.cmd`** — arranque diario.
 
@@ -35,6 +35,8 @@ El script usa parámetros con nombre (PowerShell). Equivalente clásico `--flag`
 | `-Check` | Verificar entorno (`--check`) |
 | `-ListDev` | Listar dispositivos Soapy |
 | `-NoSplash` | Omitir splash de carga |
+| `-NoAutoRx` / `--no-auto-rx` | No iniciar RX al abrir (ignora config) |
+| `--auto-rx` | Forzar RX al abrir (ignora config) |
 | `-Band fm_broadcast` | Perfil FM 88–108 MHz |
 | `-Band airband` | Aviación VHF |
 | `-Band pmr446` | PMR446 UHF |
@@ -79,7 +81,7 @@ Cada acceso directo ejecuta:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<repo>\scripts\run.ps1"
 ```
 
-**Limitación conocida:** no genera instalador MSI/EXE; es un atajo al repositorio clonado. Para distribución empaquetada haría falta un instalador externo (Inno Setup, WiX) que copie el repo y ejecute `install_drivers.ps1`.
+**Limitación conocida:** no genera instalador MSI/EXE; es un atajo al repositorio clonado. Para distribución empaquetada haría falta un instalador externo (Inno Setup, WiX) que copie el repo y ejecute `setup\install_drivers.ps1`.
 
 ---
 
