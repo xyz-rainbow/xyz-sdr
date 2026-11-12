@@ -98,6 +98,8 @@ También desde la raíz: **`xyz-sdr.bat`** / **`xyz-sdr.ps1`**, o `scripts\xyz-s
 | `-Band <id>` | Perfil: `fm_broadcast`, `airband`, `pmr446`, `hf_lsb` |
 | `-Check` / `-ListDev` | Diagnóstico / listar SDR |
 | `-Freq`, `-Mode`, `-Gain`, `-Driver` | Overrides CLI |
+| `-NoAutoRx` / `--no-auto-rx` | No iniciar RX al abrir (ignora config) |
+| `--auto-rx` | Forzar RX al abrir (ignora config) |
 
 Ayuda: `.\scripts\run.ps1 -?` — detalle en [docs/dx-packaging.md](docs/dx-packaging.md).
 
