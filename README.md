@@ -6,6 +6,7 @@
 ![python](https://img.shields.io/badge/python-3.9%2B-00f0ff?style=flat-square&logo=python&logoColor=white)
 ![sdr](https://img.shields.io/badge/SDR-SoapySDR-c8ff00?style=flat-square)
 ![tui](https://img.shields.io/badge/TUI-Windows-ff2bd6?style=flat-square)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](LICENSE)
 
 
 # 🛰️ xyz-sdr — SDR Terminal Controller
