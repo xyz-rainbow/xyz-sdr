@@ -200,10 +200,10 @@ CI: pytest + `pytest-cov` en `.github/workflows/test.yml`.
 
 ---
 
-## Licencia / créditos
+## Licencia
 
-Proyecto xyz-sdr — controlador SDR en terminal. Hardware vía [SoapySDR](https://github.com/pothosware/SoapySDR). Ver documentación en `/docs` para créditos de drivers (SDRplay, PothosSDR, etc.).
+Propietaria — todos los derechos reservados. Copyright (c) 2026 Rainbow Technology (xyz-rainbow).
 
----
+El código se puede ver y evaluar en este repositorio. Queda prohibido copiarlo, redistribuirlo, sublicenciarlo, publicar forks o trabajos derivados, y cualquier uso comercial o en producción, salvo permiso escrito. Se admiten issues y pull requests. El fork en GitHub solo está permitido para preparar pull requests hacia este repositorio.
 
-![xyz-sdr Footer](resources/svg/footer.svg)
+Consulta [LICENSE](LICENSE) para el texto completo, incluida la cesión de contribuciones, y [CONTRIBUTING.es.md](CONTRIBUTING.es.md) si quieres enviar un cambio.
