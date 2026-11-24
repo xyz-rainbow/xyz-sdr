@@ -3,6 +3,10 @@ name = "xyz-sdr"
 version = "0.1.0"
 description = "Terminal SDR controller with spectrum and waterfall TUI"
 readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: Other/Proprietary License",
+]
 requires-python = ">=3.9"
 dependencies = []
 
